@@ -80,6 +80,12 @@ jobs:
           name: QuickPaste-unsigned-ipa
           path: QuickPaste-unsigned.ipa
 
+      - name: 上传原始 .app（供用户自行打包/签名）
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuickPaste-app
+          path: build/Build/Products/Release-iphoneos/QuickPaste.app
+
       - name: 上传构建日志（失败时排查）
         if: failure()
         uses: actions/upload-artifact@v4
