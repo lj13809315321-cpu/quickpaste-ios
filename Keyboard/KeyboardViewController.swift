@@ -652,13 +652,16 @@ final class KeyboardViewController: UIInputViewController {
         danger: Bool = false,
         action: @escaping () -> Void
     ) -> UIButton {
-        let button = UIButton(type: .system)
-        button.setTitle(value == nil ? title : "\(title)　\(value!)", for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 15)
-        button.contentHorizontalAlignment = .leading
-        button.contentEdgeInsets = UIEdgeInsets(top: 0, left: 16, bottom: 0, right: 16)
+        var config = UIButton.Configuration.plain()
+        config.titleAlignment = .leading
+        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16)
+        config.baseForegroundColor = danger ? .systemRed : .label
+        let plain = value == nil ? title : "\(title)　\(value!)"
+        var titleAttrs = AttributeContainer()
+        titleAttrs.font = .systemFont(ofSize: 15)
+        config.attributedTitle = AttributedString(plain, attributes: titleAttrs)
+        let button = UIButton(configuration: config)
         button.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        button.setTitleColor(danger ? .systemRed : .label, for: .normal)
         button.addAction(UIAction { _ in action() }, for: .touchUpInside)
         return button
     }
