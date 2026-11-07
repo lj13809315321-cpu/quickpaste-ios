@@ -9,15 +9,26 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+
+      - name: 环境诊断
+        run: |
+          echo "=== Xcode 版本 ==="
+          xcodebuild -version
+          echo "=== 可用 Xcode 列表 ==="
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer || true
+          xcodebuild -version
 
       - name: 安装 XcodeGen
         run: brew install xcodegen
 
       - name: 生成 Xcode 工程
         run: xcodegen generate
+
+      - name: 列出工程方案
+        run: xcodebuild -list -project QuickPaste.xcodeproj
 
       - name: 编译未签名归档
         run: |
@@ -32,6 +43,7 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             PROVISIONING_PROFILE="" \
             clean archive
+        continue-on-error: false
 
       - name: 打包为 IPA
         run: |
