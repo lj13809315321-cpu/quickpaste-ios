@@ -1,11 +1,11 @@
-# 在 GitHub 提供的 macOS 运行器上编译出「可重签的 IPA」。
+# 在 GitHub 提供的 macOS 运行器上编译出「未签名 IPA」。
 # 关键坑：
 #   - iOS 18.5 SDK 禁止在 archive 阶段用 ad-hoc("-") 签名，且
 #   - 若完全不签名(CODE_SIGNING_ALLOWED=NO)，archive 的 ValidateEmbeddedBinary
 #     会因内嵌的键盘扩展未签名而失败（退出码 70）。
-# 解法：改用 `xcodebuild build`（不归档，避开上述两步），再用命令行 `codesign -s -`
-# 对主 app 与内嵌扩展补打 ad-hoc 自签（该命令不受 SDK 限制），最后压成 IPA。
-# 这种签名不含真实证书，下载到手机后由手机端签名工具用那张 Ad Hoc 证书整体重签安装。
+# 解法：改用 `xcodebuild build`（不归档，避开上述两步），产出完全未签名的 .app，
+# 直接压成 IPA。注意：不要在这里做 ad-hoc 自签——爱思/轻松签等重签工具在导入时
+# 会对「有签名却无描述文件」的包报「文件已损坏」，必须给它们干净的未签名 IPA。
 # 触发方式：仓库 → Actions → 生成未签名 IPA → Run workflow。
 
 name: 生成未签名 IPA
@@ -56,22 +56,23 @@ jobs:
             clean build 2>&1 | tee build.log
         continue-on-error: false
 
-      - name: ad-hoc 自签并打包为 IPA
+      - name: 打包为未签名 IPA（交给爱思/轻松签重签）
         run: |
           set -euo pipefail
           APP="$PWD/build/Build/Products/Release-iphoneos/QuickPaste.app"
           echo "=== 产物路径 ==="
           ls -la "$APP"
-          echo "=== 对主 app 及内嵌键盘扩展做 ad-hoc 自签 ==="
-          codesign --force --deep -s - "$APP"
-          echo "=== 签名校验 ==="
-          codesign -vvv "$APP"
+          echo "=== 确认主 app 与键盘扩展都在 ==="
+          ls -la "$APP/PlugIns"
           rm -rf Payload QuickPaste-unsigned.ipa
           mkdir -p Payload
           cp -R "$APP" Payload/
+          echo "=== 打包 IPA（完全未签名）==="
           zip -qr QuickPaste-unsigned.ipa Payload
           echo "=== IPA 生成完成 ==="
           ls -la QuickPaste-unsigned.ipa
+          echo "=== 校验 IPA 可被正常解压 ==="
+          unzip -l QuickPaste-unsigned.ipa | head -n 20
 
       - name: 上传安装包
         uses: actions/upload-artifact@v4
