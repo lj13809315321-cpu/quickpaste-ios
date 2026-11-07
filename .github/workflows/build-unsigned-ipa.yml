@@ -55,6 +55,9 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             PROVISIONING_PROFILE="" \
+            GENERATE_INFOPLIST_FILE=NO \
+            INFOPLIST_FILE=App/Info.plist \
+            QuickPasteKeyboard:INFOPLIST_FILE=Keyboard/Info.plist \
             clean build 2>&1 | tee build.log
         continue-on-error: false
 
