@@ -1,6 +1,10 @@
 # 在 GitHub 提供的 macOS 运行器上编译出「可重签的 IPA」。
-# 关键：用 CODE_SIGN_IDENTITY="-" 做 ad-hoc 自签，让主 app 与内嵌的键盘扩展
-# 都带有一个合法的（本地）签名，从而通过 Xcode 对扩展的 ValidateEmbeddedBinary 校验。
+# 关键坑：
+#   - iOS 18.5 SDK 禁止在 archive 阶段用 ad-hoc("-") 签名，且
+#   - 若完全不签名(CODE_SIGNING_ALLOWED=NO)，archive 的 ValidateEmbeddedBinary
+#     会因内嵌的键盘扩展未签名而失败（退出码 70）。
+# 解法：改用 `xcodebuild build`（不归档，避开上述两步），再用命令行 `codesign -s -`
+# 对主 app 与内嵌扩展补打 ad-hoc 自签（该命令不受 SDK 限制），最后压成 IPA。
 # 这种签名不含真实证书，下载到手机后由手机端签名工具用那张 Ad Hoc 证书整体重签安装。
 # 触发方式：仓库 → Actions → 生成未签名 IPA → Run workflow。
 
@@ -36,7 +40,7 @@ jobs:
           set -euo pipefail
           xcodebuild -list -project QuickPaste.xcodeproj
 
-      - name: 编译归档（ad-hoc 自签，规避扩展校验失败）
+      - name: 编译（build 不归档，避开 iOS 18.5 禁止 ad-hoc 归档的限制）
         run: |
           set -euo pipefail
           xcodebuild \
@@ -45,21 +49,29 @@ jobs:
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
-            -archivePath "$PWD/build/QuickPaste.xcarchive" \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="-" \
+            -derivedDataPath "$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
             PROVISIONING_PROFILE="" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
-            clean archive 2>&1 | tee build.log
+            clean build 2>&1 | tee build.log
         continue-on-error: false
 
-      - name: 打包为 IPA
+      - name: ad-hoc 自签并打包为 IPA
         run: |
           set -euo pipefail
+          APP="$PWD/build/Build/Products/Release-iphoneos/QuickPaste.app"
+          echo "=== 产物路径 ==="
+          ls -la "$APP"
+          echo "=== 对主 app 及内嵌键盘扩展做 ad-hoc 自签 ==="
+          codesign --force --deep -s - "$APP"
+          echo "=== 签名校验 ==="
+          codesign -vvv "$APP"
           rm -rf Payload QuickPaste-unsigned.ipa
           mkdir -p Payload
-          cp -R "$PWD/build/QuickPaste.xcarchive/Products/Applications/QuickPaste.app" Payload/
+          cp -R "$APP" Payload/
           zip -qr QuickPaste-unsigned.ipa Payload
+          echo "=== IPA 生成完成 ==="
+          ls -la QuickPaste-unsigned.ipa
 
       - name: 上传安装包
         uses: actions/upload-artifact@v4
