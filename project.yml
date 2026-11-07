@@ -27,19 +27,6 @@ targets:
       - App
     info:
       path: App/Info.plist
-      properties:
-        CFBundleDisplayName: QuickPaste
-        CFBundleIdentifier: app.mulberry6323.twilight7904
-        CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "1"
-        UILaunchScreen:
-          UIColorName: ""
-        UIRequiredDeviceCapabilities:
-          - arm64
-        UISupportedInterfaceOrientations:
-          - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
     dependencies:
       - target: QuickPasteKeyboard
         embed: true
@@ -51,19 +38,6 @@ targets:
       - Keyboard
     info:
       path: Keyboard/Info.plist
-      properties:
-        CFBundleDisplayName: QuickPaste
-        CFBundleIdentifier: app.mulberry6323.twilight7904.keyboard
-        CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "1"
-        NSExtension:
-          NSExtensionAttributes:
-            IsASCIICapable: false
-            PrefersRightToLeft: false
-            PrimaryLanguage: zh-Hans
-            RequestsOpenAccess: true
-          NSExtensionPointIdentifier: com.apple.keyboard-service
-          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
 
 schemes:
   QuickPaste:
