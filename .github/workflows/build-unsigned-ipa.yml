@@ -1,0 +1,46 @@
+# 在 GitHub 提供的 macOS 运行器上编译出「未签名 IPA」。
+# 产物下载到手机后，用手机端签名工具 + 那张 Ad Hoc 证书重签安装。
+# 触发方式：仓库 → Actions → 生成未签名 IPA → Run workflow。
+
+name: 生成未签名 IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 生成 Xcode 工程
+        run: xcodegen generate
+
+      - name: 编译未签名归档
+        run: |
+          xcodebuild \
+            -project QuickPaste.xcodeproj \
+            -scheme QuickPaste \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/build/QuickPaste.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            clean archive
+
+      - name: 打包为 IPA
+        run: |
+          mkdir -p Payload
+          cp -R "$PWD/build/QuickPaste.xcarchive/Products/Applications/QuickPaste.app" Payload/
+          zip -qr QuickPaste-unsigned.ipa Payload
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuickPaste-unsigned-ipa
+          path: QuickPaste-unsigned.ipa

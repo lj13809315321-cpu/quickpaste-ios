@@ -1,0 +1,75 @@
+# QuickPaste —— 最小可用的 iOS 自定义键盘工程
+# 用法：在 macOS 上执行 `xcodegen generate` 生成 QuickPaste.xcodeproj
+#
+# 设计说明：
+# 1. 主应用与键盘扩展各有独立的应用包标识（Apple 要求）。
+# 2. 默认不启用应用组（App Groups），常用语保存在键盘自身，
+#    因此一份通配符 App ID 的 Ad Hoc 描述文件即可同时授权两个目标。
+# 3. 两个标识都以现有描述文件里的 app.mulberry6323.twilight7904 为前缀，
+#    便于手机端签名工具改写主应用标识后仍能对应。
+
+name: QuickPaste
+
+options:
+  deploymentTarget:
+    iOS: "15.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    TARGETED_DEVICE_FAMILY: "1,2"
+
+targets:
+  QuickPaste:
+    type: application
+    platform: iOS
+    sources:
+      - App
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: QuickPaste
+        CFBundleIdentifier: app.mulberry6323.twilight7904
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen:
+          UIColorName: ""
+        UIRequiredDeviceCapabilities:
+          - arm64
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    dependencies:
+      - target: QuickPasteKeyboard
+        embed: true
+
+  QuickPasteKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Keyboard
+    info:
+      path: Keyboard/Info.plist
+      properties:
+        CFBundleDisplayName: QuickPaste
+        CFBundleIdentifier: app.mulberry6323.twilight7904.keyboard
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        NSExtension:
+          NSExtensionAttributes:
+            IsASCIICapable: false
+            PrefersRightToLeft: false
+            PrimaryLanguage: zh-Hans
+            RequestsOpenAccess: true
+          NSExtensionPointIdentifier: com.apple.keyboard-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
+
+schemes:
+  QuickPaste:
+    build:
+      targets:
+        QuickPaste: all
+        QuickPasteKeyboard: all
+    archive:
+      config: Release

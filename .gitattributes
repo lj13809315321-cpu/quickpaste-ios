@@ -1,0 +1,6 @@
+# 统一使用 LF，避免 Windows 上编辑后换行符污染工程文件
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ipa binary
