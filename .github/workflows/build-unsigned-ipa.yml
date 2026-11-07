@@ -3,9 +3,11 @@
 #   - iOS 18.5 SDK 禁止在 archive 阶段用 ad-hoc("-") 签名，且
 #   - 若完全不签名(CODE_SIGNING_ALLOWED=NO)，archive 的 ValidateEmbeddedBinary
 #     会因内嵌的键盘扩展未签名而失败（退出码 70）。
-# 解法：改用 `xcodebuild build`（不归档，避开上述两步），产出完全未签名的 .app，
-# 直接压成 IPA。注意：不要在这里做 ad-hoc 自签——爱思/轻松签等重签工具在导入时
-# 会对「有签名却无描述文件」的包报「文件已损坏」，必须给它们干净的未签名 IPA。
+# 解法：用 `xcodebuild build`（不归档，避开 iOS 18.5 禁止 archive 阶段 ad-hoc 的限制）
+# 产出未签名 .app，再用命令行补一个 ad-hoc 签名（`codesign -s -`）给主 app 与键盘扩展，
+# 最后压成 IPA。
+# 关键：爱思/轻松签在「导入 IPA」时会预检二进制是否带签名，纯未签名会被判「文件已损坏」
+# 而拒绝导入；补上 ad-hoc 签名后它们就能正常导入，再由用户用 Apple ID / 证书重签安装。
 # 触发方式：仓库 → Actions → 生成未签名 IPA → Run workflow。
 
 name: 生成未签名 IPA
@@ -56,7 +58,19 @@ jobs:
             clean build 2>&1 | tee build.log
         continue-on-error: false
 
-      - name: 打包为未签名 IPA（交给爱思/轻松签重签）
+      - name: 为二进制补 ad-hoc 签名（让爱思/轻松签能导入）
+        run: |
+          set -euo pipefail
+          APP="$PWD/build/Build/Products/Release-iphoneos/QuickPaste.app"
+          EXT="$APP/PlugIns/QuickPasteKeyboard.appex"
+          echo "=== ad-hoc 签名键盘扩展 ==="
+          codesign --force --timestamp=none -s - "$EXT"
+          echo "=== ad-hoc 签名主 app ==="
+          codesign --force --timestamp=none -s - "$APP"
+          echo "=== 校验签名 ==="
+          codesign -vvv "$APP"
+
+      - name: 打包为 IPA（已含 ad-hoc 签名，供爱思/轻松签重签）
         run: |
           set -euo pipefail
           APP="$PWD/build/Build/Products/Release-iphoneos/QuickPaste.app"
