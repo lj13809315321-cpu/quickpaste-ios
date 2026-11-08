@@ -593,9 +593,19 @@ final class KeyboardViewController: UIInputViewController {
         collapse.addGestureRecognizer(holdCollapse)
         toolbar.addArrangedSubview(collapse)
 
-        let globe = toolButton("🌐")
+        // 地球键用 SF Symbols 的单色「globe」而不是 🌐 emoji：
+        // emoji 一定是彩色的，用户要求跟其它图标一个颜色（黑），像系统键盘那样。
+        let globe = toolButton("")
+        let globeCfg = UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)
+        globe.setImage(UIImage(systemName: "globe", withConfiguration: globeCfg)?
+                        .withRenderingMode(.alwaysTemplate), for: .normal)
+        globe.tintColor = UIColor.rgb(17, 17, 17)
         globe.addAction(UIAction { [weak self] _ in self?.advanceToNextInputMode() },
                         for: .touchUpInside)
+        // 无 SF Symbols 时退回文字（极少见），同样是单色
+        if globe.image(for: .normal) == nil {
+            globe.setTitle("🌐", for: .normal)
+        }
         toolbar.addArrangedSubview(globe)
 
         // HTML 原型 .kbTool.copyBtn：连续复制一级开关，蓝色=开启；与「同步」无关

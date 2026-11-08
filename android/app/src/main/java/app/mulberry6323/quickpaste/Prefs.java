@@ -137,6 +137,7 @@ public final class Prefs {
 
     public List<String> recentDeleted() { return getList("qp.recentDeleted"); }
     public void setRecentDeleted(List<String> v) { setList("qp.recentDeleted", v); }
+    public void clearRecentDeleted() { setList("qp.recentDeleted", new ArrayList<String>()); }
 
     /** 按历史保留天数清理过期记录（置顶不受影响）。时间戳存于 qp.clipTimes。 */
     public int pruneHistory() {

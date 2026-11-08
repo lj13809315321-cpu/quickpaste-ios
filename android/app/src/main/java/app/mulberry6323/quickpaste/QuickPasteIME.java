@@ -1434,23 +1434,29 @@ public class QuickPasteIME extends InputMethodService {
     }
 
     private void openClearConfirm() {
-        if (menuOverlay == null) return;
-        menuStack.removeAllViews();
-        menuOverlay.setVisibility(View.VISIBLE);
-        menuStack.addView(menuTitle("清空电脑上的全部同步记录？"));
-        menuStack.addView(menuRow("确认清空", new Runnable() {
-            @Override
-            public void run() {
-                deleteItem(null);
-                closeMenu();
+        // 用户要求：不要确认框，直接清。而且必须本地先清、立即生效——
+        // 旧版只发 DELETE 请求，电脑没开就一直等到超时，看着像「清不掉」。
+        clearAllHistory();
+    }
+
+    /** 一键清空：本机立即清 + 清掉系统剪贴板（否则下次抓取又把它捞回来） */
+    private void clearAllHistory() {
+        prefs.clearClips();
+        prefs.clearRecentDeleted();
+        try {
+            if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("", ""));
+        } catch (Exception ignored) {
+        }
+        syncSig = "";
+        refreshList();
+        toast("已清空");
+        // 电脑端只做静默同步，失败不打扰
+        final SyncClient c = client();
+        net.execute(new Runnable() {
+            @Override public void run() {
+                try { c.delete(null); } catch (Exception ignored) { }
             }
-        }));
-        menuStack.addView(menuRow("取消", new Runnable() {
-            @Override
-            public void run() {
-                closeMenu();
-            }
-        }));
+        });
     }
 
     private void closeMenu() {
@@ -1822,7 +1828,7 @@ public class QuickPasteIME extends InputMethodService {
             toast("已重置为默认地址");
             refreshHead();
         }
-        @Override public void onClearAll() { deleteItem(null); }
+        @Override public void onClearAll() { clearAllHistory(); }
         @Override public void onSwitchKeyboard() { switchIme(); }
         @Override public void onInsertText(String text) {
             insert(text);
