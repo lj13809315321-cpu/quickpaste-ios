@@ -18,10 +18,8 @@ settings:
   base:
     SWIFT_VERSION: "5.9"
     TARGETED_DEVICE_FAMILY: "1,2"
-    # 关键：关闭 Xcode 自动生成 Info.plist，否则它会忽略我们自定义的
-    # Keyboard/Info.plist，导致 NSExtension（键盘扩展标识）被丢弃，
-    # 装上去键盘也不会出现在系统设置里。
-    GENERATE_INFOPLIST_FILE: "NO"
+    # 注意：不要在命令行或这里传全局 INFOPLIST_FILE —— 那会让键盘扩展也误用主 app 的
+    # plist。Info.plist 统一由 scripts/fix_info_plists.py 在编译后写回产物（见工作流）。
 
 targets:
   QuickPaste:

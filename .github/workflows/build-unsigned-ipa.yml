@@ -3,11 +3,18 @@
 #   - iOS 18.5 SDK 禁止在 archive 阶段用 ad-hoc("-") 签名，且
 #   - 若完全不签名(CODE_SIGNING_ALLOWED=NO)，archive 的 ValidateEmbeddedBinary
 #     会因内嵌的键盘扩展未签名而失败（退出码 70）。
-# 解法：用 `xcodebuild build`（不归档，避开 iOS 18.5 禁止 archive 阶段 ad-hoc 的限制）
-# 产出未签名 .app，再用命令行补一个 ad-hoc 签名（`codesign -s -`）给主 app 与键盘扩展，
-# 最后压成 IPA。
-# 关键：爱思/轻松签在「导入 IPA」时会预检二进制是否带签名，纯未签名会被判「文件已损坏」
-# 而拒绝导入；补上 ad-hoc 签名后它们就能正常导入，再由用户用 Apple ID / 证书重签安装。
+# 解法：用 `xcodebuild build`（不归档，避开 iOS 18.5 禁止 archive 阶段 ad-hoc 的限制）。
+#
+# 两个必须处理的坑：
+# 1) Xcode 16 + XcodeGen 默认 GENERATE_INFOPLIST_FILE=YES，会忽略仓库里的
+#    App/Info.plist、Keyboard/Info.plist，自动生成一份只有构建元数据的 plist，
+#    导致产物缺 CFBundleIdentifier / NSExtension。爱思在导入 IPA 时读不到
+#    Bundle ID 就会笼统报「文件已损坏」。
+#    -> 编译后由 scripts/fix_info_plists.py 把源码 plist 合并回产物。
+# 2) 爱思/轻松签导入时会预检二进制是否带签名，纯未签名会被判「文件已损坏」。
+#    -> 修正 plist 之后再补 ad-hoc 签名（顺序必须如此，否则 CodeResources 哈希失效）。
+#
+# 产物交给爱思「Apple ID 签名」（免费 7 天签名）重签即可，不需要 P12/付费证书。
 # 触发方式：仓库 → Actions → 生成未签名 IPA → Run workflow。
 
 name: 生成未签名 IPA
@@ -55,11 +62,18 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             PROVISIONING_PROFILE="" \
-            GENERATE_INFOPLIST_FILE=NO \
-            INFOPLIST_FILE=App/Info.plist \
-            QuickPasteKeyboard:INFOPLIST_FILE=Keyboard/Info.plist \
             clean build 2>&1 | tee build.log
         continue-on-error: false
+
+      - name: 修正 Info.plist（补回 CFBundleIdentifier / NSExtension）
+        run: |
+          set -euo pipefail
+          python3 scripts/fix_info_plists.py
+          APP="$PWD/build/Build/Products/Release-iphoneos/QuickPaste.app"
+          echo "=== 主 app Info.plist 校验 ==="
+          plutil -p "$APP/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundlePackageType|MinimumOSVersion'
+          echo "=== 键盘扩展 Info.plist 校验 ==="
+          plutil -p "$APP/PlugIns/QuickPasteKeyboard.appex/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundlePackageType|NSExtension'
 
       - name: 为二进制补 ad-hoc 签名（让爱思/轻松签能导入）
         run: |
@@ -84,10 +98,32 @@ jobs:
           rm -rf Payload QuickPaste-unsigned.ipa
           mkdir -p Payload
           cp -R "$APP" Payload/
-          echo "=== 打包 IPA（完全未签名）==="
+          echo "=== 打包 IPA（ad-hoc 签名 + 完整 Info.plist）==="
           zip -qr QuickPaste-unsigned.ipa Payload
           echo "=== IPA 生成完成 ==="
           ls -la QuickPaste-unsigned.ipa
+          echo "=== 从 IPA 内直接校验关键字段（最终产物把关）==="
+          python3 - <<'PY'
+          import plistlib, zipfile
+          z = zipfile.ZipFile('QuickPaste-unsigned.ipa')
+          names = z.namelist()
+          app = 'Payload/QuickPaste.app/Info.plist'
+          ext = 'Payload/QuickPaste.app/PlugIns/QuickPasteKeyboard.appex/Info.plist'
+          for p in (app, ext):
+              assert p in names, f'IPA 缺文件: {p}'
+          a = plistlib.loads(z.read(app))
+          e = plistlib.loads(z.read(ext))
+          assert a.get('CFBundleIdentifier') == 'app.mulberry6323.twilight7904', a.get('CFBundleIdentifier')
+          assert e.get('CFBundleIdentifier') == 'app.mulberry6323.twilight7904.keyboard', e.get('CFBundleIdentifier')
+          ns = e.get('NSExtension') or {}
+          assert ns.get('NSExtensionPointIdentifier') == 'com.apple.keyboard-service', ns
+          assert e.get('CFBundlePackageType') == 'XPC!', e.get('CFBundlePackageType')
+          print('[OK] 主 app BundleID   =', a['CFBundleIdentifier'])
+          print('[OK] 键盘扩展 BundleID =', e['CFBundleIdentifier'])
+          print('[OK] 键盘扩展类型     =', e['CFBundlePackageType'])
+          print('[OK] 扩展点           =', ns['NSExtensionPointIdentifier'])
+          print('[OK] PrincipalClass   =', ns.get('NSExtensionPrincipalClass'))
+          PY
           echo "=== 校验 IPA 可被正常解压 ==="
           unzip -l QuickPaste-unsigned.ipa | head -n 20
 
