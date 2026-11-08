@@ -1399,24 +1399,34 @@ public class QuickPasteIME extends InputMethodService {
         }
     }
 
+    /** 把图片落到本 App 私有目录，并通过 QpImageProvider 暴露 content:// URI。 */
+    private Uri writeShareImage(SyncItem it) throws Exception {
+        byte[] data = Base64.decode(it.image, Base64.DEFAULT);
+        File f = new File(getFilesDir(), "qp_share.png");
+        FileOutputStream fos = new FileOutputStream(f);
+        fos.write(data);
+        fos.flush();
+        fos.close();
+        Uri uri = Uri.parse("content://" + getPackageName() + ".images/qp_share.png");
+        if (!hostPackage.isEmpty()) {
+            try {
+                grantUriPermission(hostPackage, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (Exception ignored) {
+            }
+        }
+        return uri;
+    }
+
+    private static String imageMime(SyncItem it) {
+        return it.mime == null || it.mime.isEmpty() ? "image/png" : it.mime;
+    }
+
     private void commitImageToInput(SyncItem it) {
         try {
             if (Build.VERSION.SDK_INT < 25) throw new IllegalStateException("系统版本过低");
-            byte[] data = Base64.decode(it.image, Base64.DEFAULT);
-            File f = new File(getFilesDir(), "qp_share.png");
-            FileOutputStream fos = new FileOutputStream(f);
-            fos.write(data);
-            fos.flush();
-            fos.close();
-            Uri uri = Uri.parse("content://" + getPackageName() + ".images/qp_share.png");
-            if (!hostPackage.isEmpty()) {
-                try {
-                    grantUriPermission(hostPackage, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                } catch (Exception ignored) {
-                }
-            }
-            String mime = it.mime == null || it.mime.isEmpty() ? "image/png" : it.mime;
-            ClipDescription desc = new ClipDescription("QuickPaste 图片", new String[]{mime});
+            Uri uri = writeShareImage(it);
+            ClipDescription desc = new ClipDescription("QuickPaste 图片",
+                    new String[]{imageMime(it)});
             InputContentInfo info = new InputContentInfo(uri, desc, null);
             InputConnection ic = getCurrentInputConnection();
             if (ic == null || !ic.commitContent(info, 0, null)) {
@@ -1429,10 +1439,12 @@ public class QuickPasteIME extends InputMethodService {
     }
 
     private void copyImageToClipboard(SyncItem it) {
+        // ClipData.newBitmap 在 compileSdk 34 已被移除，改用 content:// URI。
         try {
-            Bitmap b = decodeImage(it, 1200);
-            if (b == null) throw new IllegalStateException("解码失败");
-            cm.setPrimaryClip(ClipData.newBitmap("QuickPaste 图片", b));
+            Uri uri = writeShareImage(it);
+            ClipDescription desc = new ClipDescription("QuickPaste 图片",
+                    new String[]{imageMime(it)});
+            cm.setPrimaryClip(new ClipData(desc, new ClipData.Item(uri)));
             toast("已复制到剪贴板，长按输入框粘贴");
         } catch (Exception e) {
             toast("复制失败：" + e.getMessage());
