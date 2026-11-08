@@ -119,6 +119,10 @@ public class QuickPasteIME extends InputMethodService {
     private ScrollView listScroll;
     private LinearLayout listBox;
     private LinearLayout calcBox;
+    /** 还没成功推到电脑的文本（电脑没连上时先排队，连上就补发） */
+    private final java.util.List<String> pendingPush = new java.util.ArrayList<>();
+    /** 最近已经推过的文本，避免同一条反复 POST */
+    private final java.util.List<String> pushedRecent = new java.util.ArrayList<>();
 
     private FrameLayout menuOverlay;
     private LinearLayout menuStack;
@@ -366,6 +370,8 @@ public class QuickPasteIME extends InputMethodService {
         lastSync = System.currentTimeMillis();
         syncState = "online";
         refreshHead();
+        // 之前电脑没连上时排队的内容，现在补发
+        flushPendingPush();
     }
 
     private void startPolling() {

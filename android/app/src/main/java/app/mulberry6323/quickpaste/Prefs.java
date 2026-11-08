@@ -66,6 +66,15 @@ public final class Prefs {
         sp.edit().putBoolean("qp.syncAuto", v).apply();
     }
 
+    /** 复制后自动推送到电脑，默认开启（手机一复制，电脑那边就该有）。 */
+    public boolean autoPush() {
+        return sp.getBoolean("qp.autoPush", true);
+    }
+
+    public void setAutoPush(boolean v) {
+        sp.edit().putBoolean("qp.autoPush", v).apply();
+    }
+
     // ---- 布局 ----
 
     public int columns() {
