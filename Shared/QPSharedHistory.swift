@@ -19,6 +19,25 @@ enum QPSharedHistory {
     struct Payload: Codable {
         var items: [String] = []
         var pip: Bool = false
+        /// 后台读剪贴板被系统拦了（没有「从其他 App 粘贴 → 允许」）。
+        /// 用可选类型，保证旧版本写下的 JSON 还能解码，不会丢历史。
+        var blocked: Bool? = nil
+        /// 键盘那边请求「下次打开 App 就自动开连续复制」
+        var want: Bool? = nil
+        /// 主 App 后台心跳（秒级时间戳）。键盘用它判断小窗其实是不是已经死了。
+        var beatAt: Double? = nil
+
+        var isBlocked: Bool { blocked == true }
+        var isWanted: Bool { want == true }
+
+        /// 心跳还活着吗（25 秒内算活）。
+        /// 没有 App Group 时写不了心跳（剪贴板兜底通道每写一次都会改
+        /// changeCount），这时只认 pip 标记，不然 20 秒后就误判「小窗死了」。
+        var isAlive: Bool {
+            guard pip else { return false }
+            guard let b = beatAt, b > 0 else { return true }
+            return Date().timeIntervalSince1970 - b < 25
+        }
     }
 
     static let groupID = "group.app.mulberry6323.twilight7904"
@@ -32,9 +51,21 @@ enum QPSharedHistory {
 
     // MARK: - 读（主 App 与键盘扩展都会调）
 
+    /// 本进程内的最后一份已知状态。
+    /// 为什么需要：剪贴板兜底通道在 iOS 16 上可能读不到（后台 / 没授权），
+    /// 如果每次 append 都从「读不到」开始，历史会被自己一条条冲掉 ——
+    /// 表现就是「永远只有一条」。有了内存兜底，App 手里的记录不会丢。
+    private static var memory: Payload?
+
+    /// 只有主 App 打开它：App 是唯一写入方，读不到时用自己手里的记录继续累积，
+    /// 免得「读不到 → 从空开始 → 又写回去」，历史被一条条冲掉。
+    /// 键盘**不**用内存兜底：读不到共享通道就说明 App 没在写，状态应当如实显示成「没在抓」。
+    static var memoryFallback = false
+
     static func read() -> Payload {
-        if let p = readGroup() { return p }
-        if let p = readPasteboard() { return p }
+        if let p = readGroup() { memory = p; return p }
+        if let p = readPasteboard() { memory = p; return p }
+        if memoryFallback, let m = memory { return m }
         return Payload()
     }
 
@@ -53,19 +84,28 @@ enum QPSharedHistory {
         return try? JSONDecoder().decode(Payload.self, from: data)
     }
 
-    // MARK: - 写（只有主 App 的 PiP 管理器调用）
+    // MARK: - 写（主 App 的 PiP 管理器；setWant 由键盘调用）
 
-    /// 收录一条新复制的文本。已是最新一条时直接返回 false，避免自己写通道
-    /// 改变 changeCount 后又触发自己，形成无限循环。
+    /// 收录一条新复制的文本。
+    /// 注意：**内容没变就绝不写通道** —— 剪贴板兜底通道每写一次都会改
+    /// changeCount，写了又读到变化，就会 0.4 秒一圈无限循环。
     @discardableResult
     static func append(_ text: String) -> Bool {
         guard !text.isEmpty else { return false }
         var p = read()
-        guard p.items.first != text else { return false }
-        p.items.removeAll { $0 == text }
-        p.items.insert(text, at: 0)
-        p.items = Array(p.items.prefix(maxItems))
-        write(p)
+        var changed = false
+        if p.items.first != text {
+            p.items.removeAll { $0 == text }
+            p.items.insert(text, at: 0)
+            p.items = Array(p.items.prefix(maxItems))
+            changed = true
+        }
+        // pip 保持原值：画中画是否在跑由 setPip 决定，不在这里改
+        if p.isBlocked { p.blocked = false; changed = true }
+        guard changed else { return false }
+        // 心跳只写在 App Group 文件里；剪贴板通道不能拿来当心跳
+        if groupURL() != nil { p.beatAt = Date().timeIntervalSince1970 }
+        write(p, keeping: text)
         return true
     }
 
@@ -73,7 +113,35 @@ enum QPSharedHistory {
         var p = read()
         guard p.pip != on else { return }
         p.pip = on
-        write(p)
+        if on, groupURL() != nil { p.beatAt = Date().timeIntervalSince1970 }
+        write(p, keeping: nil)
+    }
+
+    /// 后台读剪贴板被系统拦了。只有 App Group 才写得进去 ——
+    /// 剪贴板兜底通道要靠「保留正文」才能写，而被拦时根本读不到正文，
+    /// 宁可不写，也不能把用户剪贴板冲掉。
+    static func setBlocked(_ on: Bool) {
+        guard groupURL() != nil else { return }
+        var p = read()
+        guard p.isBlocked != on else { return }
+        p.blocked = on
+        write(p, keeping: nil)
+    }
+
+    /// 键盘请求「下次打开 App 自动开启连续复制」（键盘有完全访问，读得到正文）
+    static func setWant(_ on: Bool) {
+        var p = read()
+        guard p.isWanted != on else { return }
+        p.want = on
+        write(p, keeping: nil)
+    }
+
+    /// 后台心跳。只有拿得到 App Group 文件时才写。
+    static func beat() {
+        guard groupURL() != nil else { return }
+        var p = read()
+        p.beatAt = Date().timeIntervalSince1970
+        write(p, keeping: nil)
     }
 
     /// 清空共享记录。没有 App Group 时**不写系统剪贴板**：
@@ -83,33 +151,34 @@ enum QPSharedHistory {
         var p = read()
         guard !p.items.isEmpty else { return }
         p.items = []
-        write(p)
+        write(p, keeping: nil)
     }
 
-    private static func write(_ p: Payload) {
+    /// - Parameter keeping: 已知的剪贴板正文。传了就不再去读剪贴板
+    ///   （iOS 16 读正文会弹授权框，后台直接拿不到）。
+    private static func write(_ p: Payload, keeping text: String?) {
+        memory = p
         guard let data = try? JSONEncoder().encode(p) else { return }
         if let url = groupURL() {
             try? data.write(to: url.appendingPathComponent(fileName), options: .atomic)
             return
         }
         guard pasteboardFallbackEnabled else { return }
-        writePasteboard(data)
+        writePasteboard(data, text: text)
     }
 
-    /// ⚠️ 必须保持「单 item」语义：
-    /// 剪贴板里只有一个 item 时，把它自己的字典拿来加一个自定义 key 再写回，
-    /// `.string` 依然读得到正文，别的 App 粘贴也不受影响。
-    /// 多 item（图片、多文件）时直接放弃 —— 宁可不传数据，也不能毁了用户的剪贴板。
-    private static func writePasteboard(_ data: Data) {
+    /// ⚠️ 两个坑必须同时避开：
+    /// 1) **不能读 `pb.items`**：iOS 16 读它就是一次「粘贴」访问，会弹授权框，
+    ///    后台还会返回空数组 —— 旧实现拿到空数组后走 `pb.items = [[pbType: data]]`，
+    ///    直接把用户剪贴板里的正文冲掉，等于把用户复制的东西弄丢。
+    /// 2) 必须保持「单 item」：剪贴板一旦多 item，`UIPasteboard.string` 就读不到了。
+    /// 所以这里只用「已经拿到的正文」+ 我们的自定义 key 拼成一条写回去。
+    private static func writePasteboard(_ data: Data, text: String?) {
         let pb = UIPasteboard.general
-        let items = pb.items
-        if items.count == 1 {
-            var item = items[0]
-            item[pbType] = data
-            pb.items = [item]
-        } else if items.isEmpty {
-            pb.items = [[pbType: data]]
-        }
+        guard let body = text ?? pb.string, !body.isEmpty else { return }
+        pb.items = [["public.utf8-plain-text": body,
+                     "public.text": body,
+                     pbType: data]]
     }
 
     private static func groupURL() -> URL? {

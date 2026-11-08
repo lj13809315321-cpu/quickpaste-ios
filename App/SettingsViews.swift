@@ -85,11 +85,21 @@ struct AppRootView: View {
             SettingsView().tabItem { Label("设置", systemImage: "gearshape") }.tag(4)
         }
         // 键盘里点「连续复制」按钮会打开 quickpaste://pip/start
+        // 键盘扩展本身不能开画中画，所以键盘那边只负责「把 App 叫到前台」，
+        // 真正的开启在这里做：进来就自动开，用户少点一次。
         .onOpenURL { url in
-            guard url.host == "pip" || url.absoluteString.contains("pip/start") else { return }
+            guard url.host == "pip" || url.absoluteString.contains("pip") else { return }
             tab = 3
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            QPSharedHistory.setWant(true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
                 PiPManager.shared.start()
+            }
+        }
+        .onAppear {
+            // 键盘按过「连续复制」但没跳成功（系统禁止键盘开 App）时，
+            // 用户手动点图标进来，一样自动把画中画开起来。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                PiPManager.shared.startIfWanted()
             }
         }
     }
@@ -239,7 +249,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("QuickPaste v1.6 · 真·系统输入法", systemImage: "keyboard")
+                        Label("QuickPaste v1.7 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -566,7 +576,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("QuickPaste v1.6 · 真·系统输入法").font(.headline)
+                Text("QuickPaste v1.7 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

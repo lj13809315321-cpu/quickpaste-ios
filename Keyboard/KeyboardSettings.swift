@@ -255,7 +255,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             navRow("重新播放引导页") { [weak self] in self?.push(.onboarding) },
             navRow("关于本版本") { [weak self] in self?.push(.about) }
         ]))
-        body.addArrangedSubview(foot("QuickPaste v1.6 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
+        body.addArrangedSubview(foot("QuickPaste v1.7 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
     }
 
     // MARK: - 键盘设置（开关）
@@ -404,7 +404,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
     // MARK: - 连续复制设置
 
     private func renderContinuous() {
-        body.addArrangedSubview(foot("连续复制分两种：键盘弹着时自动实时抓取；以及主 App 的系统画中画（PiP），开启后切到任意 App 复制都会被后台收录。"))
+        body.addArrangedSubview(foot("连续复制分两种：键盘弹着时自动实时抓取；以及主 App 的系统画中画（PiP）——键盘收起后靠它继续在后台收录。"))
 
         body.addArrangedSubview(groupTitle("存储位置"))
         body.addArrangedSubview(card([
@@ -413,23 +413,23 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
                 self?.prefs.storage = i == 0 ? "剪贴板历史" : "常用语"
                 self?.render()
             },
-            switchRow("连续复制（键盘内实时抓取）", sub: "键盘弹着时每 0.5 秒比一次剪贴板版本号，变了才读正文；开着会显示「已收 N 条」浮层",
+            switchRow("连续复制（键盘内实时抓取）", sub: "键盘弹着时每 0.5 秒比一次剪贴板版本号，变了才读正文；按钮变蓝 + 绿点 = 主 App 后台小窗也在抓",
                       isOn: prefs.continuous) { [weak self] v in self?.prefs.continuous = v }
         ]))
 
         body.addArrangedSubview(groupTitle("系统画中画（跨 App 连续复制）"))
         body.addArrangedSubview(card([
-            numberedRow(1, "点键盘工具条的「连续复制」按钮，跳到 QuickPaste 主 App"),
-            numberedRow(2, "在主 App「连续复制」页点「开启连续复制（画中画）」"),
-            numberedRow(3, "出现系统 PiP 小窗 = 正在后台监控，切到任何 App 继续复制"),
-            numberedRow(4, "小窗可拖到屏幕边缘自动缩小贴边；点小窗上的 ✕ 结束")
+            numberedRow(1, "点键盘工具条的「连续复制」按钮；系统允许跳转就直接打开 QuickPaste，并自动开小窗"),
+            numberedRow(2, "跳不动就回主屏点 QuickPaste 图标，进去照样会自动开"),
+            numberedRow(3, "★ 设置 → QuickPaste → 从其他 App 粘贴 → 允许（不设成允许，后台只能读到空内容）"),
+            numberedRow(4, "小窗出现 = 正在后台监控；拖到屏幕边缘会缩成图标，点小窗上的 ✕ 结束")
         ]))
-        body.addArrangedSubview(foot("需为 QuickPaste 键盘开启「允许完全访问」，并允许读取剪贴板。"))
+        body.addArrangedSubview(foot("还需为键盘开启「允许完全访问」、系统「自动开启画中画」。小窗关掉、App 被划掉就停止后台收录。"))
 
         body.addArrangedSubview(groupTitle("补充说明"))
         body.addArrangedSubview(card([
             qa("相同内容会重复保存吗？", "不会。相同文字会去重处理，不会不断新增相同记录。"),
-            qa("为什么有的内容没保存？", "系统粘贴授权弹窗要点「允许」后才会写入；画中画结束、主 App 被系统回收后不再后台收录，但回到键盘会自动补读。"),
+            qa("为什么一开始只收录一条？", "iOS 16 起，后台读剪贴板必须先在 设置 → QuickPaste → 从其他 App 粘贴 里选「允许」。没设成允许时，App 在前台能读到、切后台就只能读到空内容，于是永远停在「已收录 1 条」。"),
             qa("多久会清理一次？", "按设置里的「历史保留时间」执行，置顶的记录不会被自动清理。"),
             qa("能像悬浮窗那样一直监控吗？", "能。打开主 App 的「连续复制」页开启系统画中画（PiP），小窗由 iOS 渲染，自带 ✕、可拖到屏幕边缘缩小贴边。键盘扩展本身不能在别处常驻，所以这一步必须由主 App 启动。")
         ]))
@@ -594,7 +594,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
 
     private func renderAbout() {
         body.addArrangedSubview(card([
-            info("QuickPaste v1.6 · 真·系统输入法"),
+            info("QuickPaste v1.7 · 真·系统输入法"),
             info("iOS：键盘扩展 .appex（com.apple.keyboard-service）"),
             info("安卓：系统输入法 InputMethodService"),
             info("界面按 quickpaste-ios-prototype.html v1.6 原型原生实现，无 WebView、无演示动画。"),
@@ -710,7 +710,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         box.backgroundColor = QPColor.blueSoft
         box.layer.cornerRadius = 10
         let l = UILabel()
-        l.text = "QuickPaste v1.6 · 真·系统输入法\n按 HTML 最新版效果原生实现，无网页、无演示动画"
+        l.text = "QuickPaste v1.7 · 真·系统输入法\n按 HTML 最新版效果原生实现，无网页、无演示动画"
         l.font = .systemFont(ofSize: 12, weight: .medium)
         l.textColor = QPColor.blue
         l.numberOfLines = 0
@@ -1116,8 +1116,8 @@ private enum Tutorial {
         ]),
         "continuous": Item(title: "连续复制与系统画中画", summary: "键盘弹着时实时抓取；开画中画可跨 App 后台监控。", sections: [
             ("键盘里连续复制", "键盘弹着时每 0.5 秒读一次系统剪贴板，复制第 2、3、N 段都会自动进列表，不用收起再弹出。"),
-            ("开启系统画中画", "1. 确认键盘已开启完全访问。\n2. 点键盘工具条的「连续复制」按钮，跳到 QuickPaste 主 App。\n3. 在主 App「连续复制」页点「开启连续复制（画中画）」。\n4. 出现系统 PiP 小窗后，切到微信、Safari 等任意 App 继续复制。"),
-            ("小窗怎么用", "PiP 小窗由 iOS 渲染，自带 ✕ 关闭；拖到屏幕左边框会自动缩小贴边（只露一个小箭头），点箭头可展开。工具条按钮变蓝只代表「连续复制」开关是开的；浮层上「已收 N 条」的 N 才是真正抓到的条数。"),
+            ("开启系统画中画", "1. 确认键盘已开启完全访问。\n2. 点键盘工具条的「连续复制」按钮；能跳就直接打开 QuickPaste 并自动开小窗。\n3. 跳不动就回主屏点 QuickPaste 图标，进去自动开。\n4. ★ 设置 → QuickPaste → 从其他 App 粘贴 → 允许，否则后台读不到内容。\n5. 出现系统 PiP 小窗后，切到微信、Safari 等任意 App 继续复制。"),
+            ("小窗怎么用", "PiP 小窗由 iOS 渲染，自带 ✕ 关闭；拖到屏幕左边框会自动缩小贴边（只露一个小箭头），点箭头可展开。小窗里大字的「已收录 N 条」才是真正抓到的条数；键盘第三个按钮变蓝且右上角是绿点，说明后台小窗真的活着。"),
             ("重复内容与使用范围", "相同文字会去重。画中画收录的文字会写进共享历史，回到键盘自动出现在剪贴板列表里；系统粘贴授权弹窗需点「允许」。")
         ]),
         "calc": Item(title: "键盘计算器", summary: "按键直接写进输入框，点 = 才出结果。", sections: [

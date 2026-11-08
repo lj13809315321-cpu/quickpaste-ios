@@ -29,12 +29,12 @@ final class KeyboardViewController: UIInputViewController {
     /// 键盘可见期间【常驻】的剪贴板轮询，与「连续复制 / 画中画」开关完全解耦。
     /// 旧版只在连续复制开启时才轮询，导致弹起键盘后复制第二段必须收起再弹。
     private var pasteboardTimer: Timer?
-    /// 本次呼出键盘后抓到的新条数（浮层上显示，用户能一眼看出到底有没有在抓）
+    /// 本次呼出键盘后抓到的新条数（只用于内部计数）
     private var capturedCount = 0
-    /// 连续复制浮层
-    private var copyOverlay: UIView?
-    /// 主 App 的系统画中画是否正在后台监控
-    private var pipRunning = false
+    /// 主 App 的系统画中画是否**真的**在后台抓（心跳 20 秒内算活）
+    private var pipLive = false
+    /// 主 App 是否报告「后台读剪贴板被系统拦住」
+    private var pipBlocked = false
     /// 连接状态小圆点：绿 = 已连上电脑，红 = 没连上
     private weak var statusDot: UIView?
     private weak var copyButton: UIButton?
@@ -213,71 +213,176 @@ final class KeyboardViewController: UIInputViewController {
         let pb = UIPasteboard.general
         let change = pb.changeCount
         let changed = change != prefs.lastSeenChange
-        guard force || changed else { return false }
-
-        prefs.refreshMute()
 
         var dirty = false
 
-        // ① 主 App 画中画抓到的（可选增强；读不到也不影响键盘自己抓）
+        // ① 主 App 后台抓到的（画中画小窗）。这一项**每次都读**：
+        //    它走的是共享通道，不需要剪贴板权限，键盘一弹起就该把 App
+        //    在后台收的每一条都并进本机列表 —— 旧版只在 changeCount 变时才读，
+        //    结果就是「弹起键盘只看到最后一条」。
         let shared = QPSharedHistory.read()
-        if pipRunning != shared.pip {
-            pipRunning = shared.pip
-            refreshCopyOverlay()
+        let live = shared.isAlive
+        let blockedNow = shared.isBlocked
+        if live != pipLive || blockedNow != pipBlocked {
+            pipLive = live
+            pipBlocked = blockedNow
+            refreshCopyButton()
         }
         for text in shared.items.reversed() where !text.isEmpty {
             if !prefs.isMuted(text) && prefs.capture(text) { dirty = true }
         }
 
-        // ② 系统剪贴板正文
-        let raw = pb.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if raw.isEmpty {
-            prefs.lastSeenChange = change
-        } else if isServerAddress(raw) {
-            _ = prefs.adoptPasteboardURL()
-            prefs.lastSeenChange = change
-        } else if prefs.isMuted(raw) {
-            // 刚被删掉 / 清空的就是这条，剪贴板还没换 → 不要再抓回来
-            prefs.lastSeenChange = change
-        } else {
-            if prefs.capture(raw) {
-                dirty = true
-                capturedCount += 1
+        if force || changed {
+            prefs.refreshMute()
+            // ② 系统剪贴板正文
+            let raw = pb.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if raw.isEmpty {
+                prefs.lastSeenChange = change
+            } else if isServerAddress(raw) {
+                _ = prefs.adoptPasteboardURL()
+                prefs.lastSeenChange = change
+            } else if prefs.isMuted(raw) {
+                // 刚被删掉 / 清空的就是这条，剪贴板还没换 → 不要再抓回来
+                prefs.lastSeenChange = change
+            } else {
+                if prefs.capture(raw) {
+                    dirty = true
+                    capturedCount += 1
+                }
+                prefs.lastSeenChange = change
             }
-            prefs.lastSeenChange = change
         }
 
         if dirty {
             refreshList()
-            refreshCopyOverlay()
         }
         return dirty
     }
 
-    // MARK: - 连续复制（键盘内监听 + 可选画中画）
+    // MARK: - 连续复制（键盘内监听 + 主 App 画中画后台监听）
 
+    /// 第三个按钮（⧉）。用户明确要求：**别做成点了没反应的假开关**。
+    /// 所以这里只做两件真实的事：
+    ///   · 已经开着 → 关掉键盘侧的开关（后台小窗请在小窗上点 ✕）；
+    ///   · 没开 → 立刻变蓝 + 让 App 记住「下次打开就自动开」，并尝试把 App 叫到前台。
+    ///     键盘扩展在 iOS 上不能自己开画中画、多数版本也不允许直接开 App，
+    ///     所以同时弹出大字指引（能跳就直接跳走，跳不走用户也看得懂下一步）。
     private func toggleContinuous() {
         guard hasFullAccess else {
             showToast("请先在 设置 → 键盘 → QuickPaste 开启「允许完全访问」")
             return
         }
-        prefs.continuous.toggle()
+        let shared = QPSharedHistory.read()
+        pipLive = shared.isAlive
+        pipBlocked = shared.isBlocked
+        if prefs.continuous {
+            prefs.continuous = false
+            QPSharedHistory.setWant(false)
+            refreshCopyButton()
+            showToast("已关闭键盘内连续复制；后台小窗请点小窗上的 ✕")
+            return
+        }
+
+        prefs.continuous = true
         capturedCount = 0
         refreshCopyButton()
-        refreshCopyOverlay()
-        if prefs.continuous {
+        // 让主 App 一打开就自动开画中画（不依赖这次跳转是否成功）
+        QPSharedHistory.setWant(true)
+        _ = openMainApp("pip/start")
+        // 立刻给一个真实的状态：如果 App 已经在后台抓，就不弹指引
+        if pipLive && !pipBlocked {
             showToast("连续复制已开启")
-            // 键盘扩展自己起不了画中画，试着拉起主 App；失败也不影响键盘内抓取
-            if !pipRunning { _ = openMainApp("pip/start") }
-        } else {
-            showToast("已结束连续复制")
+            return
         }
+        showContinuousGuide()
     }
 
-    /// 键盘扩展里 UIApplication.shared 不可用，沿响应链找 openURL: 打开主 App。
+    /// 大字指引面板：取代原来那行 10.5pt 的小字。
+    /// 为什么不直接跳系统设置：键盘扩展能不能开 URL 取决于系统版本，
+    /// 跳得动就跳，跳不动必须让用户看懂要做什么。
+    private func showContinuousGuide() {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 10
+
+        let title = UILabel()
+        title.text = pipBlocked
+            ? "需要允许粘贴，后台才收得到"
+            : "连续复制要主 App 帮忙"
+        title.font = .systemFont(ofSize: 20, weight: .bold)
+        title.numberOfLines = 2
+        title.textColor = .black
+        box.addArrangedSubview(title)
+
+        let body = UILabel()
+        body.text = pipBlocked
+            ? "iOS 不让 App 在后台随便读剪贴板。到 设置 → QuickPaste → 从其他 App 粘贴 → 选「允许」，之后在别的 App 复制就会一条条自动进列表。"
+            : "键盘收起后系统会把它挂起，只有主 App 的小窗能一直在后台抓。点下面第一个按钮打开 QuickPaste，进去会自动开启小窗。"
+        body.font = .systemFont(ofSize: 15, weight: .regular)
+        body.numberOfLines = 0
+        body.textColor = UIColor.rgb(70, 72, 78)
+        box.addArrangedSubview(body)
+
+        let openApp = bigSheetButton("打开 QuickPaste（自动开小窗）",
+                                     bg: QPColor.blue, fg: .white)
+        openApp.addAction(UIAction { [weak self] _ in
+            guard let self = self else { return }
+            if !self.openMainApp("pip/start") {
+                self.showToast("本系统禁止键盘跳转，请回主屏点 QuickPaste 图标")
+            }
+        }, for: .touchUpInside)
+        box.addArrangedSubview(openApp)
+
+        let openSys = bigSheetButton("打开本 App 的系统设置",
+                                     bg: UIColor.rgb(240, 241, 245),
+                                     fg: UIColor.rgb(17, 17, 17))
+        openSys.addAction(UIAction { [weak self] _ in
+            guard let self = self else { return }
+            if !self.openURLString(UIApplication.openSettingsURLString) {
+                self.showToast("请手动打开 设置 → QuickPaste")
+            }
+        }, for: .touchUpInside)
+        box.addArrangedSubview(openSys)
+
+        let tip = UILabel()
+        tip.text = "按钮没反应 = 系统不允许键盘跳转。回主屏幕点 QuickPaste 图标即可，进去会自动开启。"
+        tip.font = .systemFont(ofSize: 13)
+        tip.numberOfLines = 0
+        tip.textColor = UIColor.rgb(140, 142, 150)
+        box.addArrangedSubview(tip)
+
+        showSheet(title: "连续复制", body: box)
+    }
+
+    private func bigSheetButton(_ title: String, bg: UIColor, fg: UIColor) -> UIButton {
+        let b = UIButton(type: .system)
+        b.setTitle(title, for: .normal)
+        b.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
+        b.setTitleColor(fg, for: .normal)
+        b.backgroundColor = bg
+        b.layer.cornerRadius = 12
+        b.heightAnchor.constraint(equalToConstant: 50).isActive = true
+        return b
+    }
+
+    /// 键盘扩展里打开 URL：三层尝试，任意一层成功就行。
+    /// ① 官方扩展 API（部分系统版本对键盘也放行）
+    /// ② 沿响应链找 openURL:（iOS 13~15 常见的做法）
+    /// ③ 从 NSClassFromString 取 UIApplication.shared 再 perform
+    ///    （扩展里不能直接写 UIApplication.shared，编译器会拦；运行期取出来是允许的）
     @discardableResult
     private func openMainApp(_ path: String) -> Bool {
-        guard let url = URL(string: "quickpaste://" + path) else { return false }
+        openURLString("quickpaste://" + path)
+    }
+
+    @discardableResult
+    private func openURLString(_ string: String) -> Bool {
+        guard let url = URL(string: string) else { return false }
+        var opened = false
+        if let ctx = extensionContext {
+            ctx.open(url, completionHandler: nil)
+            opened = true
+        }
         let sel = NSSelectorFromString("openURL:")
         var responder: UIResponder? = self
         while let r = responder {
@@ -287,8 +392,16 @@ final class KeyboardViewController: UIInputViewController {
             }
             responder = r.next
         }
-        extensionContext?.open(url, completionHandler: nil)
-        return false
+        // 扩展里不能直接写 UIApplication.shared（编译期被标成不可用），
+        // 但运行期从 NSClassFromString 取出来再 perform 是允许的。
+        let cls: AnyObject? = NSClassFromString("UIApplication")
+        let sharedSel = NSSelectorFromString("sharedApplication")
+        if let cls = cls, cls.responds(to: sharedSel),
+           let app = cls.perform(sharedSel)?.takeUnretainedValue() {
+            _ = app.perform(sel, with: url)
+            return true
+        }
+        return opened
     }
 
     @objc private func openContinuousSettings(_ g: UILongPressGestureRecognizer) {
@@ -298,102 +411,13 @@ final class KeyboardViewController: UIInputViewController {
 
     private func syncCaptureState() {
         refreshCopyButton()
-        refreshCopyOverlay()
     }
 
-    /// 键盘内浮层（HTML 原型 floatwin）：绿点 + 「连续复制中… 已收 N 条」+ 结束。
-    /// 它只是状态反馈，真正的抓取在 checkClipboard 里，收起键盘前一直有效。
+    /// 旧版这里有个深色浮层「连续复制中… 已收 N 条」+ 一行 10.5pt 的小字提示。
+    /// 用户反馈：字太小看不清、那行提示没意义、还挡住列表。
+    /// 现在状态只在两个地方说：第三个按钮的绿/橙小点，以及系统画中画小窗的大字。
     private func refreshCopyOverlay() {
-        guard prefs.continuous else {
-            copyOverlay?.isHidden = true
-            return
-        }
-        let v: UIView
-        if let exist = copyOverlay {
-            v = exist
-        } else {
-            v = buildCopyOverlay()
-            view.addSubview(v)
-            NSLayoutConstraint.activate([
-                v.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-                v.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -56),
-                v.widthAnchor.constraint(equalToConstant: 228)
-            ])
-            copyOverlay = v
-        }
-        v.isHidden = false
-        (v.viewWithTag(401) as? UILabel)?.text = "连续复制中… 已收 \(capturedCount) 条"
-        // 画中画没开时提示：键盘收起后就会停
-        (v.viewWithTag(402) as? UIButton)?.isHidden = pipRunning
-    }
-
-    private func buildCopyOverlay() -> UIView {
-        let v = UIView()
-        v.backgroundColor = UIColor.rgb(32, 33, 38)
-        v.layer.cornerRadius = 15
-        v.translatesAutoresizingMaskIntoConstraints = false
-
-        let row = UIStackView()
-        row.axis = .horizontal
-        row.spacing = 8
-        row.alignment = .center
-        row.isLayoutMarginsRelativeArrangement = true
-        row.layoutMargins = UIEdgeInsets(top: 5, left: 12, bottom: 5, right: 10)
-
-        let dot = UIView()
-        dot.backgroundColor = QPColor.green
-        dot.layer.cornerRadius = 4
-        dot.translatesAutoresizingMaskIntoConstraints = false
-        dot.widthAnchor.constraint(equalToConstant: 8).isActive = true
-        dot.heightAnchor.constraint(equalToConstant: 8).isActive = true
-        row.addArrangedSubview(dot)
-
-        let label = UILabel()
-        label.tag = 401
-        label.text = "连续复制中… 已收 0 条"
-        label.textColor = .white
-        label.font = .systemFont(ofSize: 12.5, weight: .medium)
-        row.addArrangedSubview(label)
-
-        let stop = UIButton(type: .system)
-        stop.setTitle("结束", for: .normal)
-        stop.setTitleColor(UIColor.rgb(120, 190, 255), for: .normal)
-        stop.titleLabel?.font = .systemFont(ofSize: 12.5, weight: .semibold)
-        stop.addAction(UIAction { [weak self] _ in
-            guard let self = self else { return }
-            self.prefs.continuous = false
-            self.refreshCopyButton()
-            self.refreshCopyOverlay()
-            self.showToast("已结束连续复制")
-        }, for: .touchUpInside)
-        row.addArrangedSubview(stop)
-
-        let hint = UIButton(type: .system)
-        hint.tag = 402
-        hint.setTitle("收起键盘后要继续抓 → 打开 App 开画中画", for: .normal)
-        hint.titleLabel?.font = .systemFont(ofSize: 10.5)
-        hint.setTitleColor(UIColor.rgb(255, 214, 102), for: .normal)
-        hint.contentHorizontalAlignment = .left
-        hint.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 5, right: 10)
-        hint.addAction(UIAction { [weak self] _ in
-            guard let self = self else { return }
-            if !self.openMainApp("pip/start") {
-                self.showToast("请打开 QuickPaste →「连续复制」→ 开启画中画")
-            }
-        }, for: .touchUpInside)
-
-        let stack = UIStackView(arrangedSubviews: [row, hint])
-        stack.axis = .vertical
-        stack.spacing = 0
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        v.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: v.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: v.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: v.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: v.bottomAnchor)
-        ])
-        return v
+        refreshCopyButton()
     }
 
     // MARK: - 同步
@@ -671,12 +695,36 @@ final class KeyboardViewController: UIInputViewController {
 
     private func refreshCopyButton() {
         guard let b = copyButton else { return }
-        // 蓝色 = 键盘自己的连续复制开关（立即生效，不再读画中画状态，
-        // 否则主 App 写共享通道时颜色会自己跳来跳去）
+        // 蓝色 = 用户开着连续复制（立即生效，不等 App 那边）
         let on = prefs.continuous
         b.backgroundColor = on ? QPColor.blue : QPColor.keyBg
         b.tintColor = on ? .white : UIColor.rgb(17, 17, 17)
         b.layer.cornerRadius = 10
+        b.clipsToBounds = false
+
+        // ★ 右上角小点，用来回答「到底在不在抓」：
+        //   绿 = 主 App 的画中画小窗活着，收起键盘也会继续抓
+        //   橙 = 只是键盘自己在抓（键盘一收就停）
+        //   不显示 = 没开连续复制
+        b.viewWithTag(903)?.removeFromSuperview()
+        guard on else { return }
+        let dot = UIView()
+        dot.tag = 903
+        dot.isUserInteractionEnabled = false
+        dot.backgroundColor = pipLive
+            ? (pipBlocked ? UIColor.rgb(255, 159, 10) : QPColor.green)
+            : UIColor.rgb(255, 159, 10)
+        dot.layer.cornerRadius = 4.5
+        dot.layer.borderWidth = 1.5
+        dot.layer.borderColor = QPColor.keyBg.cgColor
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        b.addSubview(dot)
+        NSLayoutConstraint.activate([
+            dot.widthAnchor.constraint(equalToConstant: 9),
+            dot.heightAnchor.constraint(equalToConstant: 9),
+            dot.trailingAnchor.constraint(equalTo: b.trailingAnchor, constant: 1),
+            dot.topAnchor.constraint(equalTo: b.topAnchor, constant: -1)
+        ])
     }
 
     private func refreshSymbols() {

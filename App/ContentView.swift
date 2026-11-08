@@ -12,6 +12,7 @@ import UIKit
 /// 才能联网，用它读一次剪贴板即可，零额外 entitlement。
 struct ContentView: View {
     @AppStorage("qp_server_url") private var savedURL: String = ""
+    @ObservedObject private var pip = PiPManager.shared
     @State private var draft = ""
     @State private var hint = ""
     @State private var testText = ""
@@ -21,6 +22,55 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             Form {
+                // ★ 放在最上面：从键盘「连续复制」按钮叫过来的用户，
+                //   一进来就能一键开，不用在几个页签里找。
+                Section {
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(pip.running
+                                  ? Color(red: 0.20, green: 0.78, blue: 0.35)
+                                  : Color(red: 0.78, green: 0.78, blue: 0.80))
+                            .frame(width: 12, height: 12)
+                        Text(pip.running ? "连续复制中" : "连续复制未开启")
+                            .font(.title3.weight(.semibold))
+                        Spacer()
+                        Text("\(pip.capturedCount) 条")
+                            .font(.title3.weight(.bold))
+                            .monospacedDigit()
+                            .foregroundColor(.secondary)
+                    }
+                    Button {
+                        if pip.running { pip.stop() } else { pip.start() }
+                    } label: {
+                        Label(pip.running ? "结束连续复制" : "开启连续复制（后台自动收录复制内容）",
+                              systemImage: pip.running ? "stop.circle.fill"
+                                                       : "dot.radiowaves.left.and.right")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(pip.running ? .red : .blue)
+
+                    if pip.blocked {
+                        Label("系统不让后台读剪贴板，请把「从其他 App 粘贴」改成允许",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote)
+                            .foregroundColor(.orange)
+                    }
+                    Button {
+                        PiPControlView.openAppSettings()
+                    } label: {
+                        Label("打开本 App 的系统设置（允许粘贴 / 画中画）", systemImage: "gearshape")
+                    }
+                    .font(.subheadline)
+                } header: {
+                    Text("连续复制")
+                } footer: {
+                    Text("iOS 要求 App 在后台读剪贴板必须获得允许：设置 → QuickPaste → "
+                         + "从其他 App 粘贴 → 允许。不设成允许的话，后台只能读到空内容。")
+                }
+
                 Section("这是什么") {
                     Text("QuickPaste 是一个真正的系统输入法，不是网页演示。\n"
                        + "在任何 App 的输入框切到「QuickPaste」键盘，就能直接看到并粘贴电脑上复制的文字、截图，"
@@ -86,10 +136,13 @@ struct ContentView: View {
                 }
 
                 Section("连续复制与签名") {
-                    Text("键盘工具条点「连续复制」会打开本页的系统画中画小窗："
-                       + "小窗出现即表示正在后台监控，切到任意 App 复制都会自动收录，"
-                       + "小窗可拖到屏幕边缘自动缩小贴边。不开启画中画时，"
-                       + "键盘可见期间连续复制多段内容也会实时进列表。")
+                    Text("键盘工具条第三个按钮（⧉）点一下会叫起本 App 并自动开启系统画中画小窗："
+                       + "小窗出现在屏幕上就代表正在后台监控，切到任意 App 复制都会收录，"
+                       + "小窗可拖到屏幕边缘缩成图标，点 ✕ 结束。键盘可见期间本来就会实时抓取，"
+                       + "不依赖画中画。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                    Text("小窗必须留着，App 被划掉就停止监听。")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                     Text("本 IPA 是未签名包，用手机端签名工具导入，同时重签主 App 与键盘扩展即可安装。"
