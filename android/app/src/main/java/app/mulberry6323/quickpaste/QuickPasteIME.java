@@ -1154,6 +1154,9 @@ public class QuickPasteIME extends InputMethodService {
         menuStack.addView(menuRow("⚙ 打开完整设置界面", new Runnable() {
             @Override public void run() { closeMenu(); openSettings(); }
         }));
+        menuStack.addView(menuRow("📱 打开主 App（启用引导 / 常用语）", new Runnable() {
+            @Override public void run() { closeMenu(); openMainApp(); }
+        }));
 
         menuStack.addView(menuRow("⟳ 立即同步（" + syncItems.size() + " 条）", new Runnable() {
             @Override
@@ -1186,7 +1189,7 @@ public class QuickPasteIME extends InputMethodService {
         menuStack.addView(menuRow("⚙ 打开同步设置（地址 / 配对码）", new Runnable() {
             @Override
             public void run() {
-                openSettings();
+                if (settings != null) settings.open("sync");
                 closeMenu();
             }
         }));
@@ -1546,7 +1549,8 @@ public class QuickPasteIME extends InputMethodService {
         }
     }
 
-    private void openSettings() {
+    /** 打开桌面主 App（启用引导 / 常用语编辑）。键盘内设置面板请用 openSettings()。 */
+    private void openMainApp() {
         try {
             Intent i = new Intent(this, MainActivity.class);
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);

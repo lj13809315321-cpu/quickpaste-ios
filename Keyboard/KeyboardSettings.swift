@@ -202,7 +202,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
     // MARK: - 设置首页
 
     private func renderRoot() {
-        let s = delegate?.settingsStatus() ?? ("未连接", 0, "", "")
+        let s = delegate?.settingsStatus() ?? (title: "未连接", count: 0, url: "", backend: "")
         body.addArrangedSubview(bigTitle("设置"))
         body.addArrangedSubview(promoCard())
 
@@ -440,7 +440,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
     // MARK: - 局域网同步设置
 
     private func renderSync() {
-        let s = delegate?.settingsStatus() ?? ("未连接", 0, "", "")
+        let s = delegate?.settingsStatus() ?? (title: "未连接", count: 0, url: "", backend: "")
         body.addArrangedSubview(groupTitle("连接状态"))
         body.addArrangedSubview(card([
             info("状态：\(s.title)　·　记录 \(s.count) 条"),
