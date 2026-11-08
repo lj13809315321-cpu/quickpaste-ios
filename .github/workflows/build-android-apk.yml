@@ -18,13 +18,21 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: 设置 Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: 安装 SDK 组件
+      # ubuntu-latest 镜像已预装完整 Android SDK（ANDROID_HOME），
+      # 不要再用第三方 setup-android：它在新版运行器上会去装已下架的旧 tools 包而失败。
+      - name: 确认并按需补装 SDK 组件
+        shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" >/dev/null
+          SDKROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "SDKROOT=$SDKROOT"
+          SDKMGR=$(find "$SDKROOT/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)
+          echo "sdkmanager=$SDKMGR"
+          if [ -n "$SDKMGR" ]; then
+            yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
+            "$SDKMGR" --install "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
+          fi
+          echo "platforms:";  ls "$SDKROOT/platforms"  || true
+          echo "build-tools:"; ls "$SDKROOT/build-tools" || true
 
       - name: 设置 Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
