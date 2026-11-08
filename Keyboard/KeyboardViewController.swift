@@ -37,6 +37,11 @@ final class KeyboardViewController: UIInputViewController {
     private let menuStack = UIStackView()
     private let imageOverlay = UIView()
     private let imageBig = UIImageView()
+    private var clearRowButton: UIButton?
+    private var imageCloseButton: UIButton?
+    /// v1.6 完整多页设置界面（设置首页 / 键盘设置 / 快捷符号 / 连续复制 /
+    /// 局域网同步 / 6 篇教程 / 历史 / 最近删除 / 引导 / 关于）
+    private let settings = KeyboardSettings()
 
     private var heightConstraint: NSLayoutConstraint!
     private var calcExpression = ""
@@ -70,6 +75,8 @@ final class KeyboardViewController: UIInputViewController {
         buildBottomBar()
         buildMenu()
         buildImageOverlay()
+        settings.delegate = self
+        settings.install(in: view)
 
         refreshHead()
         refreshTabBar()
@@ -83,8 +90,14 @@ final class KeyboardViewController: UIInputViewController {
         if prefs.adoptPasteboardURL() {
             showToast("已采用剪贴板里的电脑地址")
         }
-        if hasFullAccess {
-            _ = prefsAdoptClipboardText()
+        // 「历史保留时间」：每次呼出键盘执行一次过期清理
+        let pruned = prefs.pruneHistory()
+        if pruned > 0 && prefs.savedTip { showToast("已清理 \(pruned) 条过期记录") }
+        // 「连续复制」开关：控制呼出时是否自动收录系统剪贴板
+        if hasFullAccess && prefs.continuous {
+            if prefsAdoptClipboardText() && prefs.savedTip {
+                showToast("新内容已保存")
+            }
         }
         refreshHead()
         refreshTabBar()
@@ -242,6 +255,8 @@ final class KeyboardViewController: UIInputViewController {
         head.heightAnchor.constraint(equalToConstant: 60).isActive = true
         head.addGestureRecognizer(UITapGestureRecognizer(target: self,
                                                         action: #selector(headTapped)))
+        head.addGestureRecognizer(UILongPressGestureRecognizer(target: self,
+                                                              action: #selector(headLongPressed)))
 
         let dot = UIView()
         dot.tag = 301
@@ -291,6 +306,12 @@ final class KeyboardViewController: UIInputViewController {
 
     @objc private func headTapped() {
         pull(showConnecting: true)
+    }
+
+    /// 打开 v1.6 完整设置界面（长按状态头可直接进「局域网同步」页）
+    @objc private func headLongPressed(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began else { return }
+        settings.show(.sync)
     }
 
     private func refreshHead() {
@@ -384,6 +405,11 @@ final class KeyboardViewController: UIInputViewController {
         toolbar.addArrangedSubview(symScroll)
 
         let deleteKey = toolButton("✕")
+        // 原型 .kbTool.dark：76 宽、#2B2C31 黑底、白字
+        deleteKey.backgroundColor = UIColor.rgb(43, 44, 49)
+        deleteKey.setTitleColor(.white, for: .normal)
+        deleteKey.titleLabel?.font = .systemFont(ofSize: 18, weight: .medium)
+        deleteKey.widthAnchor.constraint(equalToConstant: 66).isActive = true
         deleteKey.addAction(UIAction { [weak self] _ in
             self?.textDocumentProxy.deleteBackward()
         }, for: .touchUpInside)
@@ -413,11 +439,22 @@ final class KeyboardViewController: UIInputViewController {
 
     private func refreshSymbols() {
         symStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        // 原型 .kbToolbar .spL/.spR：居左/居中/居右由两端弹性占位实现
+        let leadSpacer = UIView(), trailSpacer = UIView()
+        leadSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        trailSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        if prefs.align != "left" { symStack.addArrangedSubview(leadSpacer) }
+
         for symbol in prefs.symbols.prefix(prefs.symbolCount) {
             let b = UIButton(type: .system)
             b.setTitle(symbol, for: .normal)
-            b.titleLabel?.font = .systemFont(ofSize: 15)
+            // 原型 .kbSym：28×32、#D4D6DE、圆角 8、字号 20
+            b.titleLabel?.font = .systemFont(ofSize: 19, weight: .semibold)
+            b.setTitleColor(.black, for: .normal)
+            b.backgroundColor = QPColor.keyBg
+            b.layer.cornerRadius = 8
             b.widthAnchor.constraint(equalToConstant: 28).isActive = true
+            b.heightAnchor.constraint(equalToConstant: 32).isActive = true
             b.addAction(UIAction { [weak self] _ in
                 self?.textDocumentProxy.insertText(symbol)
             }, for: .touchUpInside)
@@ -425,9 +462,20 @@ final class KeyboardViewController: UIInputViewController {
         }
         let more = UIButton(type: .system)
         more.setTitle("⋯", for: .normal)
+        more.titleLabel?.font = .systemFont(ofSize: 15)
+        more.setTitleColor(.black, for: .normal)
+        more.backgroundColor = QPColor.keyBg
+        more.layer.cornerRadius = 8
         more.widthAnchor.constraint(equalToConstant: 26).isActive = true
-        more.addAction(UIAction { [weak self] _ in self?.openMenu() }, for: .touchUpInside)
+        more.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        // 「⋯」现在是完整设置界面的入口，不再只是扁平菜单
+        more.addAction(UIAction { [weak self] _ in self?.settings.show(.root) }, for: .touchUpInside)
         symStack.addArrangedSubview(more)
+
+        if prefs.align != "right" { symStack.addArrangedSubview(trailSpacer) }
+        if prefs.align == "center" {
+            leadSpacer.widthAnchor.constraint(equalTo: trailSpacer.widthAnchor).isActive = true
+        }
     }
 
     // MARK: - Tab
@@ -577,7 +625,11 @@ final class KeyboardViewController: UIInputViewController {
         let card = UIButton(type: .custom)
         card.backgroundColor = .white
         card.layer.cornerRadius = 12
-        card.clipsToBounds = true
+        // 原型 .kbCard 带浅阴影；卡片本身不裁切，否则阴影会被切掉
+        card.layer.shadowColor = UIColor.black.cgColor
+        card.layer.shadowOpacity = 0.06
+        card.layer.shadowOffset = CGSize(width: 0, height: 1)
+        card.layer.shadowRadius = 2
         card.heightAnchor.constraint(equalToConstant: 52).isActive = true
         card.tag = index
 
@@ -606,8 +658,9 @@ final class KeyboardViewController: UIInputViewController {
         } else {
             let label = UILabel()
             label.text = item.displayText
-            label.font = .systemFont(ofSize: 15)
-            label.textColor = .label
+            // 原型 .kbCard：字号 16、#111 正文
+            label.font = .systemFont(ofSize: 16)
+            label.textColor = UIColor.rgb(17, 17, 17)
             label.numberOfLines = 2
             row.addArrangedSubview(label)
         }
@@ -668,12 +721,15 @@ final class KeyboardViewController: UIInputViewController {
 
     private func buildClearRow() {
         let b = UIButton(type: .system)
-        b.setTitle("清空同步记录", for: .normal)
-        b.titleLabel?.font = .systemFont(ofSize: 13)
+        // 原型 .kbClear：蓝色 17px 居中，带垃圾桶图标
+        b.setTitle("清空剪贴板  🗑", for: .normal)
+        b.titleLabel?.font = .systemFont(ofSize: 16, weight: .medium)
         b.setTitleColor(QPColor.blue, for: .normal)
-        b.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        b.heightAnchor.constraint(equalToConstant: 40).isActive = true
         b.addAction(UIAction { [weak self] _ in self?.openClearConfirm() },
                     for: .touchUpInside)
+        clearRowButton = b
+        b.isHidden = !prefs.clearBtn
         root.addArrangedSubview(b)
     }
 
@@ -778,19 +834,23 @@ final class KeyboardViewController: UIInputViewController {
         bar.heightAnchor.constraint(equalToConstant: 46).isActive = true
 
         let calc = UIButton(type: .system)
-        calc.setTitle("ƒ(x)", for: .normal)
-        calc.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
+        // 原型 .kbKey.calc：f(x) 计算，宽度 68
+        calc.setTitle("f(x) 计算", for: .normal)
+        calc.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
+        calc.setTitleColor(.black, for: .normal)
         calc.backgroundColor = QPColor.keyBg
         calc.layer.cornerRadius = 9
-        calc.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        calc.widthAnchor.constraint(equalToConstant: 68).isActive = true
         calc.addAction(UIAction { [weak self] _ in self?.toggleCalcMode() },
                        for: .touchUpInside)
         bar.addArrangedSubview(calc)
 
         let space = UIButton(type: .system)
+        // 原型 .kbKey.space：白底、字号 17
         space.setTitle("空格", for: .normal)
-        space.titleLabel?.font = .systemFont(ofSize: 13)
-        space.backgroundColor = QPColor.keyBg
+        space.titleLabel?.font = .systemFont(ofSize: 17)
+        space.setTitleColor(.black, for: .normal)
+        space.backgroundColor = .white
         space.layer.cornerRadius = 9
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(handleSpace(_:)))
         hold.minimumPressDuration = 0.12
@@ -800,10 +860,11 @@ final class KeyboardViewController: UIInputViewController {
 
         let newline = UIButton(type: .system)
         newline.setTitle("换行", for: .normal)
-        newline.titleLabel?.font = .systemFont(ofSize: 13)
+        newline.titleLabel?.font = .systemFont(ofSize: 15)
+        newline.setTitleColor(.black, for: .normal)
         newline.backgroundColor = QPColor.keyBg
         newline.layer.cornerRadius = 9
-        newline.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        newline.widthAnchor.constraint(equalToConstant: 64).isActive = true
         newline.addAction(UIAction { [weak self] _ in
             self?.textDocumentProxy.insertText("\n")
         }, for: .touchUpInside)
@@ -811,11 +872,12 @@ final class KeyboardViewController: UIInputViewController {
 
         let send = UIButton(type: .system)
         send.setTitle("发送", for: .normal)
-        send.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
+        // 原型 .kbKey.send：蓝色、白字、宽 66、字重 600
+        send.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
         send.setTitleColor(.white, for: .normal)
         send.backgroundColor = QPColor.blue
         send.layer.cornerRadius = 9
-        send.widthAnchor.constraint(equalToConstant: 52).isActive = true
+        send.widthAnchor.constraint(equalToConstant: 66).isActive = true
         send.addAction(UIAction { [weak self] _ in self?.sendInputTextToPc() },
                        for: .touchUpInside)
         let longSend = UILongPressGestureRecognizer(target: self,
@@ -864,7 +926,11 @@ final class KeyboardViewController: UIInputViewController {
     private func openMenu() {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("键盘设置 · v1.6 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.6 同步"))
+        menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
+            self?.closeMenu()
+            self?.settings.show(.root)
+        })
         menuStack.addArrangedSubview(menuRow("⟳ 立即同步（\(items.count) 条）") { [weak self] in
             self?.pull(showConnecting: true); self?.closeMenu()
         })
@@ -974,7 +1040,14 @@ final class KeyboardViewController: UIInputViewController {
 
     @objc private func handleMenuPress(_ g: UILongPressGestureRecognizer) {
         guard g.state == .began else { return }
-        openMenu()
+        // 长按工具条按键：开启「点击直接切换」时直接切 Tab，否则打开设置界面
+        if prefs.directSwitch {
+            prefs.tab = prefs.tab == "clip" ? "phrase" : "clip"
+            refreshTabBar(); refreshList()
+            showToast(prefs.tab == "clip" ? "已切到剪贴板" : "已切到常用语")
+        } else {
+            settings.show(.root)
+        }
     }
 
     @objc private func cardLongPress(_ g: UILongPressGestureRecognizer) {
@@ -1053,6 +1126,8 @@ final class KeyboardViewController: UIInputViewController {
         close.layer.cornerRadius = 9
         close.addAction(UIAction { [weak self] _ in self?.closeImage() },
                         for: .touchUpInside)
+        imageCloseButton = close
+        close.isHidden = !prefs.floatClose
         bar.addArrangedSubview(close)
         imageOverlay.addSubview(bar)
         NSLayoutConstraint.activate([
@@ -1133,16 +1208,22 @@ final class KeyboardViewController: UIInputViewController {
         textDocumentProxy.insertText(last)
     }
 
+    /// 原型 .kbTool：38×38、#D4D6DE 灰底、圆角 10
     private func toolButton(_ title: String) -> UIButton {
         let b = UIButton(type: .system)
         b.setTitle(title, for: .normal)
-        b.titleLabel?.font = .systemFont(ofSize: 15)
-        b.widthAnchor.constraint(equalToConstant: 30).isActive = true
-        b.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        b.titleLabel?.font = .systemFont(ofSize: 17, weight: .medium)
+        b.setTitleColor(.black, for: .normal)
+        b.backgroundColor = QPColor.keyBg
+        b.layer.cornerRadius = 10
+        b.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        b.heightAnchor.constraint(equalToConstant: 38).isActive = true
         return b
     }
 
     private func showToast(_ text: String) {
+        // 「显示新内容已保存提示」只控制这类提示，错误/状态提示不受影响
+        if !prefs.savedTip && (text.contains("已保存") || text.contains("已收录")) { return }
         let l = UILabel()
         l.text = text
         l.font = .systemFont(ofSize: 12)
@@ -1163,11 +1244,79 @@ final class KeyboardViewController: UIInputViewController {
         UIView.animate(withDuration: 0.25, delay: 1.6, options: [],
                        animations: { l.alpha = 0 }) { _ in l.removeFromSuperview() }
     }
+
+    // MARK: - 设置界面联动：所有开关即时作用到键盘
+
+    private func applySettings() {
+        clearRowButton?.isHidden = !prefs.clearBtn
+        imageCloseButton?.isHidden = !prefs.floatClose
+        // refreshSymbols 内部会按 prefs.align 重排工具条符号区
+        refreshSymbols()
+        refreshTabBar()
+        refreshAutoButton()
+        refreshList()
+        refreshHead()
+        if heightConstraint.constant != prefs.height {
+            heightConstraint.constant = prefs.height
+        }
+        view.setNeedsLayout()
+        if prefs.syncAuto { startPolling() } else { stopPolling() }
+    }
+
+}
+
+// MARK: - KeyboardSettingsDelegate
+
+extension KeyboardViewController: KeyboardSettingsDelegate {
+
+    func settingsStatus() -> (title: String, count: Int, url: String, backend: String) {
+        let title: String
+        switch syncState {
+        case "online": title = "已连接"
+        case "connecting": title = "连接中"
+        case "error": title = "连接失败"
+        default: title = "未连接"
+        }
+        return (title, items.count, prefs.syncURL, backend)
+    }
+
+    func settingsDidChange() { applySettings() }
+
+    func settingsSyncNow() { pull(showConnecting: true) }
+
+    func settingsSendInputText() { sendInputTextToPc() }
+
+    func settingsSendPasteboardText() { sendPasteboardTextToPc() }
+
+    func settingsSendPasteboardImage() { sendPasteboardImageToPc() }
+
+    func settingsAdoptURL() -> Bool {
+        let changed = prefs.adoptPasteboardURL()
+        if changed { refreshHead() }
+        return changed
+    }
+
+    func settingsResetURL() {
+        prefs.syncURL = KeyboardPrefs.defaultURL
+        showToast("已重置为默认地址")
+        refreshHead()
+    }
+
+    func settingsClearAll() { deleteItem(id: nil) }
+
+    func settingsSwitchKeyboard() { advanceToNextInputMode() }
+
+    func settingsInsertText(_ text: String) {
+        textDocumentProxy.insertText(text)
+        showToast("已插入到输入框")
+    }
+
+    func settingsToast(_ text: String) { showToast(text) }
 }
 
 // MARK: - v1.6 原型配色
 
-private enum QPColor {
+enum QPColor {
     static let bg = UIColor.rgb(243, 244, 249)
     static let blue = UIColor.rgb(10, 124, 255)
     static let blueSoft = UIColor.rgb(232, 241, 255)

@@ -4,7 +4,7 @@ import SwiftUI
 struct QuickPasteApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            AppRootView()
         }
     }
 }

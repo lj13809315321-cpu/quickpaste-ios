@@ -102,6 +102,83 @@ public final class Prefs {
         sp.edit().putBoolean("qp.autoCollapse", v).apply();
     }
 
+    // ---- v1.6 设置详情（与 HTML 原型 state.toggles 一一对应） ----
+
+    public boolean floatClose() { return sp.getBoolean("qp.floatClose", true); }
+    public void setFloatClose(boolean v) { sp.edit().putBoolean("qp.floatClose", v).apply(); }
+
+    public boolean directSwitch() { return sp.getBoolean("qp.directSwitch", false); }
+    public void setDirectSwitch(boolean v) { sp.edit().putBoolean("qp.directSwitch", v).apply(); }
+
+    public boolean savedTip() { return sp.getBoolean("qp.savedTip", true); }
+    public void setSavedTip(boolean v) { sp.edit().putBoolean("qp.savedTip", v).apply(); }
+
+    public boolean clearBtn() { return sp.getBoolean("qp.clearBtn", true); }
+    public void setClearBtn(boolean v) { sp.edit().putBoolean("qp.clearBtn", v).apply(); }
+
+    public boolean continuous() { return sp.getBoolean("qp.continuous", false); }
+    public void setContinuous(boolean v) { sp.edit().putBoolean("qp.continuous", v).apply(); }
+
+    public boolean onlyUnsorted() { return sp.getBoolean("qp.onlyUnsorted", false); }
+    public void setOnlyUnsorted(boolean v) { sp.edit().putBoolean("qp.onlyUnsorted", v).apply(); }
+
+    public String align() { return sp.getString("qp.align", "left"); }
+    public void setAlign(String v) { sp.edit().putString("qp.align", v).apply(); }
+
+    public String storage() { return sp.getString("qp.storage", "剪贴板历史"); }
+    public void setStorage(String v) { sp.edit().putString("qp.storage", v).apply(); }
+
+    /** 历史保留天数，0 = 永久。 */
+    public int historyDays() { return clamp(sp.getInt("qp.historyDays", 30), 0, 365); }
+    public void setHistoryDays(int v) { sp.edit().putInt("qp.historyDays", clamp(v, 0, 365)).apply(); }
+
+    public void setSymbols(List<String> v) { setList("qp.symbols", v); }
+    public void setSymbolCount(int v) { sp.edit().putInt("qp.symbolCount", clamp(v, 2, 5)).apply(); }
+
+    public List<String> recentDeleted() { return getList("qp.recentDeleted"); }
+    public void setRecentDeleted(List<String> v) { setList("qp.recentDeleted", v); }
+
+    /** 按历史保留天数清理过期记录（置顶不受影响）。时间戳存于 qp.clipTimes。 */
+    public int pruneHistory() {
+        int days = historyDays();
+        if (days <= 0) return 0;
+        long cutoff = System.currentTimeMillis() - (long) days * 86400000L;
+        List<String> texts = new ArrayList<String>(clips());
+        List<String> rawTimes = getList("qp.clipTimes");
+        List<String> pin = pinned();
+        List<String> keepText = new ArrayList<String>();
+        List<String> keepTime = new ArrayList<String>();
+        for (int i = 0; i < texts.size(); i++) {
+            String t = texts.get(i);
+            long ts = System.currentTimeMillis();
+            if (i < rawTimes.size()) {
+                try { ts = Long.parseLong(rawTimes.get(i)); } catch (Exception ignored) { }
+            }
+            if (pin.contains(t) || ts >= cutoff) {
+                keepText.add(t);
+                keepTime.add(String.valueOf(ts));
+            }
+        }
+        int removed = texts.size() - keepText.size();
+        if (removed > 0) {
+            setList("qp.clips", keepText);
+            setList("qp.clipTimes", keepTime);
+        }
+        return removed;
+    }
+
+    public void restore(String text) {
+        List<String> del = new ArrayList<String>(recentDeleted());
+        del.remove(text);
+        setRecentDeleted(del);
+        List<String> history = new ArrayList<String>(clips());
+        List<String> times = new ArrayList<String>(getList("qp.clipTimes"));
+        history.add(0, text);
+        times.add(0, String.valueOf(System.currentTimeMillis()));
+        setList("qp.clips", history);
+        setList("qp.clipTimes", times);
+    }
+
     // ---- 内容 ----
 
     public String tab() {
@@ -155,13 +232,27 @@ public final class Prefs {
         String t = text.trim();
         if (t.isEmpty()) return false;
         List<String> history = new ArrayList<String>(clips());
+        List<String> times = new ArrayList<String>(getList("qp.clipTimes"));
+        String now = String.valueOf(System.currentTimeMillis());
+        // 补齐时间戳，保证与 clips 一一对应
+        while (times.size() < history.size()) times.add(now);
+        if (times.size() > history.size()) times = new ArrayList<String>(times.subList(0, history.size()));
+
         if (!history.isEmpty() && history.get(0).equals(t)) return false;
         for (int i = history.size() - 1; i >= 0; i--) {
-            if (history.get(i).equals(t)) history.remove(i);
+            if (history.get(i).equals(t)) {
+                history.remove(i);
+                if (i < times.size()) times.remove(i);
+            }
         }
         history.add(0, t);
-        if (history.size() > 30) history = new ArrayList<String>(history.subList(0, 30));
+        times.add(0, now);
+        if (history.size() > 100) {
+            history = new ArrayList<String>(history.subList(0, 100));
+            times = new ArrayList<String>(times.subList(0, 100));
+        }
         setList("qp.clips", history);
+        setList("qp.clipTimes", times);
         return true;
     }
 

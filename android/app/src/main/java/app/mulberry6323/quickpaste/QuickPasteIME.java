@@ -113,6 +113,9 @@ public class QuickPasteIME extends InputMethodService {
     private TextView calcResult;
     private FrameLayout menuOverlay;
     private LinearLayout menuStack;
+    /** v1.6 完整多页设置界面 */
+    private ImeSettings settings;
+    private View clearRowView;
     private FrameLayout imgOverlay;
     private ImageView imgBig;
 
@@ -156,6 +159,11 @@ public class QuickPasteIME extends InputMethodService {
         buildMenuOverlay();
         buildImageOverlay();
 
+        settings = new ImeSettings(this, hostCallbacks);
+        container.addView(settings.view(), new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+
         refreshHead();
         refreshTabBar();
         refreshSymbols();
@@ -167,6 +175,18 @@ public class QuickPasteIME extends InputMethodService {
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
         hostPackage = info.packageName == null ? "" : info.packageName;
+        // 「历史保留时间」：每次呼出键盘执行一次过期清理
+        int pruned = prefs.pruneHistory();
+        if (pruned > 0 && prefs.savedTip()) toast("已清理 " + pruned + " 条过期记录");
+        // 「连续复制」开关：呼出时自动收录系统剪贴板新文字
+        if (prefs.continuous() && cm != null) {
+            android.content.ClipData d = cm.getPrimaryClip();
+            if (d != null && d.getItemCount() > 0 && d.getItemAt(0).getText() != null) {
+                if (prefs.capture(d.getItemAt(0).getText().toString()) && prefs.savedTip()) {
+                    toast("新内容已保存");
+                }
+            }
+        }
         applyHeight();
         refreshHead();
         refreshTabBar();
@@ -501,7 +521,7 @@ public class QuickPasteIME extends InputMethodService {
         collapse.setOnLongClickListener(new View.OnLongClickListener() {
             @Override
             public boolean onLongClick(View v) {
-                openMenu();
+                openSettings();
                 return true;
             }
         });
@@ -530,7 +550,10 @@ public class QuickPasteIME extends InputMethodService {
         autoBtn.setOnLongClickListener(new View.OnLongClickListener() {
             @Override
             public boolean onLongClick(View v) {
-                openMenu();
+                if (prefs.directSwitch()) {
+                    prefs.setTab("clip".equals(prefs.tab()) ? "phrase" : "clip");
+                    refreshTabBar(); refreshList();
+                } else openSettings();
                 return true;
             }
         });
@@ -548,6 +571,17 @@ public class QuickPasteIME extends InputMethodService {
                 ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
         Button deleteBtn = toolBtn("✕");
+        // 原型 .kbTool.dark：黑底白字
+        GradientDrawable dgd = new GradientDrawable();
+        dgd.setColor(Color.parseColor("#2B2C31"));
+        dgd.setCornerRadius(dp(9));
+        deleteBtn.setBackground(dgd);
+        deleteBtn.setTextColor(Color.WHITE);
+        deleteBtn.setTextSize(18);
+        deleteBtn.setLongClickable(true);
+        deleteBtn.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override public boolean onLongClick(View v) { openSettings(); return true; }
+        });
         deleteBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -598,11 +632,10 @@ public class QuickPasteIME extends InputMethodService {
             symRow.addView(b);
         }
         Button more = toolBtn("⋯");
+        // 「⋯」是完整设置界面入口
         more.setOnClickListener(new View.OnClickListener() {
             @Override
-            public void onClick(View v) {
-                openMenu();
-            }
+            public void onClick(View v) { openSettings(); }
         });
         symRow.addView(more);
     }
@@ -878,18 +911,21 @@ public class QuickPasteIME extends InputMethodService {
 
     private void buildClearRow() {
         TextView clear = new TextView(this);
-        clear.setText("清空同步记录");
-        clear.setTextSize(13);
+        // 原型 .kbClear：蓝色 17px 居中，带垃圾桶图标
+        clear.setText("清空剪贴板  🗑");
+        clear.setTextSize(16);
         clear.setTextColor(BLUE);
         clear.setGravity(Gravity.CENTER);
-        clear.setPadding(0, dp(4), 0, dp(4));
+        clear.setPadding(0, dp(6), 0, dp(6));
         clear.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 openClearConfirm();
             }
         });
-        content.addView(clear, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(30)));
+        clearRowView = clear;
+        clear.setVisibility(prefs.clearBtn() ? View.VISIBLE : View.GONE);
+        content.addView(clear, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
     }
 
     // ------------------------------------------------------------ 计算器
@@ -994,14 +1030,15 @@ public class QuickPasteIME extends InputMethodService {
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setPadding(dp(8), dp(2), dp(8), dp(6));
 
-        Button calc = keyBtn("ƒ(x)");
+        Button calc = keyBtn("f(x) 计算");
+        calc.setTextSize(12);
         calc.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 toggleCalcMode();
             }
         });
-        bar.addView(calc, new LinearLayout.LayoutParams(dp(56),
+        bar.addView(calc, new LinearLayout.LayoutParams(dp(68),
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
         Button space = keyBtn("空格");
@@ -1042,13 +1079,14 @@ public class QuickPasteIME extends InputMethodService {
         bar.addView(space, spaceLp);
 
         Button newline = keyBtn("换行");
+        newline.setTextSize(15);
         newline.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 insert("\n");
             }
         });
-        bar.addView(newline, new LinearLayout.LayoutParams(dp(48),
+        bar.addView(newline, new LinearLayout.LayoutParams(dp(64),
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
         Button send = keyBtn("发送");
@@ -1112,7 +1150,10 @@ public class QuickPasteIME extends InputMethodService {
         if (menuOverlay == null) return;
         menuStack.removeAllViews();
         menuOverlay.setVisibility(View.VISIBLE);
-        menuStack.addView(menuTitle("键盘设置 · v1.6 同步"));
+        menuStack.addView(menuTitle("快捷操作 · v1.6 同步"));
+        menuStack.addView(menuRow("⚙ 打开完整设置界面", new Runnable() {
+            @Override public void run() { closeMenu(); openSettings(); }
+        }));
 
         menuStack.addView(menuRow("⟳ 立即同步（" + syncItems.size() + " 条）", new Runnable() {
             @Override
@@ -1544,17 +1585,19 @@ public class QuickPasteIME extends InputMethodService {
         return gd;
     }
 
+    /** 原型 .kbTool / .kbSym：#D4D6DE 灰底、圆角 10（符号为 8） */
     private Button toolBtn(String text) {
         Button b = new Button(this);
         b.setText(text);
         b.setAllCaps(false);
-        b.setTextSize(15);
+        b.setTextSize(17);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setTextColor(TEXT);
         b.setPadding(0, 0, 0, 0);
-        b.setBackgroundColor(Color.TRANSPARENT);
+        b.setBackground(roundBg(KEY_BG, 9));
         b.setMinWidth(dp(30));
         b.setMinimumWidth(dp(30));
-        b.setLayoutParams(new LinearLayout.LayoutParams(dp(32), dp(32)));
+        b.setLayoutParams(new LinearLayout.LayoutParams(dp(34), dp(34)));
         return b;
     }
 
@@ -1572,7 +1615,7 @@ public class QuickPasteIME extends InputMethodService {
         Button b = new Button(this);
         b.setText(text);
         b.setAllCaps(false);
-        b.setTextSize(14);
+        b.setTextSize(15);
         b.setTextColor(TEXT);
         b.setPadding(0, 0, 0, 0);
         b.setBackground(roundBg(KEY_BG, 9));
@@ -1580,6 +1623,69 @@ public class QuickPasteIME extends InputMethodService {
     }
 
     private void toast(String s) {
+        if (!prefs.savedTip() && (s.contains("已保存") || s.contains("已收录"))) return;
         Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
     }
+
+    // ------------------------------------------------------------ v1.6 设置界面
+
+    private void openSettings() {
+        if (settings != null) settings.open();
+    }
+
+    /** 设置变更后把所有开关即时作用到键盘 */
+    private void applySettings() {
+        if (clearRowView != null) {
+            clearRowView.setVisibility(prefs.clearBtn() ? View.VISIBLE : View.GONE);
+        }
+        applyHeight();
+        refreshHead();
+        refreshTabBar();
+        refreshSymbols();
+        refreshList();
+        if (prefs.syncAuto()) startPolling();
+        else stopPolling();
+    }
+
+    private final ImeSettings.Host hostCallbacks = new ImeSettings.Host() {
+        @Override public void onSettingsChanged() { applySettings(); }
+        @Override public void onSyncNow() { pull(true); }
+        @Override public void onSendInputText() { sendInputTextToPc(); }
+        @Override public void onSendClipboardText() { sendClipboardTextToPc(); }
+        @Override public void onSendClipboardImage() { sendClipboardImageToPc(); }
+        @Override public boolean onAdoptUrl() {
+            // 从系统剪贴板采用形如 http://…:8787 的地址
+            if (cm == null) return false;
+            android.content.ClipData d = cm.getPrimaryClip();
+            if (d == null || d.getItemCount() == 0) return false;
+            CharSequence cs = d.getItemAt(0).getText();
+            if (cs == null) return false;
+            String s = cs.toString().trim();
+            if (!s.startsWith("http://") && !s.startsWith("https://")) return false;
+            if (!s.contains(":8787") && !s.contains(":8")) return false;
+            prefs.setSyncUrl(s);
+            refreshHead();
+            return true;
+        }
+        @Override public void onResetUrl() {
+            prefs.setSyncUrl(Prefs.DEFAULT_URL);
+            toast("已重置为默认地址");
+            refreshHead();
+        }
+        @Override public void onClearAll() { deleteItem(null); }
+        @Override public void onSwitchKeyboard() { switchIme(); }
+        @Override public void onInsertText(String text) {
+            insert(text);
+            toast("已插入到输入框");
+        }
+        @Override public void onToast(String text) { toast(text); }
+        @Override public String statusTitle() {
+            if ("online".equals(syncState)) return "已连接";
+            if ("connecting".equals(syncState)) return "连接中";
+            if ("error".equals(syncState)) return "连接失败";
+            return "未连接";
+        }
+        @Override public int statusCount() { return syncItems.size(); }
+        @Override public String backend() { return backend == null ? "" : backend; }
+    };
 }
