@@ -1,0 +1,29 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'app.mulberry6323.quickpaste'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'app.mulberry6323.quickpaste'
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    // debug 构建使用 Android 自动生成的 debug keystore 签名，
+    // 产出的 APK 可直接安装到安卓手机，无需任何账号、证书或有效期限制。
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
