@@ -11,7 +11,7 @@ android {
         minSdk 24
         targetSdk 34
         versionCode 17
-        versionName '1.6-inputmethod'
+        versionName '1.7-inputmethod'
     }
 
     // debug 构建使用 Android 自动生成的 debug keystore 签名，
