@@ -1,185 +1,109 @@
 import SwiftUI
 import UIKit
-import WebKit
 
-/// QuickPaste 同步版（iOS）：全屏 WKWebView 打开电脑上的同步服务页面。
-/// 功能（文字 / 图片 / 缩略图 / 来源图标 / 发送图片）全部由电脑端 v1.6 同步页提供。
-/// App 只负责：记住电脑地址、允许 HTTP 局域网、首次引导填写地址。
-/// 前提：电脑端同步服务已启动，且 iPhone 与电脑在同一 WiFi。
+/// 主 App：v1.6 同步输入法的启用引导 + 电脑地址设置。
+///
+/// 注意：这里不是网页、不是演示页。真正的界面是系统键盘扩展
+/// QuickPasteKeyboard.appex（见 Keyboard/KeyboardViewController.swift）。
+/// 本 App 只做：填电脑地址、把地址放进剪贴板供键盘读取、引导启用键盘与完全访问。
+///
+/// 为什么用剪贴板传地址：键盘扩展与主 App 默认不共享 UserDefaults，
+/// 加 App Groups 会让爱思免费 7 天签名变复杂。键盘本来就需要「允许完全访问」
+/// 才能联网，用它读一次剪贴板即可，零 entitlement。
 struct ContentView: View {
-    @AppStorage("qp_server_url") private var serverURL: String = ""
-    @State private var showSetup = false
+    @AppStorage("qp_server_url") private var savedURL: String = ""
     @State private var draft = ""
-    @State private var reloadToken = 0
-    @State private var errorText = ""
+    @State private var hint = ""
+    @State private var testText = ""
+
+    private static let defaultURL = "http://192.168.1.2:8787"
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            WebView(urlString: serverURL, reloadToken: reloadToken) { msg in
-                errorText = msg
-            }
-            .ignoresSafeArea()
+        NavigationStack {
+            Form {
+                Section("这是什么") {
+                    Text("QuickPaste 是一个真正的系统输入法，不是网页演示。\n"
+                       + "在任何 App 的输入框切到「QuickPaste」键盘，就能直接看到并粘贴电脑上复制的文字、截图，"
+                       + "也能把手机上输入的内容发回电脑。")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
 
-            HStack(spacing: 10) {
-                Button { reloadToken += 1 } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(width: 42, height: 42)
-                        .background(Color.blue.opacity(0.9))
-                        .clipShape(Circle())
+                Section("1. 连接电脑") {
+                    TextField("http://192.168.1.2:8787", text: $draft)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
+                    Button {
+                        let u = normalize(draft)
+                        savedURL = u
+                        draft = u
+                        UIPasteboard.general.string = u
+                        hint = "已保存并复制地址。切到 QuickPaste 键盘时会自动读取；也可在键盘里长按 ⧉ →「用剪贴板里的电脑地址」。"
+                    } label: {
+                        Label("保存并复制地址到剪贴板", systemImage: "doc.on.clipboard")
+                    }
+                    if !savedURL.isEmpty {
+                        Text("当前地址：\(savedURL)")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                    if !hint.isEmpty {
+                        Text(hint).font(.footnote).foregroundColor(.blue)
+                    }
+                    Text("电脑上要启动 QuickPaste 同步服务，且 iPhone 与电脑连同一 WiFi。"
+                       + "IP 由路由器分配，重连 WiFi 后可能变化；在电脑上打开 "
+                       + "http://127.0.0.1:8787/api/status 可看 lanIPs。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
                 }
-                Button {
-                    draft = serverURL
-                    showSetup = true
-                } label: {
-                    Image(systemName: "gearshape.fill")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(width: 42, height: 42)
-                        .background(Color.blue.opacity(0.9))
-                        .clipShape(Circle())
+
+                Section("2. 启用键盘") {
+                    Text("设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → QuickPaste\n"
+                       + "然后点开 QuickPaste → 打开「允许完全访问」")
+                        .font(.subheadline)
+                    Button {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        Label("打开本 App 的系统设置", systemImage: "gear")
+                    }
+                    Text("「允许完全访问」是键盘联网访问局域网的前提；不开的话键盘会显示提示且无法同步。"
+                       + "数据只在同一 WiFi 内传输，不经过公网。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+
+                Section("3. 立即测试") {
+                    TextField("在这里输入，切到 QuickPaste 键盘试功能", text: $testText)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
+                    Text("键盘里：点卡片直接上屏；💻 = 电脑复制，📱 = 手机发的；图片显示缩略图，点开可复制；"
+                       + "底行蓝色「发送」把输入框文字发回电脑；长按 ⧉ 打开菜单可发剪贴板文字/图片。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+
+                Section("关于签名") {
+                    Text("本 IPA 内含键盘扩展（.appex），用爱思助手免费 Apple ID 7 天签名安装。"
+                       + "7 天到期需重签。密码框等敏感输入系统会强制使用原生键盘，属系统限制。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
                 }
             }
-            .padding(16)
+            .navigationTitle("QuickPaste 同步键盘")
         }
         .onAppear {
-            if serverURL.isEmpty {
-                draft = "http://192.168.1.2:8787"
-                showSetup = true
-            }
-        }
-        .sheet(isPresented: $showSetup) {
-            SetupView(draft: $draft, errorText: errorText) { url in
-                serverURL = normalize(url)
-                reloadToken += 1
-                showSetup = false
-            }
+            draft = savedURL.isEmpty ? Self.defaultURL : savedURL
         }
     }
 
     private func normalize(_ raw: String) -> String {
         var u = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if u.isEmpty { u = "http://192.168.1.2:8787" }
+        if u.isEmpty { u = Self.defaultURL }
         if !u.hasPrefix("http://") && !u.hasPrefix("https://") { u = "http://" + u }
         while u.hasSuffix("/") { u.removeLast() }
         return u
-    }
-}
-
-struct SetupView: View {
-    @Binding var draft: String
-    let errorText: String
-    let onConnect: (String) -> Void
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("电脑地址") {
-                    TextField("http://192.168.1.2:8787", text: $draft)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled(true)
-                }
-                Section("使用前请确认") {
-                    Text("1. 电脑上已启动 QuickPaste 同步服务\n"
-                       + "2. iPhone 与电脑连的是同一个 WiFi\n"
-                       + "3. 端口默认 8787（若电脑端改过端口，请一并填写）")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Text("保存后会自动记住，之后打开 App 直接连接。\n"
-                       + "文字、截图、图片、来源小图标都能双向同步。")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                if !errorText.isEmpty {
-                    Section("上次连接提示") {
-                        Text(errorText).font(.footnote).foregroundColor(.orange)
-                    }
-                }
-            }
-            .navigationTitle("连接电脑")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("连接") { onConnect(draft) }
-                }
-            }
-        }
-    }
-}
-
-struct WebView: UIViewRepresentable {
-    let urlString: String
-    let reloadToken: Int
-    let onError: (String) -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator(onError: onError) }
-
-    func makeUIView(context: Context) -> WKWebView {
-        let cfg = WKWebViewConfiguration()
-        cfg.allowsInlineMediaPlayback = true
-        cfg.dataDetectorTypes = []
-        let wv = WKWebView(frame: .zero, configuration: cfg)
-        wv.navigationDelegate = context.coordinator
-        wv.uiDelegate = context.coordinator
-        wv.allowsBackForwardNavigationGestures = true
-        wv.scrollView.contentInsetAdjustmentBehavior = .always
-        wv.isOpaque = false
-        wv.backgroundColor = .systemBackground
-        return wv
-    }
-
-    func updateUIView(_ wv: WKWebView, context: Context) {
-        let key = urlString + "#" + String(reloadToken)
-        guard !urlString.isEmpty, context.coordinator.lastKey != key,
-              let url = URL(string: urlString + "/") else { return }
-        context.coordinator.lastKey = key
-        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 15)
-        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-        wv.load(req)
-    }
-
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
-        var lastKey = ""
-        let onError: (String) -> Void
-        init(onError: @escaping (String) -> Void) { self.onError = onError }
-
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            onError("连不上电脑：" + error.localizedDescription
-                    + "。请确认电脑服务已启动、同一 WiFi，右下角齿轮可改地址。")
-        }
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            onError("加载失败：" + error.localizedDescription)
-        }
-
-        func webView(_ webView: WKWebView,
-                     runJavaScriptAlertPanelWithMessage message: String,
-                     initiatedByFrame frame: WKFrameInfo,
-                     completionHandler: @escaping () -> Void) {
-            let ac = UIAlertController(title: "QuickPaste", message: message, preferredStyle: .alert)
-            ac.addAction(UIAlertAction(title: "好", style: .default) { _ in completionHandler() })
-            present(ac)
-        }
-        func webView(_ webView: WKWebView,
-                     runJavaScriptConfirmPanelWithMessage message: String,
-                     initiatedByFrame frame: WKFrameInfo,
-                     completionHandler: @escaping (Bool) -> Void) {
-            let ac = UIAlertController(title: "QuickPaste", message: message, preferredStyle: .alert)
-            ac.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in completionHandler(false) })
-            ac.addAction(UIAlertAction(title: "好", style: .default) { _ in completionHandler(true) })
-            present(ac)
-        }
-
-        private func present(_ ac: UIAlertController) {
-            guard let scene = UIApplication.shared.connectedScenes
-                    .compactMap({ $0 as? UIWindowScene })
-                    .first(where: { $0.activationState == .foregroundActive }),
-                  let root = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController else {
-                return
-            }
-            var top = root
-            while let p = top.presentedViewController { top = p }
-            top.present(ac, animated: true)
-        }
     }
 }

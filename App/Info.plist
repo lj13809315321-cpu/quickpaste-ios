@@ -24,7 +24,6 @@
     <true/>
     <key>MinimumOSVersion</key>
     <string>16.0</string>
-    <!-- 允许 WKWebView 打开电脑端 http:// 局域网页面（iOS 默认禁明文 HTTP） -->
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>
@@ -32,13 +31,10 @@
         <key>NSAllowsLocalNetworking</key>
         <true/>
     </dict>
-    <!-- iOS 14+ 访问本地网络会弹权限框，缺此描述会被系统静默拒绝 -->
     <key>NSLocalNetworkUsageDescription</key>
     <string>QuickPaste 需要访问局域网，以连接同一 WiFi 下电脑上的剪贴板同步服务。</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>用于选择要同步到电脑的图片。</string>
-    <key>NSCameraUsageDescription</key>
-    <string>用于拍摄要同步到电脑的图片。</string>
     <key>UILaunchScreen</key>
     <dict/>
     <key>UIRequiredDeviceCapabilities</key>

@@ -1,0 +1,235 @@
+# QuickPaste v1.6 真·同步输入法：一次编译产出「安卓 APK + iOS IPA」。
+#
+# 与之前的 WebView 壳完全不同：
+#   安卓 = InputMethodService（BIND_INPUT_METHOD / android.view.im）
+#   iOS  = Keyboard Extension（.appex / com.apple.keyboard-service）
+# 两端都是原生键盘 UI，界面 1:1 对齐 quickpaste-ios-prototype.html，
+# 数据源是电脑端 sync/server.js 的局域网同步服务。
+#
+# 1) push 自动触发，不需要 token / 手动点 Run。
+# 2) 产物由 publish job 提交回仓库 out/，本机 git pull 即可取回。
+# 3) 产物只做 ad-hoc 预签名；iOS 用爱思 Apple ID 7 天签名重签。
+
+name: 编译同步输入法 (APK + IPA)
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'out/**'
+      - '*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 设置 Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: 生成 Gradle Wrapper
+        working-directory: android
+        run: gradle wrapper --gradle-version 8.7 --distribution-type bin
+
+      - name: 编译 debug APK（自带 debug 签名，可直接安装）
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: 校验产物确实是"输入法"，不是 WebView 壳
+        run: |
+          set -euo pipefail
+          SRC=android/app/build/outputs/apk/debug/app-debug.apk
+          ls -lh "$SRC"
+          python3 - <<'PY'
+          import zipfile
+          p = 'android/app/build/outputs/apk/debug/app-debug.apk'
+          z = zipfile.ZipFile(p)
+          names = z.namelist()
+          assert 'AndroidManifest.xml' in names, '缺 AndroidManifest.xml'
+          axml = z.read('AndroidManifest.xml')
+          # AXML 字符串池可能用 UTF-8 或 UTF-16LE，两种都查
+          def has(s):
+              return (s.encode() in axml) or (s.encode('utf-16le') in axml)
+          assert has('QuickPasteIME'), '缺 IME service：QuickPasteIME'
+          assert has('BIND_INPUT_METHOD'), '缺 BIND_INPUT_METHOD 权限'
+          assert has('android.view.im'), '缺 android.view.im 元数据'
+          dex = b''.join(z.read(n) for n in names if n.endswith('.dex'))
+          for key in (b'SyncClient', b'/api/items', b'/api/image', b'commitText', b'QuickPasteIME'):
+              assert key in dex, 'dex 缺关键字符串: %r' % key
+          assert b'Landroid/webkit/WebView;' not in dex, '产物里仍有 WebView 壳'
+          print('[OK] AndroidManifest 声明了真 IME，dex 含同步客户端，且无 WebView')
+          PY
+          mkdir -p dist
+          cp "$SRC" dist/QuickPaste-Sync-Android.apk
+          ls -lh dist/QuickPaste-Sync-Android.apk
+
+      - name: 上传 APK 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: qp-apk
+          path: dist/QuickPaste-Sync-Android.apk
+          if-no-files-found: error
+
+  ipa:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 环境诊断
+        run: |
+          xcodebuild -version
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer || true
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 生成 Xcode 工程（主 App + 键盘扩展 双 target）
+        run: xcodegen generate
+
+      - name: 列出工程方案
+        run: xcodebuild -list -project QuickPaste.xcodeproj
+
+      - name: 编译（build 不归档，避开 iOS 18.5 禁止 archive 阶段 ad-hoc 的限制）
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project QuickPaste.xcodeproj \
+            -scheme QuickPaste \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            GENERATE_INFOPLIST_FILE=NO \
+            clean build 2>&1 | tee build.log
+
+      - name: 修正两个 Info.plist（BundleID / NSExtension / ATS）
+        run: |
+          set -euo pipefail
+          python3 scripts/fix_info_plists.py
+          APP="$PWD/build/Build/Products/Release-iphoneos/QuickPaste.app"
+          echo "=== 主 app ==="
+          plutil -p "$APP/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundlePackageType|NSAppTransportSecurity|NSLocalNetwork' || true
+          echo "=== 键盘扩展 ==="
+          plutil -p "$APP/PlugIns/QuickPasteKeyboard.appex/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundlePackageType|NSExtension|NSAppTransportSecurity' || true
+
+      - name: ad-hoc 预签名（先扩展，后主 app）
+        run: |
+          set -euo pipefail
+          APP="$PWD/build/Build/Products/Release-iphoneos/QuickPaste.app"
+          EXT="$APP/PlugIns/QuickPasteKeyboard.appex"
+          codesign --force --timestamp=none -s - "$EXT"
+          codesign --force --timestamp=none -s - "$APP"
+          codesign -vvv "$APP"
+          ls -la "$APP/PlugIns"
+
+      - name: 打包并校验 IPA 内真的有键盘扩展
+        run: |
+          set -euo pipefail
+          APP="$PWD/build/Build/Products/Release-iphoneos/QuickPaste.app"
+          mkdir -p dist
+          rm -rf Payload dist/QuickPaste-Sync-iOS.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qr dist/QuickPaste-Sync-iOS.ipa Payload
+          echo "=== IPA 内容（关键条目）==="
+          unzip -l dist/QuickPaste-Sync-iOS.ipa | grep -E 'Info.plist|QuickPasteKeyboard|PkgInfo|QuickPaste$' | head -20
+          python3 - <<'PY'
+          import plistlib, zipfile
+          z = zipfile.ZipFile('dist/QuickPaste-Sync-iOS.ipa')
+          names = z.namelist()
+          app_plist = 'Payload/QuickPaste.app/Info.plist'
+          ext_plist = 'Payload/QuickPaste.app/PlugIns/QuickPasteKeyboard.appex/Info.plist'
+          ext_bin   = 'Payload/QuickPaste.app/PlugIns/QuickPasteKeyboard.appex/QuickPasteKeyboard'
+          for p in (app_plist, ext_plist, ext_bin):
+              assert p in names, 'IPA 缺文件: ' + p
+          a = plistlib.loads(z.read(app_plist))
+          e = plistlib.loads(z.read(ext_plist))
+          assert a.get('CFBundleIdentifier') == 'app.mulberry6323.twilight7904'
+          assert a.get('CFBundlePackageType') == 'APPL'
+          assert e.get('CFBundleIdentifier') == 'app.mulberry6323.twilight7904.keyboard'
+          assert e.get('CFBundlePackageType') == 'XPC!'
+          ns = e.get('NSExtension') or {}
+          attrs = ns.get('NSExtensionAttributes') or {}
+          assert ns.get('NSExtensionPointIdentifier') == 'com.apple.keyboard-service', ns
+          assert attrs.get('RequestsOpenAccess') is True, '键盘扩展缺 RequestsOpenAccess'
+          assert (e.get('NSAppTransportSecurity') or {}).get('NSAllowsArbitraryLoads') is True
+          macho = z.read(ext_bin)[:4]
+          assert macho == b'\xcf\xfa\xed\xfe', '键盘扩展不是 arm64 Mach-O'
+          appbin = z.read('Payload/QuickPaste.app/QuickPaste')[:4]
+          assert appbin == b'\xcf\xfa\xed\xfe', '主程序不是 arm64 Mach-O'
+          print('[OK] 主 App + 键盘扩展(.appex) 均在 IPA 内')
+          print('[OK] 扩展点 =', ns.get('NSExtensionPointIdentifier'))
+          print('[OK] 完全访问 =', attrs.get('RequestsOpenAccess'))
+          print('[OK] 扩展 ATS =', e.get('NSAppTransportSecurity'))
+          PY
+
+      - name: 上传 IPA 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: qp-ipa
+          path: dist/QuickPaste-Sync-iOS.ipa
+          if-no-files-found: error
+
+      - name: 上传构建日志（失败时排查）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-log
+          path: build.log
+          if-no-files-found: warn
+
+  publish:
+    needs: [apk, ipa]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: 下载两个产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: qp-*
+          path: out
+          merge-multiple: true
+
+      - name: 校验产物并提交回仓库
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          echo "=== out/ 内容 ==="
+          ls -lh out/
+          APK=out/QuickPaste-Sync-Android.apk
+          IPA=out/QuickPaste-Sync-iOS.ipa
+          [ -f "$APK" ] || { echo "::error::缺 APK"; exit 1; }
+          [ -f "$IPA" ] || { echo "::error::缺 IPA"; exit 1; }
+          {
+            echo "QuickPaste v1.6 同步输入法 手机安装包"
+            echo "形态：安卓 IME / iOS 键盘扩展（原生键盘，非 WebView 壳）"
+            echo "构建时间 (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+            echo "commit: ${GITHUB_SHA}"
+            echo "APK: $(stat -c%s "$APK") bytes"
+            echo "IPA: $(stat -c%s "$IPA") bytes"
+          } > out/BUILD_INFO.txt
+          git config user.name "quickpaste-bot"
+          git config user.email "quickpaste-bot@users.noreply.github.com"
+          git add -f out/QuickPaste-Sync-Android.apk out/QuickPaste-Sync-iOS.ipa out/BUILD_INFO.txt
+          git commit -m "chore: 自动回传同步输入法 APK + IPA [skip ci]" || echo "无变更，跳过提交"
+          git pull --rebase origin main || true
+          git push origin HEAD:main

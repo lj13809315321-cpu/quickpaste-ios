@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>zh_CN</string>
+    <key>CFBundleDisplayName</key>
+    <string>QuickPaste</string>
+    <key>CFBundleExecutable</key>
+    <string>QuickPasteKeyboard</string>
+    <key>CFBundleIdentifier</key>
+    <string>app.mulberry6323.twilight7904.keyboard</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>QuickPaste</string>
+    <key>CFBundlePackageType</key>
+    <string>XPC!</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.6</string>
+    <key>CFBundleVersion</key>
+    <string>16</string>
+    <key>MinimumOSVersion</key>
+    <string>16.0</string>
+    <!-- 键盘扩展内 URLSession 访问 http://电脑IP:8787 必须允许明文 HTTP -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>QuickPaste 键盘需要访问局域网，以连接同一 WiFi 下电脑上的剪贴板同步服务。</string>
+    <key>NSExtension</key>
+    <dict>
+        <key>NSExtensionAttributes</key>
+        <dict>
+            <key>IsASCIICapable</key>
+            <false/>
+            <key>PrefersRightToLeft</key>
+            <false/>
+            <key>PrimaryLanguage</key>
+            <string>zh-Hans</string>
+            <!-- 键盘扩展默认无网络；必须声明并在系统设置里由用户开启 -->
+            <key>RequestsOpenAccess</key>
+            <true/>
+        </dict>
+        <key>NSExtensionPointIdentifier</key>
+        <string>com.apple.keyboard-service</string>
+        <key>NSExtensionPrincipalClass</key>
+        <string>$(PRODUCT_MODULE_NAME).KeyboardViewController</string>
+    </dict>
+    <key>UIRequiredDeviceCapabilities</key>
+    <array>
+        <string>arm64</string>
+    </array>
+</dict>
+</plist>

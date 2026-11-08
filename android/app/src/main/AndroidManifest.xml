@@ -4,6 +4,7 @@
     <!-- 局域网 HTTP 同步需要联网权限；Android 9+ 默认禁明文，需显式开启 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
         android:allowBackup="true"
@@ -22,6 +23,27 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 真正的系统输入法：BIND_INPUT_METHOD + android.view.im 元数据 -->
+        <service
+            android:name=".QuickPasteIME"
+            android:exported="true"
+            android:label="@string/ime_name"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/method" />
+        </service>
+
+        <!-- 暴露一张图片给支持 commitContent 的输入框（微信/Telegram 等） -->
+        <provider
+            android:name=".QpImageProvider"
+            android:authorities="${applicationId}.images"
+            android:exported="true"
+            android:grantUriPermissions="true" />
     </application>
 
 </manifest>

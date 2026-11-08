@@ -13,3 +13,5 @@ xcuserdata/
 Thumbs.db
 .vscode/
 .idea/
+__pycache__/
+*.pyc

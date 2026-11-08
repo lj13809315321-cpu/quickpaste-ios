@@ -1,5 +1,6 @@
-# QuickPaste 同步版（iOS）：单 App + 全屏 WKWebView，打开电脑端同步服务页面。
-# 没有键盘扩展 / App Groups / 特殊 entitlement —— 爱思 7 天签名最容易过。
+# QuickPaste v1.6 真·同步输入法（iOS）
+# 双 target：主 App（引导/地址设置）+ 键盘扩展（真正的系统键盘 UI）。
+# 刻意不加 App Groups / 特殊 entitlement —— 爱思免费 7 天签名最容易过。
 # 用法：macOS 上 `xcodegen generate` 生成 QuickPaste.xcodeproj
 
 name: QuickPaste
@@ -13,8 +14,7 @@ settings:
     SWIFT_VERSION: "5.9"
     TARGETED_DEVICE_FAMILY: "1,2"
     # 关键：禁止 Xcode 自动生成 Info.plist，否则会覆盖仓库里的自定义 plist，
-    # 导致产物缺 CFBundleIdentifier / ATS 例外，爱思导入报「文件已损坏」、
-    # WKWebView 也打不开 http 局域网页面。
+    # 导致产物缺 CFBundleIdentifier / NSExtension / ATS 例外。
     GENERATE_INFOPLIST_FILE: NO
 
 targets:
@@ -28,7 +28,22 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.mulberry6323.twilight7904
-        INFOPLIST_FILE: App/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+    dependencies:
+      - target: QuickPasteKeyboard
+        embed: true
+
+  QuickPasteKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Keyboard
+    info:
+      path: Keyboard/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.mulberry6323.twilight7904.keyboard
+        PRODUCT_MODULE_NAME: QuickPasteKeyboard
         GENERATE_INFOPLIST_FILE: NO
 
 schemes:
@@ -36,5 +51,6 @@ schemes:
     build:
       targets:
         QuickPaste: all
+        QuickPasteKeyboard: all
     archive:
       config: Release

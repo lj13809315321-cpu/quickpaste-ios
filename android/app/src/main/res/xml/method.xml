@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="app.mulberry6323.quickpaste.MainActivity">
+    <subtype
+        android:label="@string/ime_name"
+        android:imeSubtypeLocale="zh_CN"
+        android:imeSubtypeMode="keyboard"
+        android:isAuxiliary="false"
+        android:overridesImplicitlyEnabledSubtype="true" />
+</input-method>
