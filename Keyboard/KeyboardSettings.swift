@@ -278,14 +278,14 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
 
         body.addArrangedSubview(groupTitle("键盘开关"))
         body.addArrangedSubview(card([
-            switchRow("悬浮窗关闭按钮", sub: "浮层右上角显示关闭按钮（iOS 无系统级悬浮窗，此项对应键盘内浮层）",
+            switchRow("浮层关闭按钮", sub: "键盘内图片预览等浮层右上角显示关闭按钮；系统画中画用自带的 ✕ 关闭",
                       isOn: prefs.floatClose) { [weak self] v in self?.prefs.floatClose = v },
             switchRow("点击直接切换", sub: "长按 ✕ 时直接切换剪贴板／常用语，不再弹出选择列表",
                       isOn: prefs.directSwitch) { [weak self] v in self?.prefs.directSwitch = v },
             switchRow("显示「新内容已保存」提示", isOn: prefs.savedTip) { [weak self] v in
                 self?.prefs.savedTip = v
             },
-            switchRow("显示清空按钮", isOn: prefs.clearBtn) { [weak self] v in
+            switchRow("显示清空按钮", sub: "放在剪贴板列表最下边，不单独占一行", isOn: prefs.clearBtn) { [weak self] v in
                 self?.prefs.clearBtn = v
                 self?.delegate?.settingsDidChange()
             },
@@ -293,7 +293,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
                       isOn: prefs.spaceCursor) { [weak self] v in self?.prefs.spaceCursor = v },
             switchRow("发送后自动收起键盘", sub: "默认关闭，可连续发送",
                       isOn: prefs.autoCollapse) { [weak self] v in self?.prefs.autoCollapse = v },
-            switchRow("连续复制（呼出时抓取剪贴板）", sub: "iOS 不允许后台常驻监控；开启后每次呼出键盘会把系统剪贴板新文字收进历史",
+            switchRow("键盘可见时自动抓取", sub: "键盘弹着的时候，连续复制第 2、3、N 段都会实时进列表，无需收起再弹出",
                       isOn: prefs.continuous) { [weak self] v in self?.prefs.continuous = v }
         ]))
 
@@ -404,7 +404,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
     // MARK: - 连续复制设置
 
     private func renderContinuous() {
-        body.addArrangedSubview(foot("连续复制会在后台监控剪贴板，每次复制新内容时自动保存到你选择的存储位置。"))
+        body.addArrangedSubview(foot("连续复制分两种：键盘弹着时自动实时抓取；以及主 App 的系统画中画（PiP），开启后切到任意 App 复制都会被后台收录。"))
 
         body.addArrangedSubview(groupTitle("存储位置"))
         body.addArrangedSubview(card([
@@ -413,24 +413,25 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
                 self?.prefs.storage = i == 0 ? "剪贴板历史" : "常用语"
                 self?.render()
             },
-            switchRow("启用连续复制（呼出时抓取）", sub: "iOS 键盘扩展不能后台常驻；此开关控制每次呼出键盘时是否自动把系统剪贴板新文字收入历史",
+            switchRow("键盘可见时自动抓取", sub: "键盘弹着时每 0.5 秒检查一次系统剪贴板，连续复制多段无需收起再弹出",
                       isOn: prefs.continuous) { [weak self] v in self?.prefs.continuous = v }
         ]))
 
-        body.addArrangedSubview(groupTitle("如何开启"))
+        body.addArrangedSubview(groupTitle("系统画中画（跨 App 连续复制）"))
         body.addArrangedSubview(card([
-            numberedRow(1, "在任意 App 中切换到 QuickPaste 键盘"),
-            numberedRow(2, "点工具条右二的方块按钮 ⧉，变蓝即开启自动同步"),
-            numberedRow(3, "切回其他 App 继续复制，回到键盘即可看到记录")
+            numberedRow(1, "点键盘工具条的「连续复制」按钮，跳到 QuickPaste 主 App"),
+            numberedRow(2, "在主 App「连续复制」页点「开启连续复制（画中画）」"),
+            numberedRow(3, "出现系统 PiP 小窗 = 正在后台监控，切到任何 App 继续复制"),
+            numberedRow(4, "小窗可拖到屏幕边缘自动缩小贴边；点小窗上的 ✕ 结束")
         ]))
-        body.addArrangedSubview(foot("需为 QuickPaste 键盘开启「允许完全访问」。"))
+        body.addArrangedSubview(foot("需为 QuickPaste 键盘开启「允许完全访问」，并允许读取剪贴板。"))
 
         body.addArrangedSubview(groupTitle("补充说明"))
         body.addArrangedSubview(card([
             qa("相同内容会重复保存吗？", "不会。相同文字会去重处理，不会不断新增相同记录。"),
-            qa("为什么有的内容没保存？", "iOS 只允许键盘在「呼出期间」读取剪贴板；系统粘贴授权、后台限制和复制速度都可能影响保存，批量收集后请检查结果。"),
+            qa("为什么有的内容没保存？", "系统粘贴授权弹窗要点「允许」后才会写入；画中画结束、主 App 被系统回收后不再后台收录，但回到键盘会自动补读。"),
             qa("多久会清理一次？", "按设置里的「历史保留时间」执行，置顶的记录不会被自动清理。"),
-            qa("能像悬浮窗那样一直监控吗？", "不能。iOS 不允许第三方键盘显示系统级悬浮窗或后台常驻服务，这是系统限制，不是本键盘没做。")
+            qa("能像悬浮窗那样一直监控吗？", "能。打开主 App 的「连续复制」页开启系统画中画（PiP），小窗由 iOS 渲染，自带 ✕、可拖到屏幕边缘缩小贴边。键盘扩展本身不能在别处常驻，所以这一步必须由主 App 启动。")
         ]))
         body.addArrangedSubview(card([
             actionRow("在键盘里试一下 →") { [weak self] in self?.close() }
@@ -1095,7 +1096,7 @@ private enum Tutorial {
             ("发送后自动收起键盘", "默认关闭，可连续发送；开启后，点击「发送」会收起键盘。「输入」计算结果或分词不会收起。")
         ]),
         "history": Item(title: "剪贴板历史", summary: "复制文字后，打开 QuickPaste；点记录即可复用。", sections: [
-            ("保存文字", "在其他 App 中复制文字后，打开 QuickPaste 或切换到 QuickPaste 键盘查看。开启「连续复制」后，每次呼出键盘会把系统剪贴板里的新文字收录到本机历史。图片和文件不属于文字历史。"),
+            ("保存文字", "在其他 App 中复制文字后，切换到 QuickPaste 键盘即可看到。键盘弹着时会实时抓取多段复制；开启主 App 的系统画中画后，切到任意 App 复制也会被后台收录。图片和文件不属于文字历史。"),
             ("搜索与复制", "在键盘的「剪贴板」页上下滚动查找记录。点一条记录直接插入当前输入框；长按记录可复制到系统剪贴板、发送到电脑、放大图片或删除。"),
             ("整理历史", "置顶内容优先显示，也不受历史保留天数的自动清理影响。删除的记录可在设置 →「最近删除」中恢复。"),
             ("显示范围", "本机历史最多保存 100 条；键盘同步列表一次最多显示 30 条电脑记录，可上下滚动。"),
@@ -1113,11 +1114,11 @@ private enum Tutorial {
             ("插入结果", "点结果框右侧的蓝色上箭头，把拼好的句子插入当前输入框。使用「输入」插入结果时不会自动收起键盘。"),
             ("本版本说明", "拆分选词的完整分词面板需要主 App 配合；当前键盘版提供长按卡片菜单里的「插入到输入框 / 复制到剪贴板 / 发送到电脑」等核心操作。")
         ]),
-        "continuous": Item(title: "连续复制与悬浮窗", summary: "点键盘工具条右二的方块按钮，变蓝即开启自动同步。", sections: [
-            ("先选保存位置", "设置 →「连续复制」中，可选择「剪贴板历史」或「常用语」。"),
-            ("开启连续复制", "1. 确认键盘已开启完全访问。\n2. 在任意 App 切换到 QuickPaste 键盘。\n3. 点工具条右二的方块按钮 ⧉，按钮变蓝即已开启；再点一次关闭。\n4. 切回其他 App 继续复制，回到键盘即可看到记录。"),
-            ("确认是否运行", "工具条方块变蓝代表自动同步已开启。iOS 不允许第三方键盘显示系统级悬浮窗或后台常驻服务，因此_copy_行为发生在每次呼出键盘时。"),
-            ("重复内容与使用范围", "相同文字会去重处理，不会不断新增相同记录。连续复制只收集可读取的文字；系统粘贴授权、后台限制和复制速度可能影响保存，批量收集后请检查结果。")
+        "continuous": Item(title: "连续复制与系统画中画", summary: "键盘弹着时实时抓取；开画中画可跨 App 后台监控。", sections: [
+            ("键盘里连续复制", "键盘弹着时每 0.5 秒读一次系统剪贴板，复制第 2、3、N 段都会自动进列表，不用收起再弹出。"),
+            ("开启系统画中画", "1. 确认键盘已开启完全访问。\n2. 点键盘工具条的「连续复制」按钮，跳到 QuickPaste 主 App。\n3. 在主 App「连续复制」页点「开启连续复制（画中画）」。\n4. 出现系统 PiP 小窗后，切到微信、Safari 等任意 App 继续复制。"),
+            ("小窗怎么用", "PiP 小窗由 iOS 渲染，自带 ✕ 关闭；拖到屏幕左边框会自动缩小贴边（只露一个小箭头），点箭头可展开。工具条按钮变蓝代表画中画正在监控。"),
+            ("重复内容与使用范围", "相同文字会去重。画中画收录的文字会写进共享历史，回到键盘自动出现在剪贴板列表里；系统粘贴授权弹窗需点「允许」。")
         ]),
         "calc": Item(title: "键盘计算器", summary: "点「计算」，算出结果后点「输入」。", sections: [
             ("开始计算", "点键盘左下角「计算」，使用数字、小数点、括号和加减乘除键输入算式，结果会随输入更新。点删除键可修改算式。"),

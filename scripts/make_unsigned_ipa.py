@@ -13,8 +13,7 @@
 
 用法:
   python make_unsigned_ipa.py [源IPA] [目标IPA]
-  默认: 本机交付目录 ① 苹果版-QuickPaste输入法-爱思7天签.ipa
-        -> ① 苹果版-未签名-手机端签名用.ipa
+  源 = CI 编译出的 ad-hoc 中间包（不交付），目标 = 手机端签名工具直接导入的未签名包。
 """
 import os
 import plistlib
@@ -23,9 +22,9 @@ import sys
 import zipfile
 
 SRC = (sys.argv[1] if len(sys.argv) > 1 else
-       r"E:/剪贴/dist/手机安装包/① 苹果版-未签名-手机端签名用.ipa")
+       r"dist/QuickPaste-Sync-iOS.ipa")
 DST = (sys.argv[2] if len(sys.argv) > 2 else
-       r"E:/qpbuild/自检输出.ipa")
+       r"dist/QuickPaste-Sync-iOS-unsigned.ipa")
 
 
 def macho_facts(d):

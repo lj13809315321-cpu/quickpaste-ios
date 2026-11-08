@@ -96,6 +96,32 @@ jobs:
       - name: 安装 XcodeGen
         run: brew install xcodegen
 
+      - name: 生成系统画中画（PiP）循环画面 pip.mp4
+        run: |
+          set -euo pipefail
+          mkdir -p App/Resources
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            brew install ffmpeg || true
+          fi
+          command -v ffmpeg >/dev/null 2>&1 || { echo "::error::ffmpeg 不可用"; exit 1; }
+          FONT=/System/Library/Fonts/Supplemental/Arial.ttf
+          [ -f "$FONT" ] || FONT=/System/Library/Fonts/Supplemental/Helvetica.ttc
+          # 深色底 + 绿点 + 「Continuous copying...」，就是参考图里那个 PiP 小窗
+          if ffmpeg -y -loglevel error \
+              -f lavfi -i "color=c=0x1F2126:s=480x270:r=25:d=2" \
+              -vf "drawtext=fontfile=$FONT:text='Continuous copying...':fontcolor=white:fontsize=26:x=(w-text_w)/2:y=(h-text_h)/2,drawbox=x=26:y=(h-10)/2:w=10:h=10:color=0x34C759:t=fill" \
+              -c:v libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart \
+              App/Resources/pip.mp4 ; then
+            echo "[OK] 带文字的画中画画面"
+          else
+            echo "[WARN] drawtext 不可用，退回纯色画面"
+            ffmpeg -y -loglevel error -f lavfi -i "color=c=0x1F2126:s=480x270:r=25:d=2" \
+              -c:v libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart \
+              App/Resources/pip.mp4
+          fi
+          test -s App/Resources/pip.mp4
+          ls -lh App/Resources/pip.mp4
+
       - name: 生成 Xcode 工程（主 App + 键盘扩展 双 target）
         run: xcodegen generate
 
@@ -173,6 +199,12 @@ jobs:
           assert macho == b'\xcf\xfa\xed\xfe', '键盘扩展不是 arm64 Mach-O'
           appbin = z.read('Payload/QuickPaste.app/QuickPaste')[:4]
           assert appbin == b'\xcf\xfa\xed\xfe', '主程序不是 arm64 Mach-O'
+          assert a.get('UIBackgroundModes') == ['audio'], '主 App 缺画中画后台模式'
+          schemes = [s for t in (a.get('CFBundleURLTypes') or [])
+                     for s in (t.get('CFBundleURLSchemes') or [])]
+          assert 'quickpaste' in schemes, '主 App 缺 quickpaste URL scheme'
+          assert any(n.endswith('/pip.mp4') for n in names), 'IPA 缺画中画画面资源 pip.mp4'
+          print('[OK] PiP 后台模式 / URL scheme / pip.mp4 资源齐全')
           print('[OK] 主 App + 键盘扩展(.appex) 均在 IPA 内')
           print('[OK] 扩展点 =', ns.get('NSExtensionPointIdentifier'))
           print('[OK] 完全访问 =', attrs.get('RequestsOpenAccess'))

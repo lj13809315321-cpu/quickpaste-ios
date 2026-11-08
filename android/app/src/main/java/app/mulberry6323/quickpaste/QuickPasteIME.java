@@ -235,11 +235,14 @@ public class QuickPasteIME extends InputMethodService {
         } catch (Exception ignored) { return false; }
     }
 
+    /**
+     * 键盘可见期间【常驻】轮询系统剪贴板，与「连续复制」开关无关。
+     * 旧版只在开关打开时才跑，导致弹起键盘后复制第二段必须收起再弹出。
+     */
     private final Runnable captureTask = new Runnable() {
         @Override public void run() {
-            if (!prefs.continuous()) return;
             if (adoptClipboardText()) refreshList();
-            ui.postDelayed(this, 700);
+            ui.postDelayed(this, 500);
         }
     };
 
@@ -255,8 +258,9 @@ public class QuickPasteIME extends InputMethodService {
         if (floatingView != null) {
             floatingView.setVisibility(prefs.continuous() ? View.VISIBLE : View.GONE);
         }
+        // 常驻轮询始终运行；开关只控制悬浮窗显隐
         ui.removeCallbacks(captureTask);
-        if (prefs.continuous()) ui.post(captureTask);
+        ui.post(captureTask);
     }
 
     /** HTML floatwin：圆角深色小窗 + 绿点 +「连续复制中…」+ 结束 */

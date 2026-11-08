@@ -56,6 +56,14 @@ MAIN_APP_PLIST = {
     "NSLocalNetworkUsageDescription": LOCAL_DESC,
     "NSPhotoLibraryUsageDescription": "用于选择要同步到电脑的图片。",
     "UILaunchScreen": {},
+    # 系统画中画（PiP）连续复制：PiP 期间 App 需要在后台保持运行，
+    # 靠 audio background mode + AVAudioSession(.playback) 实现。
+    "UIBackgroundModes": ["audio"],
+    # 键盘里点「连续复制」跳主 App：quickpaste://pip/start
+    "CFBundleURLTypes": [{
+        "CFBundleURLName": APP_ID,
+        "CFBundleURLSchemes": ["quickpaste"],
+    }],
     "UIRequiredDeviceCapabilities": ["arm64"],
     "UISupportedInterfaceOrientations": ORIENTATIONS,
 }
@@ -135,6 +143,12 @@ def main():
 
     ok = verify("主 app", main_app, APP_ID, "APPL")
     ok = verify("键盘扩展", keyboard, KEYBOARD_ID, "XPC!") and ok
+
+    print("[主 app] UIBackgroundModes = %s" % main_app.get("UIBackgroundModes"))
+    print("[主 app] CFBundleURLTypes = %s" % main_app.get("CFBundleURLTypes"))
+    if main_app.get("UIBackgroundModes") != ["audio"] or not main_app.get("CFBundleURLTypes"):
+        print("[主 app] [FATAL] 缺画中画后台模式或 quickpaste URL scheme")
+        ok = False
 
     ns = keyboard.get("NSExtension") or {}
     attrs = ns.get("NSExtensionAttributes") or {}

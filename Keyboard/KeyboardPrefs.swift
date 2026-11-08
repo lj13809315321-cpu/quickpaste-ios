@@ -1,8 +1,9 @@
 import Foundation
 import UIKit
 
-/// 键盘扩展的全部状态。刻意只存在键盘自己的 UserDefaults 里，
-/// 不依赖 App Groups / entitlement —— 爱思免费 7 天签名最容易过。
+/// 键盘扩展的全部状态。主要存在键盘自己的 UserDefaults 里，
+/// 不硬性依赖 App Groups / entitlement —— 手机端签名最容易过。
+/// 画中画的跨 App 历史走 Shared/QPSharedHistory.swift，按签名环境自动选通道。
 ///
 /// 电脑地址通过「主 App 复制到剪贴板 → 键盘读取」传递（键盘本来就需要
 /// 完全访问才能联网和读剪贴板），因此零 entitlement 也能完成配置。

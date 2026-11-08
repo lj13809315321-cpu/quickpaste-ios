@@ -79,7 +79,18 @@ struct AppRootView: View {
             ContentView().tabItem { Label("连接", systemImage: "link") }.tag(0)
             HistoryView().tabItem { Label("历史", systemImage: "clock") }.tag(1)
             CategoryView().tabItem { Label("分类", systemImage: "folder") }.tag(2)
-            SettingsView().tabItem { Label("设置", systemImage: "gearshape") }.tag(3)
+            PiPControlView().tabItem {
+                Label("连续复制", systemImage: "rectangle.on.rectangle")
+            }.tag(3)
+            SettingsView().tabItem { Label("设置", systemImage: "gearshape") }.tag(4)
+        }
+        // 键盘里点「连续复制」按钮会打开 quickpaste://pip/start
+        .onOpenURL { url in
+            guard url.host == "pip" || url.absoluteString.contains("pip/start") else { return }
+            tab = 3
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                PiPManager.shared.start()
+            }
         }
     }
 }

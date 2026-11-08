@@ -1,6 +1,7 @@
 # QuickPaste v1.6 真·同步输入法（iOS）
-# 双 target：主 App（引导/地址设置）+ 键盘扩展（真正的系统键盘 UI）。
-# 刻意不加 App Groups / 特殊 entitlement —— 爱思免费 7 天签名最容易过。
+# 双 target：主 App（引导/地址设置/系统画中画 PiP）+ 键盘扩展（真正的系统键盘 UI）。
+# 不硬编码 App Groups entitlement —— 手机端签名工具按自己的描述文件来；
+# 共享通道在 Shared/QPSharedHistory.swift 里运行时自动选择。
 # 用法：macOS 上 `xcodegen generate` 生成 QuickPaste.xcodeproj
 
 name: QuickPaste
@@ -23,6 +24,7 @@ targets:
     platform: iOS
     sources:
       - App
+      - Shared
     info:
       path: App/Info.plist
     settings:
@@ -38,6 +40,7 @@ targets:
     platform: iOS
     sources:
       - Keyboard
+      - Shared
     info:
       path: Keyboard/Info.plist
     settings:

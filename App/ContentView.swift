@@ -8,8 +8,8 @@ import UIKit
 /// 本 App 只做：填电脑地址、把地址放进剪贴板供键盘读取、引导启用键盘与完全访问。
 ///
 /// 为什么用剪贴板传地址：键盘扩展与主 App 默认不共享 UserDefaults，
-/// 加 App Groups 会让爱思免费 7 天签名变复杂。键盘本来就需要「允许完全访问」
-/// 才能联网，用它读一次剪贴板即可，零 entitlement。
+/// 硬性要求 App Groups 会让手机端签名变复杂。键盘本来就需要「允许完全访问」
+/// 才能联网，用它读一次剪贴板即可，零额外 entitlement。
 struct ContentView: View {
     @AppStorage("qp_server_url") private var savedURL: String = ""
     @State private var draft = ""
@@ -85,9 +85,15 @@ struct ContentView: View {
                         .foregroundColor(.secondary)
                 }
 
-                Section("关于签名") {
-                    Text("本 IPA 内含键盘扩展（.appex），用爱思助手免费 Apple ID 7 天签名安装。"
-                       + "7 天到期需重签。密码框等敏感输入系统会强制使用原生键盘，属系统限制。")
+                Section("连续复制与签名") {
+                    Text("键盘工具条点「连续复制」会打开本页的系统画中画小窗："
+                       + "小窗出现即表示正在后台监控，切到任意 App 复制都会自动收录，"
+                       + "小窗可拖到屏幕边缘自动缩小贴边。不开启画中画时，"
+                       + "键盘可见期间连续复制多段内容也会实时进列表。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                    Text("本 IPA 是未签名包，用手机端签名工具导入，同时重签主 App 与键盘扩展即可安装。"
+                       + "密码框等敏感输入系统会强制使用原生键盘，属系统限制。")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }
