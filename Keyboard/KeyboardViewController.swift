@@ -1,5 +1,6 @@
 import UIKit
 import ImageIO
+import NaturalLanguage
 
 /// QuickPaste v1.6 真·系统键盘（iOS Keyboard Extension）。
 ///
@@ -23,6 +24,8 @@ final class KeyboardViewController: UIInputViewController {
     private var pollTimer: Timer?
     /// 主列表实际渲染的数据：本机复制历史 + 画中画抓取记录 + 电脑同步记录
     private var displayItems: [SyncItem] = []
+    /// 当前滑开的卡片，滑开新的就把旧的收回去
+    private weak var openedCard: QPSwipeCard?
     /// 键盘可见期间【常驻】的剪贴板轮询，与「连续复制 / 画中画」开关完全解耦。
     /// 旧版只在连续复制开启时才轮询，导致弹起键盘后复制第二段必须收起再弹。
     private var pasteboardTimer: Timer?
@@ -49,6 +52,10 @@ final class KeyboardViewController: UIInputViewController {
     private let imageOverlay = UIView()
     private let imageBig = UIImageView()
     private var imageCloseButton: UIButton?
+    /// 分词 / 预览 / 编辑共用的小面板
+    private let sheetOverlay = UIView()
+    private let sheetStack = UIStackView()
+    private weak var editField: UITextView?
     /// v1.6 完整多页设置界面（设置首页 / 键盘设置 / 快捷符号 / 连续复制 /
     /// 局域网同步 / 6 篇教程 / 历史 / 最近删除 / 引导 / 关于）
     private let settings = KeyboardSettings()
@@ -84,6 +91,7 @@ final class KeyboardViewController: UIInputViewController {
         // 「清空剪贴板」不再单独占一行，改为列表最下边的可滚动条目
         buildBottomBar()
         buildMenu()
+        buildSheet()
         buildImageOverlay()
         settings.delegate = self
         settings.install(in: view)
@@ -692,6 +700,11 @@ final class KeyboardViewController: UIInputViewController {
             guard seen.insert(key).inserted else { continue }
             all.append(it)
         }
+        // 置顶条目排在最前（本机与电脑记录一起参与）
+        let pins = prefs.pinned
+        if !pins.isEmpty {
+            all = all.filter { pins.contains($0.text) } + all.filter { !pins.contains($0.text) }
+        }
         return Array(all.prefix(30))
     }
 
@@ -732,16 +745,11 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func makeSyncCard(item: SyncItem, index: Int) -> UIView {
-        let card = UIButton(type: .custom)
+        // 卡片本体（白底圆角）交给 QPSwipeCard 包一层：右滑分词/预览、左滑编辑/删除
+        let card = UIView()
         card.backgroundColor = .white
         card.layer.cornerRadius = 12
-        // 原型 .kbCard 带浅阴影；卡片本身不裁切，否则阴影会被切掉
-        card.layer.shadowColor = UIColor.black.cgColor
-        card.layer.shadowOpacity = 0.06
-        card.layer.shadowOffset = CGSize(width: 0, height: 1)
-        card.layer.shadowRadius = 2
-        card.heightAnchor.constraint(equalToConstant: 52).isActive = true
-        card.tag = index
+        card.clipsToBounds = true
 
         let row = UIStackView()
         row.axis = .horizontal
@@ -783,12 +791,15 @@ final class KeyboardViewController: UIInputViewController {
         ])
 
         let badge = UILabel()
-        badge.text = item.isLocal ? "✂️" : (item.fromPhone ? "📱" : "💻")
+        let isPinned = prefs.pinned.contains(item.isLocal ? item.text : item.displayText)
+        badge.text = isPinned ? "📌" : (item.isLocal ? "✂️" : (item.fromPhone ? "📱" : "💻"))
         badge.font = .systemFont(ofSize: 11)
         badge.textAlignment = .center
-        badge.backgroundColor = item.isLocal
-            ? UIColor.rgb(255, 243, 224)
-            : (item.fromPhone ? UIColor.rgb(231, 248, 238) : UIColor.rgb(238, 241, 255))
+        badge.backgroundColor = isPinned
+            ? UIColor.rgb(255, 236, 236)
+            : (item.isLocal
+                ? UIColor.rgb(255, 243, 224)
+                : (item.fromPhone ? UIColor.rgb(231, 248, 238) : UIColor.rgb(238, 241, 255)))
         badge.layer.cornerRadius = 7
         badge.clipsToBounds = true
         badge.translatesAutoresizingMaskIntoConstraints = false
@@ -800,19 +811,35 @@ final class KeyboardViewController: UIInputViewController {
             badge.heightAnchor.constraint(equalToConstant: 20)
         ])
 
-        card.addAction(UIAction { [weak self] _ in
+        // 轻点插入 / 长按菜单 / 左右滑动操作
+        let wrap = QPSwipeCard(content: card, height: 52)
+        wrap.tag = index
+        wrap.onTap = { [weak self] in
             guard let self = self else { return }
             if item.isImage { self.showImage(item) }
             else {
                 self.textDocumentProxy.insertText(item.text)
                 if self.prefs.autoCollapse { self.dismissKeyboard() }
             }
-        }, for: .touchUpInside)
-
-        let longPress = UILongPressGestureRecognizer(target: self,
-                                                     action: #selector(cardLongPress(_:)))
-        card.addGestureRecognizer(longPress)
-        return card
+        }
+        wrap.onLongPress = { [weak self] in
+            self?.openCardMenu(item)
+        }
+        wrap.onAction = { [weak self] action in
+            guard let self = self else { return }
+            switch action {
+            case .segment: self.openSegment(item)
+            case .preview: self.openPreview(item)
+            case .edit:    self.openEdit(item)
+            case .delete:  self.deleteCard(item)
+            }
+        }
+        wrap.onOpen = { [weak self, weak wrap] in
+            guard let self = self else { return }
+            if let prev = self.openedCard, prev !== wrap { prev.close() }
+            self.openedCard = wrap
+        }
+        return wrap
     }
 
     private func thumbnail(_ item: SyncItem) -> UIImage? {
@@ -1104,6 +1131,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.addArrangedSubview(menuRow("关闭菜单") { [weak self] in self?.closeMenu() })
     }
 
+    /// 长按条目的菜单：分词 / 置顶 / 预览 / 编辑 / 删除（对齐用户第 6 张截图）
     private func openCardMenu(_ item: SyncItem?) {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         menuOverlay.isHidden = false
@@ -1111,22 +1139,30 @@ final class KeyboardViewController: UIInputViewController {
         let preview = item.isImage ? "图片" : String(item.displayText.prefix(24))
         menuStack.addArrangedSubview(menuTitle(preview))
 
-        menuStack.addArrangedSubview(menuRow("插入到输入框") { [weak self] in
-            guard let self = self else { return }
-            if item.isImage { self.copyImageToPasteboard(item) }
-            else { self.textDocumentProxy.insertText(item.text) }
-            self.closeMenu()
-        })
-        if item.isImage {
-            menuStack.addArrangedSubview(menuRow("放大查看") { [weak self] in
-                self?.closeMenu(); self?.showImage(item)
+        if !item.isImage {
+            menuStack.addArrangedSubview(menuRow("✂️ 分词") { [weak self] in
+                self?.closeMenu(); self?.openSegment(item)
             })
         }
-        menuStack.addArrangedSubview(menuRow("复制到手机剪贴板") { [weak self] in
+        let pinKey = item.isLocal ? item.text : item.displayText
+        let pinned = prefs.pinned.contains(pinKey)
+        menuStack.addArrangedSubview(menuRow(pinned ? "📌 取消置顶" : "📌 置顶") { [weak self] in
             guard let self = self else { return }
-            if item.isImage { self.copyImageToPasteboard(item) }
-            else { UIPasteboard.general.string = item.text; self.showToast("已复制") }
-            self.closeMenu()
+            self.prefs.togglePin(pinKey)
+            self.refreshList(); self.closeMenu()
+            self.showToast(pinned ? "已取消置顶" : "已置顶")
+        })
+        menuStack.addArrangedSubview(menuRow(item.isImage ? "👁 放大查看" : "👁 预览") { [weak self] in
+            self?.closeMenu()
+            if item.isImage { self?.showImage(item) } else { self?.openPreview(item) }
+        })
+        if !item.isImage {
+            menuStack.addArrangedSubview(menuRow("✏️ 编辑") { [weak self] in
+                self?.closeMenu(); self?.openEdit(item)
+            })
+        }
+        menuStack.addArrangedSubview(menuRow("🗑 删除") { [weak self] in
+            self?.closeMenu(); self?.deleteCard(item)
         })
         menuStack.addArrangedSubview(menuRow("↑ 发送到电脑") { [weak self] in
             guard let self = self else { return }
@@ -1139,18 +1175,18 @@ final class KeyboardViewController: UIInputViewController {
             } else { self.sendTextToPc(item.text) }
             self.closeMenu()
         })
-        if item.isLocal {
-            menuStack.addArrangedSubview(menuRow("🗑 从本机历史删除") { [weak self] in
-                guard let self = self else { return }
-                self.prefs.remove(item.text, from: "clip")
-                self.refreshList(); self.closeMenu()
-            })
-        } else {
-            menuStack.addArrangedSubview(menuRow("🗑 从电脑删除这条") { [weak self] in
-                self?.deleteItem(id: item.id); self?.closeMenu()
-            })
-        }
         menuStack.addArrangedSubview(menuRow("关闭菜单") { [weak self] in self?.closeMenu() })
+    }
+
+    /// 删除一条：本机历史进「最近删除」可恢复，电脑记录走 /api/delete
+    private func deleteCard(_ item: SyncItem) {
+        if item.isLocal {
+            prefs.remove(item.text, from: "clip")
+            refreshList()
+            showToast("已删除（可在设置 → 最近删除找回）")
+        } else {
+            deleteItem(id: item.id)
+        }
     }
 
     private func openClearConfirm() {
@@ -1171,10 +1207,237 @@ final class KeyboardViewController: UIInputViewController {
         settings.show(.root)
     }
 
-    @objc private func cardLongPress(_ g: UILongPressGestureRecognizer) {
-        guard g.state == .began, let card = g.view,
-              card.tag >= 0, card.tag < displayItems.count else { return }
-        openCardMenu(displayItems[card.tag])
+    // MARK: - 分词 / 预览 / 编辑（右滑与长按菜单共用）
+
+    private func openSegment(_ item: SyncItem) {
+        guard !item.isImage else { showToast("图片不支持分词"); return }
+        let tokens = segmentTokens(item.text)
+        guard !tokens.isEmpty else { showToast("没有可分词的内容"); return }
+
+        let scroll = UIScrollView()
+        scroll.showsVerticalScrollIndicator = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.spacing = 6
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor)
+        ])
+        for t in tokens.prefix(40) {
+            let b = UIButton(type: .system)
+            b.setTitle(t, for: .normal)
+            b.titleLabel?.font = .systemFont(ofSize: 14)
+            b.setTitleColor(UIColor.rgb(17, 17, 17), for: .normal)
+            b.contentHorizontalAlignment = .left
+            b.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
+            b.backgroundColor = QPColor.blueSoft
+            b.layer.cornerRadius = 8
+            b.heightAnchor.constraint(equalToConstant: 32).isActive = true
+            b.addAction(UIAction { [weak self] _ in
+                self?.textDocumentProxy.insertText(t)
+                self?.closeSheet()
+            }, for: .touchUpInside)
+            stack.addArrangedSubview(b)
+        }
+        scroll.heightAnchor.constraint(equalToConstant: 132).isActive = true
+        showSheet(title: "分词 · 点一项插入", body: scroll)
+    }
+
+    /// 中文按词、英文按单词切；切不出来就按空白与标点兜底
+    private func segmentTokens(_ text: String) -> [String] {
+        var out: [String] = []
+        let tk = NLTokenizer(unit: .word)
+        tk.string = text
+        tk.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            let w = String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !w.isEmpty, !out.contains(w) { out.append(w) }
+            return out.count < 200
+        }
+        if out.count <= 1 {
+            let seps = CharacterSet.whitespacesAndNewlines
+                .union(.punctuationCharacters)
+                .union(.symbols)
+            let parts = text.components(separatedBy: seps)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !parts.isEmpty { out = parts }
+        }
+        return out
+    }
+
+    private func openPreview(_ item: SyncItem) {
+        if item.isImage { showImage(item); return }
+        let scroll = UIScrollView()
+        scroll.showsVerticalScrollIndicator = true
+        let label = UILabel()
+        label.text = item.text
+        label.font = .systemFont(ofSize: 14)
+        label.textColor = UIColor.rgb(17, 17, 17)
+        label.numberOfLines = 0
+        label.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 10),
+            label.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -10),
+            label.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 8),
+            label.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -8),
+            label.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -20)
+        ])
+        scroll.heightAnchor.constraint(equalToConstant: 132).isActive = true
+        showSheet(title: "预览", body: scroll)
+    }
+
+    /// 「编辑」：键盘本身没有字母键（这是剪贴板键盘），所以给出能真正用起来的快捷修改：
+    /// 全文可选中复制 + 退格 / 补空格 / 清空，改完保存回历史（原条目进最近删除）。
+    private func openEdit(_ item: SyncItem) {
+        guard !item.isImage else { showToast("图片不能编辑文字"); return }
+        let tv = UITextView()
+        tv.text = item.text
+        tv.font = .systemFont(ofSize: 14)
+        tv.textColor = UIColor.rgb(17, 17, 17)
+        tv.backgroundColor = QPColor.bg
+        tv.layer.cornerRadius = 8
+        tv.isEditable = false          // 不在键盘里伪造输入框，避免「点了打不出字」
+        tv.isSelectable = true
+        tv.textContainerInset = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        tv.heightAnchor.constraint(equalToConstant: 92).isActive = true
+        editField = tv
+
+        let row = UIStackView()
+        row.axis = .horizontal
+        row.spacing = 6
+        row.distribution = .fillEqually
+        for (title, kind) in [("⌫ 退格", 0), ("补空格", 1), ("清空", 2)] {
+            let b = UIButton(type: .system)
+            b.setTitle(title, for: .normal)
+            b.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
+            b.setTitleColor(UIColor.rgb(17, 17, 17), for: .normal)
+            b.backgroundColor = QPColor.sep
+            b.layer.cornerRadius = 8
+            b.heightAnchor.constraint(equalToConstant: 32).isActive = true
+            b.tag = kind
+            b.addAction(UIAction { [weak self] _ in
+                guard let self = self, let tv = self.editField else { return }
+                var s = tv.text ?? ""
+                switch kind {
+                case 0: if !s.isEmpty { s.removeLast() }
+                case 1: s += " "
+                default: s = ""
+                }
+                tv.text = s
+            }, for: .touchUpInside)
+            row.addArrangedSubview(b)
+        }
+
+        let hint = UILabel()
+        hint.text = "改完点「保存」写回列表；想整段重写可长按上方文字复制后修改"
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = QPColor.sub
+        hint.numberOfLines = 2
+
+        let box = UIStackView(arrangedSubviews: [tv, row, hint])
+        box.axis = .vertical
+        box.spacing = 6
+
+        showSheet(title: "编辑", body: box, confirmTitle: "保存") { [weak self] in
+            guard let self = self else { return }
+            let new = (self.editField?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !new.isEmpty else { self.showToast("内容不能为空"); return }
+            if item.isLocal { self.prefs.remove(item.text, from: "clip") }
+            self.prefs.capture(new)
+            self.refreshList()
+            self.closeSheet()
+            self.showToast("已保存")
+        }
+    }
+
+    // MARK: - 通用小面板（分词 / 预览 / 编辑）
+
+    private func buildSheet() {
+        sheetOverlay.backgroundColor = UIColor.black.withAlphaComponent(0.32)
+        sheetOverlay.isHidden = true
+        sheetOverlay.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(sheetOverlay)
+        NSLayoutConstraint.activate([
+            sheetOverlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            sheetOverlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            sheetOverlay.topAnchor.constraint(equalTo: view.topAnchor),
+            sheetOverlay.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        let bgTap = UITapGestureRecognizer(target: self, action: #selector(sheetBackgroundTapped(_:)))
+        sheetOverlay.addGestureRecognizer(bgTap)
+
+        sheetStack.axis = .vertical
+        sheetStack.spacing = 8
+        sheetStack.isLayoutMarginsRelativeArrangement = true
+        sheetStack.layoutMargins = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        sheetStack.backgroundColor = .white
+        sheetStack.layer.cornerRadius = 14
+        sheetStack.translatesAutoresizingMaskIntoConstraints = false
+        sheetOverlay.addSubview(sheetStack)
+        NSLayoutConstraint.activate([
+            sheetStack.leadingAnchor.constraint(equalTo: sheetOverlay.leadingAnchor, constant: 10),
+            sheetStack.trailingAnchor.constraint(equalTo: sheetOverlay.trailingAnchor, constant: -10),
+            sheetStack.centerYAnchor.constraint(equalTo: sheetOverlay.centerYAnchor),
+            sheetStack.topAnchor.constraint(greaterThanOrEqualTo: sheetOverlay.topAnchor, constant: 8)
+        ])
+    }
+
+    @objc private func sheetBackgroundTapped(_ g: UITapGestureRecognizer) {
+        let p = g.location(in: sheetOverlay)
+        if sheetStack.frame.contains(p) { return }
+        closeSheet()
+    }
+
+    @objc private func closeSheet() {
+        sheetOverlay.isHidden = true
+        editField = nil
+    }
+
+    private func showSheet(title: String, body: UIView,
+                           confirmTitle: String? = nil,
+                           confirm: (() -> Void)? = nil) {
+        sheetStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let t = UILabel()
+        t.text = title
+        t.font = .systemFont(ofSize: 13, weight: .semibold)
+        t.textColor = QPColor.sub
+        t.heightAnchor.constraint(equalToConstant: 20).isActive = true
+        sheetStack.addArrangedSubview(t)
+        sheetStack.addArrangedSubview(body)
+
+        let bar = UIStackView()
+        bar.axis = .horizontal
+        bar.spacing = 8
+        bar.distribution = .fillEqually
+        let cancel = UIButton(type: .system)
+        cancel.setTitle("关闭", for: .normal)
+        cancel.titleLabel?.font = .systemFont(ofSize: 15, weight: .medium)
+        cancel.setTitleColor(QPColor.sub, for: .normal)
+        cancel.backgroundColor = QPColor.bg
+        cancel.layer.cornerRadius = 10
+        cancel.heightAnchor.constraint(equalToConstant: 38).isActive = true
+        cancel.addAction(UIAction { [weak self] _ in self?.closeSheet() }, for: .touchUpInside)
+        bar.addArrangedSubview(cancel)
+        if let title = confirmTitle {
+            let ok = UIButton(type: .system)
+            ok.setTitle(title, for: .normal)
+            ok.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+            ok.setTitleColor(.white, for: .normal)
+            ok.backgroundColor = QPColor.blue
+            ok.layer.cornerRadius = 10
+            ok.heightAnchor.constraint(equalToConstant: 38).isActive = true
+            ok.addAction(UIAction { _ in confirm?() }, for: .touchUpInside)
+            bar.addArrangedSubview(ok)
+        }
+        sheetStack.addArrangedSubview(bar)
+        sheetOverlay.isHidden = false
     }
 
     private func menuTitle(_ text: String) -> UIView {

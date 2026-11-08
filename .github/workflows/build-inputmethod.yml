@@ -41,13 +41,26 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: 生成 Gradle Wrapper
+      - name: 准备 Gradle Wrapper（失败就用已安装的 Gradle 8.7 直编）
         working-directory: android
-        run: gradle wrapper --gradle-version 8.7 --distribution-type bin
+        run: |
+          set -uo pipefail
+          if command -v gradle >/dev/null 2>&1; then
+            gradle wrapper --gradle-version 8.7 --distribution-type bin || echo "[WARN] wrapper 生成失败，稍后直接用 gradle 编译"
+          else
+            echo "[WARN] PATH 里没有 gradle，稍后用 wrapper 或直接失败上报"
+          fi
+          ls -la || true
 
       - name: 编译 debug APK（自带 debug 签名，可直接安装）
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        run: |
+          set -euo pipefail
+          if [ -x ./gradlew ]; then
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          else
+            gradle assembleDebug --no-daemon --stacktrace
+          fi
 
       - name: 输出 APK 结构诊断（严格校验在本机拉回产物后做）
         run: |
