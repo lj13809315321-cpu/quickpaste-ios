@@ -26,6 +26,10 @@ final class KeyboardViewController: UIInputViewController {
     private var displayItems: [SyncItem] = []
     /// 当前滑开的卡片，滑开新的就把旧的收回去
     private weak var openedCard: QPSwipeCard?
+    /// 手指正在卡片上滑动/长按：这期间不许重建列表，否则手势立刻作废
+    private var cardBusy = false
+    /// 交互中被推迟的刷新，松手后补上
+    private var pendingListRefresh = false
     /// 还没成功推到电脑的文本（电脑没连上时先排队，连上就补发）
     private var pendingPush: [String] = []
     /// 最近已经推过的文本，避免同一条被反复 POST
@@ -54,6 +58,7 @@ final class KeyboardViewController: UIInputViewController {
     /// 计算模式下整行隐藏，换成计算器自己的「‹返回 / 空格 / 发送」
     private let bottomBar = UIStackView()
     private let menuOverlay = UIView()
+    private let menuScroll = UIScrollView()
     private let menuStack = UIStackView()
     private let imageOverlay = UIView()
     private let imageBig = UIImageView()
@@ -126,6 +131,8 @@ final class KeyboardViewController: UIInputViewController {
         // ★ 每次呼出键盘都强制读一次剪贴板，然后启动常驻轮询。
         // 不再依赖「连续复制」开关：只要键盘在，复制第 2、3、N 段都会自动进列表。
         capturedCount = 0
+        cardBusy = false            // 上次收起键盘时若正按着卡片，这里重置，别把刷新永久挡住
+        pendingListRefresh = false
         startPasteboardTimer()
         checkClipboard(force: true)
         refreshHead()
@@ -412,7 +419,10 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func apply(_ r: SyncClient.Result) {
-        let sig = r.items.prefix(10).map { "\($0.id):\($0.ts)" }.joined(separator: "|")
+        // ⚠️ 签名只看「有哪些条目」，不看时间戳：
+        //   服务端对重复内容会刷新 ts，用 ts 参与比较会导致每 3 秒拉一次就重建整列，
+        //   手指正在滑/长按的卡片被删掉重建 → 表现成「左右滑没反应、长按不弹菜单」。
+        let sig = r.items.prefix(20).map { $0.id }.joined(separator: "|") + "#\(r.items.count)"
         if sig != syncSig {
             syncSig = sig
             items = r.items
@@ -684,14 +694,17 @@ final class KeyboardViewController: UIInputViewController {
         buildStatusDot()
 
         let deleteKey = toolButton("✕")
-        // 原型 .kbTool.dark：76 宽、#2B2C31 黑底、白字
-        deleteKey.backgroundColor = .clear
-        deleteKey.setTitleColor(UIColor.rgb(17, 17, 17), for: .normal)
-        deleteKey.titleLabel?.font = .systemFont(ofSize: 19, weight: .regular)
+        // 用户要求：删除键保留 76×38 横条，而且【要留底色】—— 让人一眼看出这是个按钮，
+        // 其余工具键继续透明。底色用和功能键一致的浅灰，按下去会变深一点。
+        deleteKey.backgroundColor = QPColor.keyBg
+        deleteKey.setTitleColor(UIColor.rgb(50, 53, 60), for: .normal)
+        deleteKey.titleLabel?.font = .systemFont(ofSize: 19, weight: .medium)
         // 用户要求：删除键保留 76×38 横条，高度与其它工具键一致（38）
         deleteKey.widthAnchor.constraint(equalToConstant: 76).isActive = true
-        deleteKey.contentHorizontalAlignment = .right
-        deleteKey.contentEdgeInsets = UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 8)
+        deleteKey.contentHorizontalAlignment = .center
+        deleteKey.contentEdgeInsets = .zero
+        deleteKey.layer.cornerRadius = QPTool.radius
+        deleteKey.clipsToBounds = true
         deleteKey.addAction(UIAction { [weak self] _ in
             self?.textDocumentProxy.deleteBackward()
         }, for: .touchUpInside)
@@ -843,6 +856,14 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func refreshList() {
+        // ★ 手指还按在卡片上（正在左右滑 / 长按）时绝不重建列表：
+        //   旧版每 3 秒拉一次电脑就整列删掉重建，滑动到一半卡片没了、长按中途被取消，
+        //   表现就是「左右滑不出来、长按不弹菜单」。这里改成推迟到松手后再刷。
+        if cardBusy {
+            pendingListRefresh = true
+            return
+        }
+        pendingListRefresh = false
         listStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         // ★ 主列表 = 本机复制历史 + 电脑同步记录，不依赖是否连上电脑
         displayItems = mergedItems()
@@ -934,6 +955,9 @@ final class KeyboardViewController: UIInputViewController {
 
         // ★ 按时间倒序：电脑刚推的那条就该在第一格
         all.sort { $0.ts > $1.ts }
+        // ★ 清空闸门：清空时记下时刻，比它旧的条目（电脑端回传的历史、画中画旧记录）不再冒出来
+        let gate = prefs.clearedAt
+        if gate > 0 { all = all.filter { $0.ts > gate } }
         // 置顶条目排在最前（本机与电脑记录一起参与）
         let pins = prefs.pinned
         if !pins.isEmpty {
@@ -1072,6 +1096,18 @@ final class KeyboardViewController: UIInputViewController {
             guard let self = self else { return }
             if let prev = self.openedCard, prev !== wrap { prev.close() }
             self.openedCard = wrap
+        }
+        wrap.onBusyChange = { [weak self] busy in
+            guard let self = self else { return }
+            self.cardBusy = busy
+            // 松手后再刷，且放到下一轮事件循环 —— 别在手势收尾的动画里把卡片拆掉
+            if !busy, self.pendingListRefresh {
+                DispatchQueue.main.async { self.refreshList() }
+            }
+        }
+        // 横向滑动时先关掉列表滚动，方向不会被 ScrollView 抢走
+        wrap.onHorizontalSwipe = { [weak self] on in
+            self?.listScroll.isScrollEnabled = !on
         }
         return wrap
     }
@@ -1330,24 +1366,37 @@ final class KeyboardViewController: UIInputViewController {
         menuOverlay.addGestureRecognizer(UITapGestureRecognizer(target: self,
                                                                 action: #selector(closeMenu)))
 
+        // 键盘只有 300 来点高，菜单 8 行放不下会被挤出屏幕 —— 套一层可滚动容器，限高居中
+        menuScroll.translatesAutoresizingMaskIntoConstraints = false
+        menuScroll.showsVerticalScrollIndicator = true
+        menuScroll.alwaysBounceVertical = false
+        menuScroll.backgroundColor = .clear
+        menuOverlay.addSubview(menuScroll)
+
         menuStack.axis = .vertical
         menuStack.spacing = 0
         menuStack.translatesAutoresizingMaskIntoConstraints = false
         menuStack.backgroundColor = .secondarySystemBackground
         menuStack.layer.cornerRadius = 12
         menuStack.clipsToBounds = true
-        menuOverlay.addSubview(menuStack)
+        menuScroll.addSubview(menuStack)
         NSLayoutConstraint.activate([
-            menuStack.leadingAnchor.constraint(equalTo: menuOverlay.leadingAnchor, constant: 14),
-            menuStack.trailingAnchor.constraint(equalTo: menuOverlay.trailingAnchor, constant: -14),
-            menuStack.centerYAnchor.constraint(equalTo: menuOverlay.centerYAnchor)
+            menuScroll.leadingAnchor.constraint(equalTo: menuOverlay.leadingAnchor, constant: 14),
+            menuScroll.trailingAnchor.constraint(equalTo: menuOverlay.trailingAnchor, constant: -14),
+            menuScroll.centerYAnchor.constraint(equalTo: menuOverlay.centerYAnchor),
+            menuScroll.heightAnchor.constraint(lessThanOrEqualTo: menuOverlay.heightAnchor, constant: -24),
+            menuStack.leadingAnchor.constraint(equalTo: menuScroll.contentLayoutGuide.leadingAnchor),
+            menuStack.trailingAnchor.constraint(equalTo: menuScroll.contentLayoutGuide.trailingAnchor),
+            menuStack.topAnchor.constraint(equalTo: menuScroll.contentLayoutGuide.topAnchor),
+            menuStack.bottomAnchor.constraint(equalTo: menuScroll.contentLayoutGuide.bottomAnchor),
+            menuStack.widthAnchor.constraint(equalTo: menuScroll.frameLayoutGuide.widthAnchor)
         ])
     }
 
     private func openMenu() {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.1 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -1476,6 +1525,7 @@ final class KeyboardViewController: UIInputViewController {
         prefs.clearAllClips()
         prefs.mute(texts)          // 剪贴板里还留着的那条也不再抓回来
         QPSharedHistory.clear()    // 有 App Group 才真清共享；否则不动剪贴板
+        items = []                 // 电脑端缓存也清掉，别让旧条目下一轮又被渲染出来
         if syncState == "online" {
             client.delete(id: nil) { _ in }   // 静默：成功失败都不打扰
             syncSig = ""

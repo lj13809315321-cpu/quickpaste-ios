@@ -45,8 +45,9 @@ final class QPPiPViewController: AVPictureInPictureVideoCallViewController {
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
         titleLabel.text = "连续复制中…"
-        titleLabel.textColor = .white
-        titleLabel.font = .systemFont(ofSize: 34, weight: .bold)
+        titleLabel.textColor = UIColor(white: 1, alpha: 0.78)
+        // 用户要求：「连续复制中…」只是说明，字号变小；真正要看清的是下面的「已收录 N 条」
+        titleLabel.font = .systemFont(ofSize: 20, weight: .semibold)
         titleLabel.textAlignment = .center
         titleLabel.numberOfLines = 1
         titleLabel.adjustsFontSizeToFitWidth = true
@@ -54,7 +55,7 @@ final class QPPiPViewController: AVPictureInPictureVideoCallViewController {
 
         subLabel.text = "Continuous copying…"
         subLabel.textColor = UIColor(white: 1, alpha: 0.55)
-        subLabel.font = .systemFont(ofSize: 16, weight: .regular)
+        subLabel.font = .systemFont(ofSize: 13, weight: .regular)
         subLabel.textAlignment = .center
         subLabel.numberOfLines = 2
         subLabel.adjustsFontSizeToFitWidth = true
@@ -62,7 +63,8 @@ final class QPPiPViewController: AVPictureInPictureVideoCallViewController {
 
         countLabel.text = "已收录 0 条"
         countLabel.textColor = .white
-        countLabel.font = .systemFont(ofSize: 26, weight: .bold)
+        // 用户要求：条数放大，一眼看清收录了几条
+        countLabel.font = .systemFont(ofSize: 44, weight: .bold)
         countLabel.textAlignment = .center
         countLabel.numberOfLines = 1
         countLabel.adjustsFontSizeToFitWidth = true
@@ -73,8 +75,8 @@ final class QPPiPViewController: AVPictureInPictureVideoCallViewController {
         stack.addArrangedSubview(subLabel)
         stack.addArrangedSubview(countLabel)
 
-        let w = iconView.widthAnchor.constraint(equalToConstant: 46)
-        let h = iconView.heightAnchor.constraint(equalToConstant: 46)
+        let w = iconView.widthAnchor.constraint(equalToConstant: 34)
+        let h = iconView.heightAnchor.constraint(equalToConstant: 34)
         iconWidth = w
         iconHeight = h
         NSLayoutConstraint.activate([
@@ -97,12 +99,12 @@ final class QPPiPViewController: AVPictureInPictureVideoCallViewController {
     }
 
     private func applyFonts(_ s: CGFloat) {
-        titleLabel.font = .systemFont(ofSize: 34 * s, weight: .bold)
-        subLabel.font = .systemFont(ofSize: 16 * s, weight: .regular)
-        countLabel.font = .systemFont(ofSize: 26 * s, weight: .bold)
-        iconWidth?.constant = 46 * s
-        iconHeight?.constant = 46 * s
-        stack.spacing = max(1, 6 * s)
+        titleLabel.font = .systemFont(ofSize: 20 * s, weight: .semibold)
+        subLabel.font = .systemFont(ofSize: 13 * s, weight: .regular)
+        countLabel.font = .systemFont(ofSize: 44 * s, weight: .bold)
+        iconWidth?.constant = 34 * s
+        iconHeight?.constant = 34 * s
+        stack.spacing = max(1, 5 * s)
     }
 
     /// 正常状态：大字「已收录 N 条」
@@ -276,7 +278,9 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     /// ⚠️ 这里必须是**真的在出声**（哪怕人耳几乎听不见），不能是全零静音：
     /// 全零波形会被系统判成「静音播放」，App 照样在后台被挂起，
     /// 表现在外面就是小窗一直停在「已收录 N 条」不再变化。
-    /// 现在生成 1 秒 / 1kHz / 幅度 0.0008（约 -62dBFS）的正弦波，几乎不可闻但确实是音频输出。
+    /// 但之前用 1kHz 正弦（人耳最敏感的频段）用户是能听见「滋——」的，
+    /// 所以改成 20Hz 次低频：音频管线仍在输出、系统仍认「正在播放」，
+    /// 而手机扬声器放不出 20Hz，人耳也基本听不到。首尾各 20ms 淡入淡出，循环点不咔哒。
     private func startAudioKeepAlive() {
         let session = AVAudioSession.sharedInstance()
         do {
@@ -341,9 +345,16 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         le32(UInt32(dataSize))
 
         var samples = Data(capacity: dataSize)
-        let amp = 0.0008
+        // 20Hz、幅度 0.02：手机扬声器对 20Hz 基本没有有效输出，人耳也听不到，
+        // 但波形非全零，系统仍判定「有音频在播放」，后台保活照样生效。
+        let amp = 0.02
+        let freq = 20.0
+        let fade = Int(Double(sampleRate) * 0.02)          // 20ms 淡入淡出
         for i in 0..<frames {
-            let v = Int16((sin(2.0 * Double.pi * 1000.0 * Double(i) / Double(sampleRate)) * amp
+            var gain = 1.0
+            if i < fade { gain = Double(i) / Double(fade) }
+            else if i >= frames - fade { gain = Double(frames - i) / Double(fade) }
+            let v = Int16((sin(2.0 * Double.pi * freq * Double(i) / Double(sampleRate)) * amp * gain
                            * Double(Int16.max)).rounded())
             withUnsafeBytes(of: v.littleEndian) { samples.append(contentsOf: $0) }
         }

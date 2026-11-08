@@ -249,7 +249,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("QuickPaste v1.8 · 真·系统输入法", systemImage: "keyboard")
+                        Label("QuickPaste v1.8.1 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -576,7 +576,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("QuickPaste v1.8 · 真·系统输入法").font(.headline)
+                Text("QuickPaste v1.8.1 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

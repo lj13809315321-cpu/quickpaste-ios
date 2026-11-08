@@ -20,6 +20,10 @@ final class QPSwipeCard: UIView {
     var onAction: ((Action) -> Void)?
     /// 滑开时通知列表把别的卡片归位
     var onOpen: (() -> Void)?
+    /// 手指在卡片上操作中（滑动/长按）→ 列表先别重建，否则手势会被打断
+    var onBusyChange: ((Bool) -> Void)?
+    /// 横向滑动时把列表滚动关掉，避免 ScrollView 抢方向；松手恢复
+    var onHorizontalSwipe: ((Bool) -> Void)?
 
     private let content: UIView
     private let actionW: CGFloat = 58
@@ -28,6 +32,7 @@ final class QPSwipeCard: UIView {
     /// 本次拖动是否已判定为横向滑动（竖着拖要留给列表滚动）
     private var horizontal = false
     private var armedHaptic = false
+    private(set) var isBusy = false
 
     private let editBtn = QPSwipeCard.makeButton("编辑", UIColor(red: 124/255, green: 134/255, blue: 154/255, alpha: 1))
     private let deleteBtn = QPSwipeCard.makeButton("删除", QPColor.red)
@@ -58,6 +63,8 @@ final class QPSwipeCard: UIView {
 
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
         pan.delegate = self
+        // 手指按在内容上也要能被识别（内容里的按钮自己处理点击）
+        pan.cancelsTouchesInView = false
         addGestureRecognizer(pan)
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
@@ -65,7 +72,10 @@ final class QPSwipeCard: UIView {
         addGestureRecognizer(tap)
 
         let long = UILongPressGestureRecognizer(target: self, action: #selector(handleLong(_:)))
-        long.minimumPressDuration = 0.45
+        // 0.4s + 允许 14pt 抖动：手指稍微动一点不算滑走，长按照样弹菜单
+        long.minimumPressDuration = 0.4
+        long.allowableMovement = 14
+        long.cancelsTouchesInView = false
         long.delegate = self
         addGestureRecognizer(long)
     }
@@ -135,12 +145,15 @@ final class QPSwipeCard: UIView {
             startOffset = offset
             horizontal = offset != 0
             armedHaptic = false
+            setBusy(true)
+            if horizontal { onHorizontalSwipe?(true) }
         case .changed:
             let t = g.translation(in: self)
             if !horizontal {
-                // 竖着拖是滚列表，不抢手势
+                // 竖着拖是滚列表，不抢手势；只有横向才接管
                 guard abs(t.x) > 6, abs(t.x) > abs(t.y) * 1.2 else { return }
                 horizontal = true
+                onHorizontalSwipe?(true)
             }
             var x = startOffset + t.x
             if x > 0 { x = min(x, actionW * 2 + 12) }
@@ -153,6 +166,8 @@ final class QPSwipeCard: UIView {
                 if armed { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
             }
         case .ended, .cancelled, .failed:
+            setBusy(false)
+            onHorizontalSwipe?(false)
             guard horizontal else { return }
             horizontal = false
             let v = g.velocity(in: self).x
@@ -187,10 +202,23 @@ final class QPSwipeCard: UIView {
     }
 
     @objc private func handleLong(_ g: UILongPressGestureRecognizer) {
-        guard g.state == .began else { return }
-        if isOpen { setOffset(0, animated: true); return }
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        onLongPress?()
+        switch g.state {
+        case .began:
+            setBusy(true)
+            if isOpen { setOffset(0, animated: true); return }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            onLongPress?()
+        case .ended, .cancelled, .failed:
+            setBusy(false)
+        default:
+            break
+        }
+    }
+
+    private func setBusy(_ v: Bool) {
+        guard isBusy != v else { return }
+        isBusy = v
+        onBusyChange?(v)
     }
 
     private func fire(_ action: Action) {

@@ -255,7 +255,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             navRow("重新播放引导页") { [weak self] in self?.push(.onboarding) },
             navRow("关于本版本") { [weak self] in self?.push(.about) }
         ]))
-        body.addArrangedSubview(foot("QuickPaste v1.8 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
+        body.addArrangedSubview(foot("QuickPaste v1.8.1 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
     }
 
     // MARK: - 键盘设置（开关）
@@ -599,7 +599,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
 
     private func renderAbout() {
         body.addArrangedSubview(card([
-            info("QuickPaste v1.8 · 真·系统输入法"),
+            info("QuickPaste v1.8.1 · 真·系统输入法"),
             info("iOS：键盘扩展 .appex（com.apple.keyboard-service）"),
             info("安卓：系统输入法 InputMethodService"),
             info("界面按 quickpaste-ios-prototype.html v1.6 原型原生实现，无 WebView、无演示动画。"),
@@ -715,7 +715,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         box.backgroundColor = QPColor.blueSoft
         box.layer.cornerRadius = 10
         let l = UILabel()
-        l.text = "QuickPaste v1.8 · 真·系统输入法\n按 HTML 最新版效果原生实现，无网页、无演示动画"
+        l.text = "QuickPaste v1.8.1 · 真·系统输入法\n按 HTML 最新版效果原生实现，无网页、无演示动画"
         l.font = .systemFont(ofSize: 12, weight: .medium)
         l.textColor = QPColor.blue
         l.numberOfLines = 0

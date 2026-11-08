@@ -729,12 +729,15 @@ public class QuickPasteIME extends InputMethodService {
                 ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
         Button deleteBtn = toolBtn("✕");
-        // 原型 .kbTool.dark：宽 76（与底行「发送」同级）、#2B2C31 黑底、白字、靠右
-        deleteBtn.setBackgroundColor(Color.TRANSPARENT);
-        deleteBtn.setTextColor(TEXT);
+        // 删除键保留 76×38 横条，但要有明确底色 —— 一眼看出这是个按钮；其余工具键保持透明
+        GradientDrawable delBg = new GradientDrawable();
+        delBg.setColor(0xFFD4D6DE);
+        delBg.setCornerRadius(dp(10));
+        deleteBtn.setBackground(delBg);
+        deleteBtn.setTextColor(0xFF32353C);
         deleteBtn.setTextSize(19);
-        deleteBtn.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        deleteBtn.setPadding(0, 0, dp(8), 0);
+        deleteBtn.setGravity(Gravity.CENTER);
+        deleteBtn.setPadding(0, 0, 0, 0);
         deleteBtn.setLayoutParams(new LinearLayout.LayoutParams(dp(76), dp(38)));
         deleteBtn.setLongClickable(true);
         deleteBtn.setOnLongClickListener(new View.OnLongClickListener() {

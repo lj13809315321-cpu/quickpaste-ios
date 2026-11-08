@@ -301,6 +301,14 @@ struct KeyboardPrefs {
     mutating func clearAllClips() {
         clips = []
         clipTimes = []
+        // 记下清空时刻：比这更早的条目（电脑端历史回传、画中画旧记录）一律不再显示，
+        // 否则「清空 → 3 秒后又被拉回来」，用户看到的就是「清空不好使」。
+        store.set(Date().timeIntervalSince1970 * 1000, forKey: "qp.clearedAt")
+    }
+
+    /// 清空时刻（毫秒）。小于等于它的条目视为已删除。
+    var clearedAt: Double {
+        store.double(forKey: "qp.clearedAt")
     }
 
     mutating func togglePin(_ text: String) {
