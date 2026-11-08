@@ -174,6 +174,56 @@ struct KeyboardPrefs {
         set { store.set(Array(newValue.prefix(30)), forKey: "qp.recentDeleted") }
     }
 
+    // MARK: - 删除墓碑（修复「最后一条删不掉」）
+
+    /// 用户主动删掉 / 清空的内容。系统剪贴板里还留着这条时，轮询不能把它
+    /// 再抓回来 —— 否则表现就是「删了又回来，最后一条永远删不掉」。
+    var mutedTexts: [String] {
+        get { store.stringArray(forKey: "qp.mutedTexts") ?? [] }
+        set { store.set(Array(newValue.prefix(60)), forKey: "qp.mutedTexts") }
+    }
+
+    /// 记墓碑那一刻的剪贴板版本号：版本号变了说明用户又复制了新东西，墓碑全部失效。
+    var muteChange: Int {
+        get { store.object(forKey: "qp.muteChange") as? Int ?? -1 }
+        set { store.set(newValue, forKey: "qp.muteChange") }
+    }
+
+    /// 上次已经抓过的剪贴板版本号（changeCount），持久化保存，
+    /// 键盘被系统挂起后再回来也能知道「这段时间剪贴板换过」。
+    var lastSeenChange: Int {
+        get { store.object(forKey: "qp.lastSeenChange") as? Int ?? -1 }
+        set { store.set(newValue, forKey: "qp.lastSeenChange") }
+    }
+
+    mutating func mute(_ texts: [String]) {
+        let clean = texts.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !clean.isEmpty else { return }
+        var m = mutedTexts
+        for t in clean where !m.contains(t) { m.insert(t, at: 0) }
+        mutedTexts = m
+        muteChange = UIPasteboard.general.changeCount
+    }
+
+    func isMuted(_ text: String) -> Bool {
+        mutedTexts.contains(text)
+    }
+
+    /// 剪贴板版本号变了就检查一次：如果用户把**被删掉的那条**又复制回来了，
+    /// 解除它的墓碑（故意重复制应该能再进列表）。其它墓碑保持有效。
+    mutating func refreshMute() {
+        guard !mutedTexts.isEmpty else { return }
+        let change = UIPasteboard.general.changeCount
+        guard change != muteChange else { return }
+        muteChange = change
+        guard let s = UIPasteboard.general.string?
+                .trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+        if mutedTexts.contains(s) {
+            mutedTexts.removeAll { $0 == s }
+        }
+    }
+
     /// 按历史保留天数清理过期记录（置顶不受影响）；返回清理条数
     @discardableResult
     mutating func pruneHistory() -> Int {
@@ -238,6 +288,12 @@ struct KeyboardPrefs {
         history.insert(text, at: 0)
         times.insert(Date().timeIntervalSince1970, at: 0)
         clips = history; clipTimes = times
+    }
+
+    /// 清空本机剪贴板历史。立即生效，不依赖任何网络请求。
+    mutating func clearAllClips() {
+        clips = []
+        clipTimes = []
     }
 
     mutating func togglePin(_ text: String) {

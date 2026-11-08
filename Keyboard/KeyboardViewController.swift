@@ -29,8 +29,10 @@ final class KeyboardViewController: UIInputViewController {
     /// 键盘可见期间【常驻】的剪贴板轮询，与「连续复制 / 画中画」开关完全解耦。
     /// 旧版只在连续复制开启时才轮询，导致弹起键盘后复制第二段必须收起再弹。
     private var pasteboardTimer: Timer?
-    private var lastPasteboardChange: Int = -1
-    private var lastPasteboardRead = Date.distantPast
+    /// 本次呼出键盘后抓到的新条数（浮层上显示，用户能一眼看出到底有没有在抓）
+    private var capturedCount = 0
+    /// 连续复制浮层
+    private var copyOverlay: UIView?
     /// 主 App 的系统画中画是否正在后台监控
     private var pipRunning = false
     /// 连接状态小圆点：绿 = 已连上电脑，红 = 没连上
@@ -45,8 +47,6 @@ final class KeyboardViewController: UIInputViewController {
     private let listScroll = UIScrollView()
     private let listStack = UIStackView()
     private let calcBox = UIStackView()
-    private let calcExprLabel = UILabel()
-    private let calcResultLabel = UILabel()
     private let menuOverlay = UIView()
     private let menuStack = UIStackView()
     private let imageOverlay = UIView()
@@ -61,7 +61,6 @@ final class KeyboardViewController: UIInputViewController {
     private let settings = KeyboardSettings()
 
     private var heightConstraint: NSLayoutConstraint!
-    private var calcExpression = ""
     private var isCalcMode = false
     private var undoStack: [String] = []
     private var spaceOriginX: CGFloat = 0
@@ -120,11 +119,13 @@ final class KeyboardViewController: UIInputViewController {
         if pruned > 0 && prefs.savedTip { showToast("已清理 \(pruned) 条过期记录") }
         // ★ 每次呼出键盘都强制读一次剪贴板，然后启动常驻轮询。
         // 不再依赖「连续复制」开关：只要键盘在，复制第 2、3、N 段都会自动进列表。
+        capturedCount = 0
         startPasteboardTimer()
         checkClipboard(force: true)
         refreshHead()
         refreshTabBar()
         refreshCopyButton()
+        refreshCopyOverlay()
         refreshSymbols()
         refreshList()
         pull(showConnecting: true)
@@ -166,7 +167,8 @@ final class KeyboardViewController: UIInputViewController {
         // 只有纯「http://IP:8787」这种服务地址才当配置吞掉；普通网址照常进历史，
         // 避免把用户复制的链接误判成电脑地址却又不显示。
         if isServerAddress(s) && prefs.adoptPasteboardURL() { return true }
-        // 共享通道只由主 App 的画中画写入，键盘这边只读，避免自己改动系统剪贴板
+        // 用户刚删掉 / 清空的正是这条：不许抓回来
+        guard !prefs.isMuted(s) else { return false }
         return prefs.capture(s)
     }
 
@@ -176,9 +178,9 @@ final class KeyboardViewController: UIInputViewController {
             && s.contains(":8787")
     }
 
-    // MARK: - 剪贴板常驻监听（修复「复制第二段必须收起键盘」）
+    // MARK: - 剪贴板监听（连续复制的真正实现）
 
-    /// 只要键盘可见就常驻轮询，和「连续复制 / 画中画」开关完全无关。
+    /// 只要键盘可见就常驻轮询，和「连续复制 / 画中画」开关无关。
     private func startPasteboardTimer() {
         stopPasteboardTimer()
         let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -197,46 +199,78 @@ final class KeyboardViewController: UIInputViewController {
         checkClipboard(force: true)
     }
 
-    /// changeCount 一变立刻读；另外每 1.5 秒强制读一次兜底，覆盖部分 iOS 版本
-    /// 键盘扩展进程收不到 pasteboard 变更通知、或 Timer 被短暂挂起的情况。
-    private func checkClipboard(force: Bool = false) {
-        guard hasFullAccess else { return }
-        let change = UIPasteboard.general.changeCount
-        let changed = change != lastPasteboardChange
-        lastPasteboardChange = change
+    /// ★ 只有 changeCount 真的变了才读正文。
+    ///
+    /// 旧版额外「每 1.5 秒强制读一次兜底」，副作用很大：删掉一条后，剪贴板里
+    /// 还留着那条文字，强读一次就又 capture 回列表 —— 表现就是「删了又回来、
+    /// 最后一条永远删不掉」，清空也清不干净。现在改成：
+    ///   1. changeCount 变化才读；
+    ///   2. 用户删掉 / 清空的内容进墓碑（mutedTexts），剪贴板没换就不抓；
+    ///   3. 用户重新复制同一条时（changeCount 变了且正文就是它）墓碑自动解除。
+    @discardableResult
+    private func checkClipboard(force: Bool = false) -> Bool {
+        guard hasFullAccess else { return false }
+        let pb = UIPasteboard.general
+        let change = pb.changeCount
+        let changed = change != prefs.lastSeenChange
+        guard force || changed else { return false }
+
+        prefs.refreshMute()
 
         var dirty = false
-        let now = Date()
-        if force || changed || now.timeIntervalSince(lastPasteboardRead) >= 1.5 {
-            lastPasteboardRead = now
-            // 主 App 画中画期间在别的 App 里复制的内容，也合并回键盘列表
-            let shared = QPSharedHistory.read()
-            let wasPip = pipRunning
+
+        // ① 主 App 画中画抓到的（可选增强；读不到也不影响键盘自己抓）
+        let shared = QPSharedHistory.read()
+        if pipRunning != shared.pip {
             pipRunning = shared.pip
-            if pipRunning != wasPip { refreshCopyButton() }
-            for text in shared.items.reversed() where !text.isEmpty {
-                if prefs.capture(text) { dirty = true }
-            }
-            if adoptClipboardText() { dirty = true }
+            refreshCopyOverlay()
         }
-        if dirty { refreshList() }
+        for text in shared.items.reversed() where !text.isEmpty {
+            if !prefs.isMuted(text) && prefs.capture(text) { dirty = true }
+        }
+
+        // ② 系统剪贴板正文
+        let raw = pb.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if raw.isEmpty {
+            prefs.lastSeenChange = change
+        } else if isServerAddress(raw) {
+            _ = prefs.adoptPasteboardURL()
+            prefs.lastSeenChange = change
+        } else if prefs.isMuted(raw) {
+            // 刚被删掉 / 清空的就是这条，剪贴板还没换 → 不要再抓回来
+            prefs.lastSeenChange = change
+        } else {
+            if prefs.capture(raw) {
+                dirty = true
+                capturedCount += 1
+            }
+            prefs.lastSeenChange = change
+        }
+
+        if dirty {
+            refreshList()
+            refreshCopyOverlay()
+        }
+        return dirty
     }
 
-    // MARK: - 连续复制 = 主 App 的系统画中画（PiP）
+    // MARK: - 连续复制（键盘内监听 + 可选画中画）
 
-    /// iOS 不允许键盘扩展自己启动 PiP，点这里跳主 App 开启系统画中画小窗。
-    /// 小窗由系统渲染，可拖到屏幕边缘自动缩小贴边（用户给的图 4）。
     private func toggleContinuous() {
         guard hasFullAccess else {
             showToast("请先在 设置 → 键盘 → QuickPaste 开启「允许完全访问」")
             return
         }
-        prefs.continuous = true
+        prefs.continuous.toggle()
+        capturedCount = 0
         refreshCopyButton()
-        if openMainApp("pip/start") {
-            showToast("正在开启画中画…")
+        refreshCopyOverlay()
+        if prefs.continuous {
+            showToast("连续复制已开启")
+            // 键盘扩展自己起不了画中画，试着拉起主 App；失败也不影响键盘内抓取
+            if !pipRunning { _ = openMainApp("pip/start") }
         } else {
-            showToast("请打开 QuickPaste App →「连续复制」开启画中画")
+            showToast("已结束连续复制")
         }
     }
 
@@ -262,9 +296,104 @@ final class KeyboardViewController: UIInputViewController {
         settings.show(.continuous)
     }
 
-    /// 浮层已交给系统画中画，键盘里不再显示「连续复制中…」那行小字。
     private func syncCaptureState() {
         refreshCopyButton()
+        refreshCopyOverlay()
+    }
+
+    /// 键盘内浮层（HTML 原型 floatwin）：绿点 + 「连续复制中… 已收 N 条」+ 结束。
+    /// 它只是状态反馈，真正的抓取在 checkClipboard 里，收起键盘前一直有效。
+    private func refreshCopyOverlay() {
+        guard prefs.continuous else {
+            copyOverlay?.isHidden = true
+            return
+        }
+        let v: UIView
+        if let exist = copyOverlay {
+            v = exist
+        } else {
+            v = buildCopyOverlay()
+            view.addSubview(v)
+            NSLayoutConstraint.activate([
+                v.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                v.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -56),
+                v.widthAnchor.constraint(equalToConstant: 228)
+            ])
+            copyOverlay = v
+        }
+        v.isHidden = false
+        (v.viewWithTag(401) as? UILabel)?.text = "连续复制中… 已收 \(capturedCount) 条"
+        // 画中画没开时提示：键盘收起后就会停
+        (v.viewWithTag(402) as? UIButton)?.isHidden = pipRunning
+    }
+
+    private func buildCopyOverlay() -> UIView {
+        let v = UIView()
+        v.backgroundColor = UIColor.rgb(32, 33, 38)
+        v.layer.cornerRadius = 15
+        v.translatesAutoresizingMaskIntoConstraints = false
+
+        let row = UIStackView()
+        row.axis = .horizontal
+        row.spacing = 8
+        row.alignment = .center
+        row.isLayoutMarginsRelativeArrangement = true
+        row.layoutMargins = UIEdgeInsets(top: 5, left: 12, bottom: 5, right: 10)
+
+        let dot = UIView()
+        dot.backgroundColor = QPColor.green
+        dot.layer.cornerRadius = 4
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        dot.widthAnchor.constraint(equalToConstant: 8).isActive = true
+        dot.heightAnchor.constraint(equalToConstant: 8).isActive = true
+        row.addArrangedSubview(dot)
+
+        let label = UILabel()
+        label.tag = 401
+        label.text = "连续复制中… 已收 0 条"
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 12.5, weight: .medium)
+        row.addArrangedSubview(label)
+
+        let stop = UIButton(type: .system)
+        stop.setTitle("结束", for: .normal)
+        stop.setTitleColor(UIColor.rgb(120, 190, 255), for: .normal)
+        stop.titleLabel?.font = .systemFont(ofSize: 12.5, weight: .semibold)
+        stop.addAction(UIAction { [weak self] _ in
+            guard let self = self else { return }
+            self.prefs.continuous = false
+            self.refreshCopyButton()
+            self.refreshCopyOverlay()
+            self.showToast("已结束连续复制")
+        }, for: .touchUpInside)
+        row.addArrangedSubview(stop)
+
+        let hint = UIButton(type: .system)
+        hint.tag = 402
+        hint.setTitle("收起键盘后要继续抓 → 打开 App 开画中画", for: .normal)
+        hint.titleLabel?.font = .systemFont(ofSize: 10.5)
+        hint.setTitleColor(UIColor.rgb(255, 214, 102), for: .normal)
+        hint.contentHorizontalAlignment = .left
+        hint.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 5, right: 10)
+        hint.addAction(UIAction { [weak self] _ in
+            guard let self = self else { return }
+            if !self.openMainApp("pip/start") {
+                self.showToast("请打开 QuickPaste →「连续复制」→ 开启画中画")
+            }
+        }, for: .touchUpInside)
+
+        let stack = UIStackView(arrangedSubviews: [row, hint])
+        stack.axis = .vertical
+        stack.spacing = 0
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        v.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: v.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: v.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: v.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: v.bottomAnchor)
+        ])
+        return v
     }
 
     // MARK: - 同步
@@ -364,14 +493,19 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func deleteItem(id: String?) {
+        // 电脑没连上就完全不发请求 —— 旧版这里会一直等到超时，
+        // 弹「删除失败：请求超时」，看着像删不掉。
+        guard syncState == "online" else {
+            syncSig = ""
+            showToast("已删除（本机）")
+            return
+        }
         client.delete(id: id) { [weak self] error in
             DispatchQueue.main.async {
-                if let e = error { self?.showToast("删除失败：" + e) }
-                else {
-                    self?.showToast("已删除")
-                    self?.syncSig = ""
-                    self?.pull(showConnecting: false)
-                }
+                guard let self = self else { return }
+                self.showToast(error == nil ? "已删除" : "已删除（电脑端稍后同步）")
+                self.syncSig = ""
+                self.pull(showConnecting: false)
             }
         }
     }
@@ -527,8 +661,9 @@ final class KeyboardViewController: UIInputViewController {
 
     private func refreshCopyButton() {
         guard let b = copyButton else { return }
-        // 蓝色 = 主 App 的系统画中画正在后台监听
-        let on = pipRunning
+        // 蓝色 = 键盘自己的连续复制开关（立即生效，不再读画中画状态，
+        // 否则主 App 写共享通道时颜色会自己跳来跳去）
+        let on = prefs.continuous
         b.backgroundColor = on ? QPColor.blue : QPColor.keyBg
         b.tintColor = on ? .white : UIColor.rgb(17, 17, 17)
         b.layer.cornerRadius = 10
@@ -683,14 +818,16 @@ final class KeyboardViewController: UIInputViewController {
         var all: [SyncItem] = []
         var seen = Set<String>()
         for text in prefs.items(for: "clip") {
-            guard seen.insert("t:" + text).inserted else { continue }
+            guard !prefs.isMuted(text),
+                  seen.insert("t:" + text).inserted else { continue }
             all.append(SyncItem(id: "local:" + text, text: text, type: "text",
                                 image: "", mime: "", source: "local",
                                 ts: Date().timeIntervalSince1970 * 1000))
         }
         // 主 App 画中画期间，在别的 App 里复制的内容
         for text in QPSharedHistory.read().items {
-            guard !text.isEmpty, seen.insert("t:" + text).inserted else { continue }
+            guard !text.isEmpty, !prefs.isMuted(text),
+                  seen.insert("t:" + text).inserted else { continue }
             all.append(SyncItem(id: "pip:" + text, text: text, type: "text",
                                 image: "", mime: "", source: "local",
                                 ts: Date().timeIntervalSince1970 * 1000))
@@ -865,14 +1002,15 @@ final class KeyboardViewController: UIInputViewController {
         b.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
         b.setTitleColor(QPColor.sub, for: .normal)
         b.heightAnchor.constraint(equalToConstant: 30).isActive = true
-        b.addAction(UIAction { [weak self] _ in self?.openClearConfirm() },
-                    for: .touchUpInside)
+        b.addAction(UIAction { [weak self] _ in self?.clearAllHistory() }, for: .touchUpInside)
         b.isHidden = !prefs.clearBtn
         return b
     }
 
-    // MARK: - 计算器
+    // MARK: - 计算器（算式直接写进目标 App 的输入框）
 
+    /// 用户要的行为：按 7 就真的在对话框里出现 7，按 + 出现 +，
+    /// 按 = 时才把光标前这段算式换成结果（7+8 → 15）。键盘自己不显示算式。
     private func buildCalc() {
         calcBox.axis = .vertical
         calcBox.spacing = 8
@@ -881,24 +1019,19 @@ final class KeyboardViewController: UIInputViewController {
         calcBox.isLayoutMarginsRelativeArrangement = true
         calcBox.layoutMargins = UIEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
 
-        // HTML .calcExpr 24px 居中 / .calcRes 32px 蓝色居中
-        calcExprLabel.font = .systemFont(ofSize: 20, weight: .medium)
-        calcExprLabel.textColor = QPColor.sub
-        calcExprLabel.textAlignment = .center
-        calcResultLabel.font = .systemFont(ofSize: 30, weight: .semibold)
-        calcResultLabel.textColor = QPColor.blue
-        calcResultLabel.textAlignment = .center
-        let display = UIStackView(arrangedSubviews: [calcExprLabel, calcResultLabel])
-        display.axis = .vertical
-        display.spacing = 2
-        calcBox.addArrangedSubview(display)
+        let hint = UILabel()
+        hint.text = "按键直接输入到输入框，点 = 出结果"
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = QPColor.sub
+        hint.textAlignment = .center
+        calcBox.addArrangedSubview(hint)
 
-        // HTML .calcKeys：gap 8、键高 44、字号 19、圆角 9；「输入」为蓝色主按钮
+        // HTML .calcKeys：gap 8、键高 44、字号 19、圆角 9；「=」与「收起」为蓝色主按钮
         let rows: [[String]] = [
             ["7", "8", "9", "÷", "⌫"],
             ["4", "5", "6", "×", "("],
             ["1", "2", "3", "−", ")"],
-            ["0", ".", "=", "+", "输入"]
+            ["0", ".", "=", "+", "收起"]
         ]
         for keys in rows {
             let r = UIStackView()
@@ -906,13 +1039,13 @@ final class KeyboardViewController: UIInputViewController {
             r.spacing = 8
             r.distribution = .fillEqually
             for key in keys {
+                let primary = (key == "=" || key == "收起")
                 let b = UIButton(type: .system)
                 b.setTitle(key, for: .normal)
                 b.titleLabel?.font = .systemFont(ofSize: 19, weight: .semibold)
-                b.setTitleColor(key == "输入" ? .white : UIColor.rgb(17, 17, 17),
-                                for: .normal)
+                b.setTitleColor(primary ? .white : UIColor.rgb(17, 17, 17), for: .normal)
                 b.layer.cornerRadius = 9
-                b.backgroundColor = key == "输入" ? QPColor.blue : QPColor.keyBg
+                b.backgroundColor = primary ? QPColor.blue : QPColor.keyBg
                 let h = b.heightAnchor.constraint(equalToConstant: 40)
                 h.priority = UILayoutPriority(999)
                 h.isActive = true
@@ -929,44 +1062,44 @@ final class KeyboardViewController: UIInputViewController {
         isCalcMode.toggle()
         calcBox.isHidden = !isCalcMode
         listScroll.isHidden = isCalcMode
-        // tabBar 始终隐藏（已按用户要求移除两个 Tab）
-        if isCalcMode {
-            calcExpression = ""
-            updateCalcDisplay()
-        }
     }
 
     private func handleCalcKey(_ key: String) {
         switch key {
-        case "输入":
-            if let value = try? CalcEngine.evaluate(calcExpression) {
-                textDocumentProxy.insertText(value.calcText)
-                toggleCalcMode()
-            }
+        case "收起":
+            toggleCalcMode()
         case "⌫":
-            if !calcExpression.isEmpty { calcExpression.removeLast() }
-            updateCalcDisplay()
+            textDocumentProxy.deleteBackward()
         case "=":
-            updateCalcDisplay()
+            evaluateInline()
         default:
-            calcExpression.append(key)
-            updateCalcDisplay()
+            // 数字 / 运算符 / 括号 / 小数点：直接写进当前 App 的输入框
+            textDocumentProxy.insertText(key)
         }
     }
 
-    private func updateCalcDisplay() {
-        calcExprLabel.text = calcExpression.isEmpty ? "输入算式，例如 128×3" : calcExpression
-        guard !calcExpression.isEmpty else {
-            calcResultLabel.text = ""
+    /// 点 = ：取光标前最后一段算式（只允许数字与运算符，遇到别的内容就停），
+    /// 求值后把这段替换成结果。7+8 → 15，接着按 +2= 就是 17。
+    private func evaluateInline() {
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        let allowed = Set("0123456789.+-−×÷*/() ")
+        var expr = ""
+        for ch in before.reversed() {
+            guard allowed.contains(ch) else { break }
+            expr.insert(ch, at: expr.startIndex)
+        }
+        let trimmed = expr.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else {
+            showToast("先输入算式，例如 7+8，再点 =")
             return
         }
-        if let value = try? CalcEngine.evaluate(calcExpression) {
-            calcResultLabel.text = "= " + value.calcText
-            calcResultLabel.textColor = QPColor.blue
-        } else {
-            calcResultLabel.text = "—"
-            calcResultLabel.textColor = QPColor.sub
+        guard let value = try? CalcEngine.evaluate(trimmed) else {
+            showToast("算式不完整，例如 7+8")
+            return
         }
+        // expr 只含 ASCII，字符数即 UTF-16 长度，退格次数安全
+        for _ in 0..<expr.count { textDocumentProxy.deleteBackward() }
+        textDocumentProxy.insertText(value.calcText)
     }
 
     // MARK: - 底行 (.kbKeys)
@@ -1178,25 +1311,36 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.addArrangedSubview(menuRow("关闭菜单") { [weak self] in self?.closeMenu() })
     }
 
-    /// 删除一条：本机历史进「最近删除」可恢复，电脑记录走 /api/delete
+    /// 删除一条：本机历史进「最近删除」可恢复，电脑记录走 /api/delete。
+    /// 无论哪种都先上墓碑，否则这条还在系统剪贴板里，0.5 秒后又被抓回来。
     private func deleteCard(_ item: SyncItem) {
+        prefs.mute([item.text])
+        prefs.remove(item.text, from: "clip")
         if item.isLocal {
-            prefs.remove(item.text, from: "clip")
             refreshList()
             showToast("已删除（可在设置 → 最近删除找回）")
         } else {
+            refreshList()
             deleteItem(id: item.id)
         }
     }
 
-    private func openClearConfirm() {
-        menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("清空电脑上的全部同步记录？"))
-        menuStack.addArrangedSubview(menuRow("确认清空") { [weak self] in
-            self?.deleteItem(id: nil); self?.closeMenu()
-        })
-        menuStack.addArrangedSubview(menuRow("取消") { [weak self] in self?.closeMenu() })
+    /// 一键清空：本地立即生效，不等网络。
+    /// 旧版这里弹确认框 → 调 /api/delete → 电脑没开就一直等到超时，
+    /// 结果「提示超时、其实一条都没清掉」。现在先清本地，电脑端只在已连上时静默同步。
+    private func clearAllHistory() {
+        var texts = displayItems.map { $0.text }
+        if let s = UIPasteboard.general.string, !s.isEmpty { texts.append(s) }
+        prefs.clearAllClips()
+        prefs.mute(texts)          // 剪贴板里还留着的那条也不再抓回来
+        QPSharedHistory.clear()    // 有 App Group 才真清共享；否则不动剪贴板
+        if syncState == "online" {
+            client.delete(id: nil) { _ in }   // 静默：成功失败都不打扰
+            syncSig = ""
+        }
+        displayItems = []
+        refreshList()
+        showToast("已清空")
     }
 
     @objc private func closeMenu() { menuOverlay.isHidden = true }
@@ -1693,6 +1837,7 @@ final class KeyboardViewController: UIInputViewController {
         refreshSymbols()
         refreshTabBar()
         refreshCopyButton()
+        refreshCopyOverlay()
         refreshList()
         refreshHead()
         if heightConstraint.constant != prefs.height {
@@ -1752,7 +1897,7 @@ extension KeyboardViewController: KeyboardSettingsDelegate {
         refreshHead()
     }
 
-    func settingsClearAll() { deleteItem(id: nil) }
+    func settingsClearAll() { clearAllHistory() }
 
     func settingsSwitchKeyboard() { advanceToNextInputMode() }
 
