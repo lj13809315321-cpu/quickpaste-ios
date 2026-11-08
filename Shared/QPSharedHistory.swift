@@ -109,11 +109,11 @@ enum QPSharedHistory {
         if p.items.first != text {
             let now = Date().timeIntervalSince1970
             // 时间戳要和 items 一一对齐：旧版本没写 times（nil）时按列表顺序补一组
-            // **固定**的递减值（越靠前越新），只补这一次，之后一直用这份。
+            // **固定**的递减值（越靠前越新，按分钟级往回排），只补这一次，之后一直用这份。
             var times = p.times ?? []
             if times.count > p.items.count { times = Array(times.prefix(p.items.count)) }
             for i in times.count..<p.items.count {
-                times.append(now - Double(i + 1) * 0.05)
+                times.append(now - Double(i + 1) * 60)
             }
             // 去重时条目和时间戳要一起删，否则整条时间线全部错位
             var keptItems: [String] = []

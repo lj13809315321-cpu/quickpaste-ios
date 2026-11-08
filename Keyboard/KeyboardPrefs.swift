@@ -189,11 +189,12 @@ struct KeyboardPrefs {
 
     /// 共享通道（连续复制 / 画中画）里没有时间戳的条目：用「首次见到的时刻」并永久固定。
     /// 有真实时间戳（新版写进 Payload.times）时不会走到这里。
+    /// 间距按分钟级往回排：升级后第一次渲染时这些老条目不会一股脑挤到最前面。
     mutating func stickyTime(for text: String, index: Int) -> Double {
         var map = (store.dictionary(forKey: "qp.sharedSeen") as? [String: Double]) ?? [:]
         let key = KeyboardPrefs.stableKey(text)
         if let t = map[key] { return t * 1000 }
-        let now = Date().timeIntervalSince1970 - Double(index + 1) * 0.05
+        let now = Date().timeIntervalSince1970 - Double(index + 1) * 60
         map[key] = now
         if map.count > 400 {
             // 别让 UserDefaults 无限长：只留最新的 240 条
