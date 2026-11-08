@@ -10,8 +10,8 @@ android {
         applicationId 'app.mulberry6323.quickpaste'
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName '1.0'
+        versionCode 16
+        versionName '1.6-sync'
     }
 
     // debug 构建使用 Android 自动生成的 debug keystore 签名，

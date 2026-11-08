@@ -1,12 +1,6 @@
-# QuickPaste —— 最小可用的 iOS 自定义键盘工程
-# 用法：在 macOS 上执行 `xcodegen generate` 生成 QuickPaste.xcodeproj
-#
-# 设计说明：
-# 1. 主应用与键盘扩展各有独立的应用包标识（Apple 要求）。
-# 2. 默认不启用应用组（App Groups），常用语保存在键盘自身，
-#    因此一份通配符 App ID 的 Ad Hoc 描述文件即可同时授权两个目标。
-# 3. 两个标识都以现有描述文件里的 app.mulberry6323.twilight7904 为前缀，
-#    便于手机端签名工具改写主应用标识后仍能对应。
+# QuickPaste 同步版（iOS）：单 App + 全屏 WKWebView，打开电脑端同步服务页面。
+# 没有键盘扩展 / App Groups / 特殊 entitlement —— 爱思 7 天签名最容易过。
+# 用法：macOS 上 `xcodegen generate` 生成 QuickPaste.xcodeproj
 
 name: QuickPaste
 
@@ -18,8 +12,10 @@ settings:
   base:
     SWIFT_VERSION: "5.9"
     TARGETED_DEVICE_FAMILY: "1,2"
-    # 注意：不要在命令行或这里传全局 INFOPLIST_FILE —— 那会让键盘扩展也误用主 app 的
-    # plist。Info.plist 统一由 scripts/fix_info_plists.py 在编译后写回产物（见工作流）。
+    # 关键：禁止 Xcode 自动生成 Info.plist，否则会覆盖仓库里的自定义 plist，
+    # 导致产物缺 CFBundleIdentifier / ATS 例外，爱思导入报「文件已损坏」、
+    # WKWebView 也打不开 http 局域网页面。
+    GENERATE_INFOPLIST_FILE: NO
 
 targets:
   QuickPaste:
@@ -29,23 +25,16 @@ targets:
       - App
     info:
       path: App/Info.plist
-    dependencies:
-      - target: QuickPasteKeyboard
-        embed: true
-
-  QuickPasteKeyboard:
-    type: app-extension
-    platform: iOS
-    sources:
-      - Keyboard
-    info:
-      path: Keyboard/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.mulberry6323.twilight7904
+        INFOPLIST_FILE: App/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
 
 schemes:
   QuickPaste:
     build:
       targets:
         QuickPaste: all
-        QuickPasteKeyboard: all
     archive:
       config: Release
