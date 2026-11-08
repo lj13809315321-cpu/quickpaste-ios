@@ -18,6 +18,11 @@ enum QPSharedHistory {
 
     struct Payload: Codable {
         var items: [String] = []
+        /// 每条对应的收录时刻（秒级，与 items 一一对齐）。
+        /// 用可选类型：旧版本写下的 JSON 没有这个字段，要能照常解码，不能丢历史。
+        /// ⚠️ 曾经这里是「读的时候拿 now 现算」，结果这几条永远被算成刚刚复制、
+        /// 永远顶在列表最前面 —— 电脑同步过来的新条目永远上不去。
+        var times: [Double]? = nil
         var pip: Bool = false
         /// 后台读剪贴板被系统拦了（没有「从其他 App 粘贴 → 允许」）。
         /// 用可选类型，保证旧版本写下的 JSON 还能解码，不会丢历史。
@@ -29,6 +34,13 @@ enum QPSharedHistory {
 
         var isBlocked: Bool { blocked == true }
         var isWanted: Bool { want == true }
+
+        /// 第 index 条的收录时刻（毫秒）。旧版本写的 / 剪贴板兜底通道没有时间戳 → nil
+        func timeMS(at index: Int) -> Double? {
+            guard let t = times, index >= 0, index < t.count else { return nil }
+            let v = t[index]
+            return v > 0 ? v * 1000 : nil
+        }
 
         /// 心跳还活着吗（25 秒内算活）。
         /// 没有 App Group 时写不了心跳（剪贴板兜底通道每写一次都会改
@@ -95,9 +107,29 @@ enum QPSharedHistory {
         var p = read()
         var changed = false
         if p.items.first != text {
-            p.items.removeAll { $0 == text }
-            p.items.insert(text, at: 0)
-            p.items = Array(p.items.prefix(maxItems))
+            let now = Date().timeIntervalSince1970
+            // 时间戳要和 items 一一对齐：旧版本没写 times（nil）时按列表顺序补一组
+            // **固定**的递减值（越靠前越新），只补这一次，之后一直用这份。
+            var times = p.times ?? []
+            if times.count > p.items.count { times = Array(times.prefix(p.items.count)) }
+            for i in times.count..<p.items.count {
+                times.append(now - Double(i + 1) * 0.05)
+            }
+            // 去重时条目和时间戳要一起删，否则整条时间线全部错位
+            var keptItems: [String] = []
+            var keptTimes: [Double] = []
+            for (i, s) in p.items.enumerated() where s != text {
+                keptItems.append(s)
+                keptTimes.append(times[i])
+            }
+            keptItems.insert(text, at: 0)
+            keptTimes.insert(now, at: 0)
+            if keptItems.count > maxItems {
+                keptItems = Array(keptItems.prefix(maxItems))
+                keptTimes = Array(keptTimes.prefix(maxItems))
+            }
+            p.items = keptItems
+            p.times = keptTimes
             changed = true
         }
         // pip 保持原值：画中画是否在跑由 setPip 决定，不在这里改
@@ -151,6 +183,7 @@ enum QPSharedHistory {
         var p = read()
         guard !p.items.isEmpty else { return }
         p.items = []
+        p.times = []
         write(p, keeping: nil)
     }
 

@@ -170,6 +170,56 @@ struct KeyboardPrefs {
         set { store.set(newValue, forKey: "qp.clipTimes") }
     }
 
+    // MARK: - 时间戳（排序用）
+
+    /// 老数据（升级前留下的）没有时间戳：按列表顺序补一次并**落盘**。
+    /// ⚠️ 不能在渲染时每次都拿 `now` 现算 —— 那样这些条每一轮都被算成「刚刚复制」，
+    /// 永远顶在最前面，电脑同步过来的新条目永远排不上去（这就是用户看到的排序坏掉）。
+    mutating func backfillClipTimes() {
+        let texts = clips
+        var times = clipTimes
+        guard times.count < texts.count else {
+            if times.count > texts.count { clipTimes = Array(times.prefix(texts.count)) }
+            return
+        }
+        let now = Date().timeIntervalSince1970
+        for i in times.count..<texts.count { times.append(now - Double(i + 1) * 0.5) }
+        clipTimes = times
+    }
+
+    /// 共享通道（连续复制 / 画中画）里没有时间戳的条目：用「首次见到的时刻」并永久固定。
+    /// 有真实时间戳（新版写进 Payload.times）时不会走到这里。
+    mutating func stickyTime(for text: String, index: Int) -> Double {
+        var map = (store.dictionary(forKey: "qp.sharedSeen") as? [String: Double]) ?? [:]
+        let key = KeyboardPrefs.stableKey(text)
+        if let t = map[key] { return t * 1000 }
+        let now = Date().timeIntervalSince1970 - Double(index + 1) * 0.05
+        map[key] = now
+        if map.count > 400 {
+            // 别让 UserDefaults 无限长：只留最新的 240 条
+            let keep = map.sorted { $0.value > $1.value }.prefix(240)
+            map = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+        }
+        store.set(map, forKey: "qp.sharedSeen")
+        return now * 1000
+    }
+
+    /// 清空时把共享通道那几条的时间戳抹成 0，让清空闸门（clearedAt）把它们挡住。
+    /// 没开 App Group 时 `QPSharedHistory.clear()` 是清不掉文件的，只能从这里下手。
+    mutating func suppressShared(_ texts: [String]) {
+        guard !texts.isEmpty else { return }
+        var map = (store.dictionary(forKey: "qp.sharedSeen") as? [String: Double]) ?? [:]
+        for t in texts { map[KeyboardPrefs.stableKey(t)] = 0 }
+        store.set(map, forKey: "qp.sharedSeen")
+    }
+
+    /// Swift 的 hashValue 每次启动都不一样，不能拿来当持久 key，这里用 FNV-1a。
+    private static func stableKey(_ s: String) -> String {
+        var h: UInt64 = 0xcbf2_9ce4_8422_2325
+        for b in s.utf8 { h ^= UInt64(b); h = h &* 0x0000_0100_0000_01b3 }
+        return String(h, radix: 16)
+    }
+
     var pinned: [String] {
         get { store.stringArray(forKey: "qp.pinned") ?? [] }
         set { store.set(newValue, forKey: "qp.pinned") }

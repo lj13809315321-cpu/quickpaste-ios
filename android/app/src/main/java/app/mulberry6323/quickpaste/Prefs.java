@@ -228,6 +228,11 @@ public final class Prefs {
         return getList("qp.clips");
     }
 
+    /** 与 clips 按下标一一对应的收录时刻（毫秒字符串）。用于统一排序。 */
+    public List<String> clipTimes() {
+        return getList("qp.clipTimes");
+    }
+
     public List<String> pinned() {
         return getList("qp.pinned");
     }

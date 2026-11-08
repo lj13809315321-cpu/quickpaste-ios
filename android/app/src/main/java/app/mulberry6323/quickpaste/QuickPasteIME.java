@@ -911,20 +911,65 @@ public class QuickPasteIME extends InputMethodService {
         }
     }
 
-    /** 本机复制历史在前，电脑同步记录在后；按文字去重，最多 30 条。 */
+    /**
+     * 本机历史 + 电脑同步记录，统一按时间倒序（电脑刚推来的那条就该在第一格），
+     * 按文字去重，最多 30 条。
+     *
+     * ⚠️ 旧实现给每条本机记录都写 `System.currentTimeMillis()`，于是本机永远排在
+     * 电脑记录前面 —— 用户看到的就是「手机那几条一直在最前面，电脑同步过来的
+     * 永远上不去」。现在用 qp.clipTimes 里的真实收录时刻参与统一排序。
+     */
     private List<SyncItem> mergedItems() {
-        List<SyncItem> all = new ArrayList<SyncItem>();
+        final List<SyncItem> all = new ArrayList<SyncItem>();
         java.util.Set<String> seen = new java.util.HashSet<String>();
-        for (String t : prefs.items("clip")) {
+        long now = System.currentTimeMillis();
+        List<String> texts = prefs.clips();
+        List<String> rawTimes = prefs.clipTimes();
+
+        for (int i = 0; i < texts.size(); i++) {
+            String t = texts.get(i);
             if (!seen.add("t:" + t)) continue;
-            all.add(new SyncItem("local:" + t, t, "text", "", "", "local",
-                    System.currentTimeMillis()));
+            long ts;
+            if (i < rawTimes.size()) {
+                ts = now - (long) (i + 1) * 60000L;   // 兜底：越靠后越旧（固定值）
+                try {
+                    ts = Long.parseLong(rawTimes.get(i).trim());
+                } catch (Exception ignored) {
+                }
+            } else {
+                ts = now - (long) (i + 1) * 60000L;   // 没时间戳的老数据
+            }
+            all.add(new SyncItem("local:" + t, t, "text", "", "", "local", ts));
         }
         for (SyncItem it : syncItems) {
             String key = it.isImage() ? "i:" + it.id : "t:" + it.displayText();
             if (!seen.add(key)) continue;
             all.add(it);
         }
+
+        // ★ 按时间倒序：不再「本机永远在前、电脑永远在后」
+        java.util.Collections.sort(all, new java.util.Comparator<SyncItem>() {
+            @Override
+            public int compare(SyncItem a, SyncItem b) {
+                if (a.ts == b.ts) return 0;
+                return a.ts < b.ts ? 1 : -1;
+            }
+        });
+
+        // 置顶条目仍然排最前
+        List<String> pins = prefs.pinned();
+        if (!pins.isEmpty()) {
+            List<SyncItem> head = new ArrayList<SyncItem>();
+            List<SyncItem> tail = new ArrayList<SyncItem>();
+            for (SyncItem it : all) {
+                if (pins.contains(it.text)) head.add(it);
+                else tail.add(it);
+            }
+            head.addAll(tail);
+            all.clear();
+            all.addAll(head);
+        }
+
         if (all.size() > 30) return new ArrayList<SyncItem>(all.subList(0, 30));
         return all;
     }

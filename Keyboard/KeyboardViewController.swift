@@ -935,6 +935,8 @@ final class KeyboardViewController: UIInputViewController {
     private func mergedItems() -> [SyncItem] {
         var all: [SyncItem] = []
         var seen = Set<String>()
+        // 老数据缺时间戳的，先补一次并落盘（不能每次渲染都拿 now 现算，否则永远排最前）
+        prefs.backfillClipTimes()
         let texts = prefs.clips
         let times = prefs.clipTimes
         let now = Date().timeIntervalSince1970
@@ -943,24 +945,28 @@ final class KeyboardViewController: UIInputViewController {
             let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, !prefs.isMuted(text),
                   seen.insert("t:" + text).inserted else { continue }
-            // 老数据没有时间戳：按列表顺序往回推，保证相对顺序不乱
-            let sec = i < times.count ? times[i] : now - Double(i + 1)
+            // 兜底（极少走到）：仍然是固定值，绝不随刷新漂移
+            let sec = i < times.count ? times[i] : now - Double(i + 1) * 0.5
             all.append(SyncItem(id: "local:" + text, text: text, type: "text",
                                 image: "", mime: "", source: "local",
                                 ts: sec * 1000))
         }
-        // 主 App 画中画期间在别的 App 里复制的内容（多数已经进上面的 clips，这里兜底）
-        for raw in QPSharedHistory.read().items {
+        // 主 App 画中画期间在别的 App 里复制的内容（多数已经进上面的 clips，这里兜底）。
+        // ★ 时间戳必须用收录当时的真实时刻：
+        //   旧版在这里写 `now - 0.5`，每刷新一次就变成「刚刚复制」，
+        //   于是这几条永久钉在最前面，电脑同步过来的新条目永远上不去。
+        let shared = QPSharedHistory.read()
+        for (i, raw) in shared.items.enumerated() {
             let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, !prefs.isMuted(text),
                   seen.insert("t:" + text).inserted else { continue }
+            let ms = shared.timeMS(at: i) ?? prefs.stickyTime(for: text, index: i)
             all.append(SyncItem(id: "pip:" + text, text: text, type: "text",
-                                image: "", mime: "", source: "local",
-                                ts: (now - 0.5) * 1000))
+                                image: "", mime: "", source: "local", ts: ms))
         }
         // 电脑端记录：带真实时间戳（毫秒），参与统一排序。
-        // 老版本服务端可能没写 ts，给个「稍早于现在」的兜底，别让它全沉到底下。
-        for it in items {
+        // 老版本服务端没写 ts：给个固定兜底（同样不能每刷新现算，否则永远浮在上面）
+        for (i, it) in items.enumerated() {
             let key = it.isImage ? "i:" + it.id : "t:" + it.displayText
             guard seen.insert(key).inserted else { continue }
             if it.ts > 0 {
@@ -968,7 +974,8 @@ final class KeyboardViewController: UIInputViewController {
             } else {
                 all.append(SyncItem(id: it.id, text: it.text, type: it.type,
                                     image: it.image, mime: it.mime,
-                                    source: it.source, ts: (now - 30) * 1000))
+                                    source: it.source,
+                                    ts: prefs.stickyTime(for: "srv:" + it.id, index: i)))
             }
         }
 
@@ -1415,7 +1422,7 @@ final class KeyboardViewController: UIInputViewController {
     private func openMenu() {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.2 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.3 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -1495,7 +1502,7 @@ final class KeyboardViewController: UIInputViewController {
             self.refreshList(); self.closeMenu()
             self.showToast(pinned ? "已取消置顶" : "已置顶")
         })
-        menuStack.addArrangedSubview(menuRow(item.isImage ? "👁 放大查看" : "👁 预览") { [weak self] in
+        menuStack.addArrangedSubview(menuRow(item.isImage ? "👁 放大查看（并复制）" : "👁 预览") { [weak self] in
             self?.closeMenu()
             if item.isImage { self?.showImage(item) } else { self?.openPreview(item) }
         })
@@ -1543,6 +1550,9 @@ final class KeyboardViewController: UIInputViewController {
         if let s = UIPasteboard.general.string, !s.isEmpty { texts.append(s) }
         prefs.clearAllClips()
         prefs.mute(texts)          // 剪贴板里还留着的那条也不再抓回来
+        // 共享通道里还在的条目：没 App Group 时清不掉文件，只能把它们的时间戳抹成 0，
+        // 交给下面的清空闸门挡住（否则清完它们又带着「刚刚」的时间戳冒回来）
+        prefs.suppressShared(QPSharedHistory.read().items)
         QPSharedHistory.clear()    // 有 App Group 才真清共享；否则不动剪贴板
         items = []                 // 电脑端缓存也清掉，别让旧条目下一轮又被渲染出来
         if syncState == "online" {
@@ -1877,10 +1887,11 @@ final class KeyboardViewController: UIInputViewController {
         ])
 
         let tip = UILabel()
-        tip.text = "iOS 键盘不能直接插入图片，复制后到输入框长按粘贴"
+        tip.text = "点开即已复制 · 到输入框长按 → 粘贴\n（iOS 不开放键盘直接插图接口）"
         tip.font = .systemFont(ofSize: 11)
         tip.textColor = .white
         tip.textAlignment = .center
+        tip.numberOfLines = 2
         tip.translatesAutoresizingMaskIntoConstraints = false
         imageOverlay.addSubview(tip)
         NSLayoutConstraint.activate([
@@ -1890,7 +1901,7 @@ final class KeyboardViewController: UIInputViewController {
         ])
     }
 
-    private func showImage(_ item: SyncItem) {
+    private func showImage(_ item: SyncItem, copyToClipboard: Bool = true) {
         guard let d = item.imageData, let img = UIImage(data: d) else {
             showToast("图片解码失败")
             return
@@ -1898,6 +1909,13 @@ final class KeyboardViewController: UIInputViewController {
         currentImageItem = item
         imageBig.image = img
         imageOverlay.isHidden = false
+        // ★ iOS 键盘扩展**没有**插入图片的接口（textDocumentProxy 只有文本），
+        //   能做到的极限就是：点一下图就把图片放进系统剪贴板，
+        //   用户只需要在输入框里长按 → 粘贴，不用再点进来看一次再点复制。
+        if copyToClipboard, hasFullAccess {
+            UIPasteboard.general.image = img
+            showToast("图片已复制 · 到输入框长按粘贴")
+        }
     }
 
     @objc private func closeImage() { imageOverlay.isHidden = true }
