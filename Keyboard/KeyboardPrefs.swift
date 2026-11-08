@@ -65,6 +65,13 @@ struct KeyboardPrefs {
         set { store.set(clamp(Int(newValue), 240, 360), forKey: "qp.height") }
     }
 
+    /// 复制后自动推送到电脑（默认开）。用户要求：手机复制完，电脑那边就该有，
+    /// 不用再手动点「发送到电脑」。
+    var autoPush: Bool {
+        get { (store.object(forKey: "qp.autoPush") as? Bool) ?? true }
+        set { store.set(newValue, forKey: "qp.autoPush") }
+    }
+
     var spaceCursor: Bool {
         get { (store.object(forKey: "qp.spaceCursor") as? Bool) ?? true }
         set { store.set(newValue, forKey: "qp.spaceCursor") }

@@ -26,6 +26,10 @@ final class KeyboardViewController: UIInputViewController {
     private var displayItems: [SyncItem] = []
     /// 当前滑开的卡片，滑开新的就把旧的收回去
     private weak var openedCard: QPSwipeCard?
+    /// 还没成功推到电脑的文本（电脑没连上时先排队，连上就补发）
+    private var pendingPush: [String] = []
+    /// 最近已经推过的文本，避免同一条被反复 POST
+    private var pushedRecent: [String] = []
     /// 键盘可见期间【常驻】的剪贴板轮询，与「连续复制 / 画中画」开关完全解耦。
     /// 旧版只在连续复制开启时才轮询，导致弹起键盘后复制第二段必须收起再弹。
     private var pasteboardTimer: Timer?
@@ -47,6 +51,8 @@ final class KeyboardViewController: UIInputViewController {
     private let listScroll = UIScrollView()
     private let listStack = UIStackView()
     private let calcBox = UIStackView()
+    /// 计算模式下整行隐藏，换成计算器自己的「‹返回 / 空格 / 发送」
+    private let bottomBar = UIStackView()
     private let menuOverlay = UIView()
     private let menuStack = UIStackView()
     private let imageOverlay = UIView()
@@ -127,6 +133,8 @@ final class KeyboardViewController: UIInputViewController {
         refreshCopyButton()
         refreshCopyOverlay()
         refreshSymbols()
+        // 上次在计算器里直接收起键盘的话，这次弹起要回到列表模式
+        if isCalcMode { toggleCalcMode() }
         refreshList()
         pull(showConnecting: true)
         startPolling()
@@ -228,8 +236,13 @@ final class KeyboardViewController: UIInputViewController {
             pipBlocked = blockedNow
             refreshCopyButton()
         }
+        // 主 App 在后台（画中画）收的条目：并入列表的同时也推到电脑，
+        // 否则「键盘收起时复制的」永远只留在手机里。
         for text in shared.items.reversed() where !text.isEmpty {
-            if !prefs.isMuted(text) && prefs.capture(text) { dirty = true }
+            if !prefs.isMuted(text) && prefs.capture(text) {
+                dirty = true
+                autoPush(text)
+            }
         }
 
         if force || changed {
@@ -248,6 +261,8 @@ final class KeyboardViewController: UIInputViewController {
                 if prefs.capture(raw) {
                     dirty = true
                     capturedCount += 1
+                    // ★ 复制即同步：手机复制完，电脑端立刻就有这一条
+                    autoPush(raw)
                 }
                 prefs.lastSeenChange = change
             }
@@ -262,11 +277,10 @@ final class KeyboardViewController: UIInputViewController {
     // MARK: - 连续复制（键盘内监听 + 主 App 画中画后台监听）
 
     /// 第三个按钮（⧉）。用户明确要求：**别做成点了没反应的假开关**。
-    /// 所以这里只做两件真实的事：
     ///   · 已经开着 → 关掉键盘侧的开关（后台小窗请在小窗上点 ✕）；
     ///   · 没开 → 立刻变蓝 + 让 App 记住「下次打开就自动开」，并尝试把 App 叫到前台。
-    ///     键盘扩展在 iOS 上不能自己开画中画、多数版本也不允许直接开 App，
-    ///     所以同时弹出大字指引（能跳就直接跳走，跳不走用户也看得懂下一步）。
+    /// 旧版跳转失败还弹一整块「打开 QuickPaste」的指引面板，点了照样不动 ——
+    /// 用户原话「弹也跳转不了有啥用」。现在不弹面板，只用一句 toast 如实说跳没跳成。
     private func toggleContinuous() {
         guard hasFullAccess else {
             showToast("请先在 设置 → 键盘 → QuickPaste 开启「允许完全访问」")
@@ -288,67 +302,37 @@ final class KeyboardViewController: UIInputViewController {
         refreshCopyButton()
         // 让主 App 一打开就自动开画中画（不依赖这次跳转是否成功）
         QPSharedHistory.setWant(true)
-        _ = openMainApp("pip/start")
-        // 立刻给一个真实的状态：如果 App 已经在后台抓，就不弹指引
         if pipLive && !pipBlocked {
-            showToast("连续复制已开启")
+            showToast("连续复制已开启（后台小窗在抓）")
             return
         }
-        showContinuousGuide()
-    }
-
-    /// 指引面板：取代原来那行 10.5pt 的小字。
-    /// 键盘高度只有 240~360pt，所以只放一个大按钮，其余压成两三行大字。
-    private func showContinuousGuide() {
-        let box = UIStackView()
-        box.axis = .vertical
-        box.spacing = 8
-
-        let title = UILabel()
-        title.text = pipBlocked ? "需要「允许粘贴」才收得到" : "连续复制要主 App 在后台"
-        title.font = .systemFont(ofSize: 19, weight: .bold)
-        title.numberOfLines = 0
-        title.textColor = .black
-        box.addArrangedSubview(title)
-
-        let body = UILabel()
-        body.text = pipBlocked
-            ? "系统不许 App 在后台读剪贴板。打开 QuickPaste 后点「去系统设置允许粘贴」，把「从其他 App 粘贴」改成【允许】即可，一次就够。"
-            : "键盘一收起就被系统挂起，只有主 App 的小窗能继续抓。点下面按钮打开 QuickPaste，进去会自动开小窗。"
-        body.font = .systemFont(ofSize: 14, weight: .regular)
-        body.numberOfLines = 0
-        body.textColor = UIColor.rgb(70, 72, 78)
-        box.addArrangedSubview(body)
-
-        let openApp = bigSheetButton("打开 QuickPaste",
-                                     bg: QPColor.blue, fg: .white)
-        openApp.addAction(UIAction { [weak self] _ in
-            guard let self = self else { return }
-            if !self.openMainApp("pip/start") {
-                self.showToast("本系统禁止键盘跳转，请回主屏点 QuickPaste 图标")
+        openMainAppReporting("pip/start") { [weak self] ok in
+            if ok {
+                self?.showToast("已打开 QuickPaste，小窗会自动开启")
+            } else {
+                self?.showToast("系统不让键盘跳转，请回主屏点 QuickPaste 图标")
             }
-        }, for: .touchUpInside)
-        box.addArrangedSubview(openApp)
-
-        let tip = UILabel()
-        tip.text = "按钮没反应 = 系统不允许键盘跳转，回主屏点 QuickPaste 图标就行。"
-        tip.font = .systemFont(ofSize: 12)
-        tip.numberOfLines = 0
-        tip.textColor = UIColor.rgb(150, 152, 160)
-        box.addArrangedSubview(tip)
-
-        showSheet(title: "连续复制", body: box)
+        }
     }
 
-    private func bigSheetButton(_ title: String, bg: UIColor, fg: UIColor) -> UIButton {
-        let b = UIButton(type: .system)
-        b.setTitle(title, for: .normal)
-        b.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
-        b.setTitleColor(fg, for: .normal)
-        b.backgroundColor = bg
-        b.layer.cornerRadius = 12
-        b.heightAnchor.constraint(equalToConstant: 46).isActive = true
-        return b
+    /// 打开主 App 并**如实回报**结果。键盘扩展里 openURL 经常直接失败，
+    /// 所以必须拿到 completion 里的 Bool 再告诉用户，而不是先弹一句假的「点下面按钮」。
+    private func openMainAppReporting(_ path: String,
+                                      completion: @escaping (Bool) -> Void) {
+        guard let url = URL(string: "quickpaste://" + path) else {
+            completion(false)
+            return
+        }
+        guard let ctx = extensionContext else {
+            _ = openURLString(url.absoluteString)
+            completion(false)
+            return
+        }
+        ctx.open(url) { [weak self] ok in
+            // 失败再试一次响应链（个别系统版本只有这条路通）
+            if !ok { _ = self?.openURLString(url.absoluteString) }
+            DispatchQueue.main.async { completion(ok) }
+        }
     }
 
     /// 键盘扩展里打开 URL：三层尝试，任意一层成功就行。
@@ -440,6 +424,53 @@ final class KeyboardViewController: UIInputViewController {
         lastSync = Date()
         syncState = "online"
         refreshHead()
+        // 之前电脑没连上时排队的内容，现在补发
+        flushPendingPush()
+    }
+
+    // MARK: - 复制后自动推送到电脑
+
+    /// 复制即同步：抓到新内容就 POST 给电脑。
+    /// 电脑没连上不丢，先进队列，等下一次拉取成功再补发。
+    private func autoPush(_ text: String) {
+        guard prefs.autoPush else { return }
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, !isServerAddress(t) else { return }
+        if pushedRecent.contains(t) { return }
+        pushedRecent.append(t)
+        if pushedRecent.count > 30 { pushedRecent.removeFirst(pushedRecent.count - 30) }
+
+        guard syncState == "online" else {
+            enqueuePush(t)
+            return
+        }
+        client.pushText(t) { [weak self] error in
+            guard let self = self, error != nil else { return }
+            DispatchQueue.main.async {
+                // 推失败：撤回「已推」标记并排队，等下次连上重发
+                self.pushedRecent.removeAll { $0 == t }
+                self.enqueuePush(t)
+            }
+        }
+    }
+
+    private func enqueuePush(_ text: String) {
+        guard !pendingPush.contains(text) else { return }
+        pendingPush.append(text)
+        if pendingPush.count > 20 { pendingPush.removeFirst(pendingPush.count - 20) }
+    }
+
+    private func flushPendingPush() {
+        guard prefs.autoPush, syncState == "online", !pendingPush.isEmpty else { return }
+        let batch = pendingPush
+        pendingPush = []
+        for t in batch {
+            guard !t.isEmpty else { continue }
+            client.pushText(t) { [weak self] error in
+                guard let self = self, error != nil else { return }
+                DispatchQueue.main.async { self.enqueuePush(t) }
+            }
+        }
     }
 
     private func startPolling() {
@@ -540,8 +571,8 @@ final class KeyboardViewController: UIInputViewController {
     private func buildStatusDot() {
         let holder = UIView()
         holder.translatesAutoresizingMaskIntoConstraints = false
-        holder.widthAnchor.constraint(equalToConstant: 14).isActive = true
-        holder.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        holder.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        holder.heightAnchor.constraint(equalToConstant: QPTool.size).isActive = true
 
         let dot = UIView()
         dot.layer.cornerRadius = 4.5
@@ -606,7 +637,7 @@ final class KeyboardViewController: UIInputViewController {
         // 地球键用 SF Symbols 的单色「globe」而不是 🌐 emoji：
         // emoji 一定是彩色的，用户要求跟其它图标一个颜色（黑），像系统键盘那样。
         let globe = toolButton("")
-        let globeCfg = UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)
+        let globeCfg = toolIconConfig()
         globe.setImage(UIImage(systemName: "globe", withConfiguration: globeCfg)?
                         .withRenderingMode(.alwaysTemplate), for: .normal)
         globe.tintColor = UIColor.rgb(17, 17, 17)
@@ -654,10 +685,10 @@ final class KeyboardViewController: UIInputViewController {
 
         let deleteKey = toolButton("✕")
         // 原型 .kbTool.dark：76 宽、#2B2C31 黑底、白字
-        deleteKey.backgroundColor = UIColor.rgb(43, 44, 49)
-        deleteKey.setTitleColor(.white, for: .normal)
-        deleteKey.titleLabel?.font = .systemFont(ofSize: 18, weight: .medium)
-        // HTML .kbTool.dark：宽 76（与底行「发送」同级），图标靠右、右内边距 8
+        deleteKey.backgroundColor = .clear
+        deleteKey.setTitleColor(UIColor.rgb(17, 17, 17), for: .normal)
+        deleteKey.titleLabel?.font = .systemFont(ofSize: 19, weight: .regular)
+        // 用户要求：删除键保留 76×38 横条，高度与其它工具键一致（38）
         deleteKey.widthAnchor.constraint(equalToConstant: 76).isActive = true
         deleteKey.contentHorizontalAlignment = .right
         deleteKey.contentEdgeInsets = UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 8)
@@ -683,9 +714,10 @@ final class KeyboardViewController: UIInputViewController {
         guard let b = copyButton else { return }
         // 蓝色 = 用户开着连续复制（立即生效，不等 App 那边）
         let on = prefs.continuous
-        b.backgroundColor = on ? QPColor.blue : QPColor.keyBg
-        b.tintColor = on ? .white : UIColor.rgb(17, 17, 17)
-        b.layer.cornerRadius = 10
+        // 整排图标都没有底色，所以「开着」用蓝色图标表示，与其它图标同一个位置、同一个大小
+        b.backgroundColor = .clear
+        b.tintColor = on ? QPColor.blue : UIColor.rgb(17, 17, 17)
+        b.layer.cornerRadius = QPTool.radius
         b.clipsToBounds = false
 
         // ★ 右上角小点，用来回答「到底在不在抓」：
@@ -702,7 +734,7 @@ final class KeyboardViewController: UIInputViewController {
             : UIColor.rgb(255, 159, 10)
         dot.layer.cornerRadius = 4.5
         dot.layer.borderWidth = 1.5
-        dot.layer.borderColor = QPColor.keyBg.cgColor
+        dot.layer.borderColor = QPColor.bg.cgColor
         dot.translatesAutoresizingMaskIntoConstraints = false
         b.addSubview(dot)
         NSLayoutConstraint.activate([
@@ -726,11 +758,11 @@ final class KeyboardViewController: UIInputViewController {
             b.setTitle(symbol, for: .normal)
             // 原型 .kbSym：28×32、#D4D6DE、圆角 8、字号 20
             b.titleLabel?.font = .systemFont(ofSize: 19, weight: .semibold)
-            b.setTitleColor(.black, for: .normal)
-            b.backgroundColor = QPColor.keyBg
-            b.layer.cornerRadius = 8
-            b.widthAnchor.constraint(equalToConstant: 28).isActive = true
-            b.heightAnchor.constraint(equalToConstant: 32).isActive = true
+            b.setTitleColor(UIColor.rgb(17, 17, 17), for: .normal)
+            b.backgroundColor = .clear
+            b.layer.cornerRadius = QPTool.radius
+            b.widthAnchor.constraint(equalToConstant: QPTool.size).isActive = true
+            b.heightAnchor.constraint(equalToConstant: QPTool.size).isActive = true
             b.addAction(UIAction { [weak self] _ in
                 self?.textDocumentProxy.insertText(symbol)
             }, for: .touchUpInside)
@@ -738,12 +770,12 @@ final class KeyboardViewController: UIInputViewController {
         }
         let more = UIButton(type: .system)
         more.setTitle("⋯", for: .normal)
-        more.titleLabel?.font = .systemFont(ofSize: 15)
-        more.setTitleColor(.black, for: .normal)
-        more.backgroundColor = QPColor.keyBg
-        more.layer.cornerRadius = 8
-        more.widthAnchor.constraint(equalToConstant: 26).isActive = true
-        more.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        more.titleLabel?.font = .systemFont(ofSize: 18, weight: .medium)
+        more.setTitleColor(UIColor.rgb(17, 17, 17), for: .normal)
+        more.backgroundColor = .clear
+        more.layer.cornerRadius = QPTool.radius
+        more.widthAnchor.constraint(equalToConstant: QPTool.size).isActive = true
+        more.heightAnchor.constraint(equalToConstant: QPTool.size).isActive = true
         // 「⋯」现在是完整设置界面的入口，不再只是扁平菜单
         more.addAction(UIAction { [weak self] _ in self?.settings.show(.root) }, for: .touchUpInside)
         symStack.addArrangedSubview(more)
@@ -857,30 +889,51 @@ final class KeyboardViewController: UIInputViewController {
         listStack.addArrangedSubview(makeClearFooter())
     }
 
-    /// 本机复制历史在前，电脑同步记录在后；按文字去重，最多 30 条。
+    /// 主列表：本机 + 画中画 + 电脑，全部按时间倒序混排（最新的永远在第一格）。
+    /// 旧版把本机记录一律排前面、电脑记录全塞在后面 —— 电脑刚推过来的那条会掉到
+    /// 5 条手机记录之后，用户原话「其实它应该显示到第一位」。
     private func mergedItems() -> [SyncItem] {
         var all: [SyncItem] = []
         var seen = Set<String>()
-        for text in prefs.items(for: "clip") {
-            guard !prefs.isMuted(text),
+        let texts = prefs.clips
+        let times = prefs.clipTimes
+        let now = Date().timeIntervalSince1970
+
+        for (i, raw) in texts.enumerated() {
+            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, !prefs.isMuted(text),
                   seen.insert("t:" + text).inserted else { continue }
+            // 老数据没有时间戳：按列表顺序往回推，保证相对顺序不乱
+            let sec = i < times.count ? times[i] : now - Double(i + 1)
             all.append(SyncItem(id: "local:" + text, text: text, type: "text",
                                 image: "", mime: "", source: "local",
-                                ts: Date().timeIntervalSince1970 * 1000))
+                                ts: sec * 1000))
         }
-        // 主 App 画中画期间，在别的 App 里复制的内容
-        for text in QPSharedHistory.read().items {
+        // 主 App 画中画期间在别的 App 里复制的内容（多数已经进上面的 clips，这里兜底）
+        for raw in QPSharedHistory.read().items {
+            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, !prefs.isMuted(text),
                   seen.insert("t:" + text).inserted else { continue }
             all.append(SyncItem(id: "pip:" + text, text: text, type: "text",
                                 image: "", mime: "", source: "local",
-                                ts: Date().timeIntervalSince1970 * 1000))
+                                ts: (now - 0.5) * 1000))
         }
+        // 电脑端记录：带真实时间戳（毫秒），参与统一排序。
+        // 老版本服务端可能没写 ts，给个「稍早于现在」的兜底，别让它全沉到底下。
         for it in items {
             let key = it.isImage ? "i:" + it.id : "t:" + it.displayText
             guard seen.insert(key).inserted else { continue }
-            all.append(it)
+            if it.ts > 0 {
+                all.append(it)
+            } else {
+                all.append(SyncItem(id: it.id, text: it.text, type: it.type,
+                                    image: it.image, mime: it.mime,
+                                    source: it.source, ts: (now - 30) * 1000))
+            }
         }
+
+        // ★ 按时间倒序：电脑刚推的那条就该在第一格
+        all.sort { $0.ts > $1.ts }
         // 置顶条目排在最前（本机与电脑记录一起参与）
         let pins = prefs.pinned
         if !pins.isEmpty {
@@ -1053,71 +1106,111 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: - 计算器（算式直接写进目标 App 的输入框）
 
-    /// 用户要的行为：按 7 就真的在对话框里出现 7，按 + 出现 +，
-    /// 按 = 时才把光标前这段算式换成结果（7+8 → 15）。键盘自己不显示算式。
+    /// 用户给的样式：4 列数字键盘 + 右侧一列橙色运算符 + 底行「‹返回 / 空格 / 发送」。
+    /// 旧版是 5 列 × 4 行塞在列表那点高度里，键又小又挤、老是按错，全部推翻重做。
+    /// 行为不变：按 7 就真的在对话框里出现 7，按 = 才把这段算式换成结果（7+8 → 15）。
     private func buildCalc() {
         calcBox.axis = .vertical
-        calcBox.spacing = 8
-        calcBox.alignment = .fill
+        calcBox.spacing = 7
+        calcBox.distribution = .fillEqually
         calcBox.isHidden = true
         calcBox.isLayoutMarginsRelativeArrangement = true
-        calcBox.layoutMargins = UIEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+        calcBox.layoutMargins = UIEdgeInsets(top: 6, left: 8, bottom: 8, right: 8)
 
-        let hint = UILabel()
-        hint.text = "按键直接输入到输入框，点 = 出结果"
-        hint.font = .systemFont(ofSize: 11)
-        hint.textColor = QPColor.sub
-        hint.textAlignment = .center
-        calcBox.addArrangedSubview(hint)
-
-        // HTML .calcKeys：gap 8、键高 44、字号 19、圆角 9；「=」与「收起」为蓝色主按钮
-        let rows: [[String]] = [
-            ["7", "8", "9", "÷", "⌫"],
-            ["4", "5", "6", "×", "("],
-            ["1", "2", "3", "−", ")"],
-            ["0", ".", "=", "+", "收起"]
+        let rows: [[(title: String, key: String, kind: CalcKeyKind)]] = [
+            [("1", "1", .digit), ("2", "2", .digit), ("3", "3", .digit), ("+", "+", .op)],
+            [("4", "4", .digit), ("5", "5", .digit), ("6", "6", .digit), ("−", "-", .op)],
+            [("7", "7", .digit), ("8", "8", .digit), ("9", "9", .digit), ("×", "×", .op)],
+            [(".", ".", .digit), ("0", "0", .digit), ("=", "=", .equal), ("÷", "÷", .op)]
         ]
+
         for keys in rows {
             let r = UIStackView()
             r.axis = .horizontal
-            r.spacing = 8
+            r.spacing = 7
             r.distribution = .fillEqually
-            for key in keys {
-                let primary = (key == "=" || key == "收起")
-                let b = UIButton(type: .system)
-                b.setTitle(key, for: .normal)
-                b.titleLabel?.font = .systemFont(ofSize: 19, weight: .semibold)
-                b.setTitleColor(primary ? .white : UIColor.rgb(17, 17, 17), for: .normal)
-                b.layer.cornerRadius = 9
-                b.backgroundColor = primary ? QPColor.blue : QPColor.keyBg
-                let h = b.heightAnchor.constraint(equalToConstant: 40)
-                h.priority = UILayoutPriority(999)
-                h.isActive = true
-                b.addAction(UIAction { [weak self] _ in self?.handleCalcKey(key) },
-                            for: .touchUpInside)
-                r.addArrangedSubview(b)
+            for k in keys {
+                r.addArrangedSubview(calcKeyButton(k.title, key: k.key, kind: k.kind))
             }
             calcBox.addArrangedSubview(r)
         }
+
+        // 底行：‹返回 / 空格 / 发送（跟系统输入框那一行一样，高度略矮）
+        let bottom = UIStackView()
+        bottom.axis = .horizontal
+        bottom.spacing = 7
+        bottom.alignment = .center
+
+        let back = UIButton(type: .system)
+        back.setTitle("‹ 返回", for: .normal)
+        back.titleLabel?.font = .systemFont(ofSize: 17)
+        back.setTitleColor(UIColor.rgb(17, 17, 17), for: .normal)
+        back.backgroundColor = UIColor.rgb(198, 200, 208)
+        back.layer.cornerRadius = 8
+        back.addAction(UIAction { [weak self] _ in self?.toggleCalcMode() }, for: .touchUpInside)
+        back.widthAnchor.constraint(equalToConstant: 84).isActive = true
+        back.heightAnchor.constraint(equalToConstant: 42).isActive = true
+        bottom.addArrangedSubview(back)
+
+        let space = UIButton(type: .system)
+        space.setTitle("空格", for: .normal)
+        space.titleLabel?.font = .systemFont(ofSize: 17)
+        space.setTitleColor(UIColor.rgb(17, 17, 17), for: .normal)
+        space.backgroundColor = .white
+        space.layer.cornerRadius = 8
+        space.heightAnchor.constraint(equalToConstant: 42).isActive = true
+        space.addAction(UIAction { [weak self] _ in
+            self?.textDocumentProxy.insertText(" ")
+        }, for: .touchUpInside)
+        bottom.addArrangedSubview(space)
+
+        let send = UIButton(type: .system)
+        send.setTitle("发送", for: .normal)
+        send.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
+        send.setTitleColor(.white, for: .normal)
+        send.backgroundColor = QPColor.blue
+        send.layer.cornerRadius = 8
+        send.widthAnchor.constraint(equalToConstant: 104).isActive = true
+        send.heightAnchor.constraint(equalToConstant: 42).isActive = true
+        // 发送 = 真的发送消息（等价于按系统回车键），不是发到电脑
+        send.addAction(UIAction { [weak self] _ in
+            self?.textDocumentProxy.insertText("\n")
+        }, for: .touchUpInside)
+        bottom.addArrangedSubview(send)
+
+        calcBox.addArrangedSubview(bottom)
         root.addArrangedSubview(calcBox)
+    }
+
+    private enum CalcKeyKind { case digit, op, equal }
+
+    private func calcKeyButton(_ title: String, key: String, kind: CalcKeyKind) -> UIButton {
+        let b = UIButton(type: .system)
+        b.setTitle(title, for: .normal)
+        b.titleLabel?.font = .systemFont(ofSize: 26, weight: .regular)
+        b.setTitleColor(kind == .digit ? UIColor.rgb(17, 17, 17) : .white, for: .normal)
+        b.backgroundColor = kind == .digit ? .white : UIColor.rgb(232, 148, 63)
+        b.layer.cornerRadius = 8
+        b.addAction(UIAction { [weak self] _ in self?.handleCalcKey(key) },
+                    for: .touchUpInside)
+        return b
     }
 
     private func toggleCalcMode() {
         isCalcMode.toggle()
         calcBox.isHidden = !isCalcMode
         listScroll.isHidden = isCalcMode
+        bottomBar.isHidden = isCalcMode
+        // 计算器要放得下 5 行大键，比列表模式高一点；退出时恢复用户设的高度
+        heightConstraint.constant = isCalcMode ? 356 : prefs.height
+        UIView.animate(withDuration: 0.18) { self.view.layoutIfNeeded() }
     }
 
     private func handleCalcKey(_ key: String) {
-        switch key {
-        case "收起":
-            toggleCalcMode()
-        case "⌫":
-            textDocumentProxy.deleteBackward()
-        case "=":
+        if key == "=" {
             evaluateInline()
-        default:
-            // 数字 / 运算符 / 括号 / 小数点：直接写进当前 App 的输入框
+        } else {
+            // 数字 / 运算符 / 小数点：直接写进当前 App 的输入框
             textDocumentProxy.insertText(key)
         }
     }
@@ -1149,7 +1242,7 @@ final class KeyboardViewController: UIInputViewController {
     // MARK: - 底行 (.kbKeys)
 
     private func buildBottomBar() {
-        let bar = UIStackView()
+        let bar = bottomBar
         bar.axis = .horizontal
         bar.spacing = 6
         bar.isLayoutMarginsRelativeArrangement = true
@@ -1201,8 +1294,12 @@ final class KeyboardViewController: UIInputViewController {
         send.backgroundColor = QPColor.blue
         send.layer.cornerRadius = 9
         send.widthAnchor.constraint(equalToConstant: 66).isActive = true
-        send.addAction(UIAction { [weak self] _ in self?.sendInputTextToPc() },
-                       for: .touchUpInside)
+        // ★ 发送 = 真的发送消息（等价按系统回车），不是「发到电脑」。
+        //   之前这里调的是 sendInputTextToPc()，用户一按就把聊天内容推到电脑上去了。
+        //   要发到电脑请长按（弹出「发送到电脑」菜单）或从 ⋯ 菜单里选。
+        send.addAction(UIAction { [weak self] _ in
+            self?.textDocumentProxy.insertText("\n")
+        }, for: .touchUpInside)
         let longSend = UILongPressGestureRecognizer(target: self,
                                                     action: #selector(sendLongPress(_:)))
         send.addGestureRecognizer(longSend)
@@ -1211,9 +1308,10 @@ final class KeyboardViewController: UIInputViewController {
         root.addArrangedSubview(bar)
     }
 
+    /// 长按「发送」= 打开「发到电脑」的菜单（单击已经是发送消息了）。
     @objc private func sendLongPress(_ g: UILongPressGestureRecognizer) {
         guard g.state == .began else { return }
-        textDocumentProxy.insertText("\n")
+        openMenu()
     }
 
     // MARK: - 浮层菜单
@@ -1249,7 +1347,7 @@ final class KeyboardViewController: UIInputViewController {
     private func openMenu() {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.6 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -1782,17 +1880,26 @@ final class KeyboardViewController: UIInputViewController {
 
     /// 原型 .kbTool：38×38、#D4D6DE 灰底、圆角 10。
     /// 宽度约束降到 999，让 .kbTool.dark 的 76 宽能覆盖（两个 required 约束会冲突）。
+    /// 工具条图标的统一视觉尺寸：自绘图标画在 24pt 画布里，
+    /// SF Symbol 用 pointSize 19 时字形的实际高度也在 24pt 左右，两者看起来一样大。
+    private func toolIconConfig() -> UIImage.SymbolConfiguration {
+        UIImage.SymbolConfiguration(pointSize: 19, weight: .regular)
+    }
+
     private func toolButton(_ title: String) -> UIButton {
         let b = UIButton(type: .system)
         b.setTitle(title, for: .normal)
         b.titleLabel?.font = .systemFont(ofSize: 17, weight: .medium)
         b.setTitleColor(.black, for: .normal)
-        b.backgroundColor = QPColor.keyBg
-        b.layer.cornerRadius = 10
-        let w = b.widthAnchor.constraint(equalToConstant: 38)
+        // 用户要求：整排图标背景统一 —— 一律去掉底色，只留图标本身
+        b.backgroundColor = .clear
+        b.layer.cornerRadius = QPTool.radius
+        let w = b.widthAnchor.constraint(equalToConstant: QPTool.size)
         w.priority = UILayoutPriority(999)
         w.isActive = true
-        b.heightAnchor.constraint(equalToConstant: 38).isActive = true
+        b.heightAnchor.constraint(equalToConstant: QPTool.size).isActive = true
+        // 图标不许被压扁：整排键永远同一个 38×38 网格
+        b.imageView?.contentMode = .scaleAspectFit
         return b
     }
 
@@ -1800,7 +1907,8 @@ final class KeyboardViewController: UIInputViewController {
     private func kbHideIcon(_ color: UIColor) -> UIImage {
         let fmt = UIGraphicsImageRendererFormat()
         fmt.scale = 3
-        return UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24), format: fmt).image { _ in
+        let c = QPTool.iconCanvas
+        return UIGraphicsImageRenderer(size: CGSize(width: c, height: c), format: fmt).image { _ in
             color.setStroke()
             let frame = UIBezierPath(roundedRect: CGRect(x: 2, y: 3.5, width: 20, height: 11),
                                      cornerRadius: 2.4)
@@ -1830,7 +1938,8 @@ final class KeyboardViewController: UIInputViewController {
     private func copyIcon(_ color: UIColor) -> UIImage {
         let fmt = UIGraphicsImageRendererFormat()
         fmt.scale = 3
-        return UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24), format: fmt).image { _ in
+        let c = QPTool.iconCanvas
+        return UIGraphicsImageRenderer(size: CGSize(width: c, height: c), format: fmt).image { _ in
             color.setStroke()
             let back = UIBezierPath(roundedRect: CGRect(x: 8, y: 3, width: 13, height: 15),
                                     cornerRadius: 2.6)
@@ -1971,6 +2080,15 @@ private extension UIColor {
     static func rgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> UIColor {
         UIColor(red: r / 255, green: g / 255, blue: b / 255, alpha: 1)
     }
+}
+
+/// 工具条上所有按钮共用同一套尺寸，避免「大小不一」：
+/// 收起键盘 / 地球 / 连续复制 / 符号 / ⋯ 全部 38×38、圆角 10、图标 24pt 画布；
+/// 删除键按用户要求保留 76×38 的横条（高度与其它键一致）。
+enum QPTool {
+    static let size: CGFloat = 38
+    static let radius: CGFloat = 10
+    static let iconCanvas: CGFloat = 24
 }
 
 private enum QPTime {

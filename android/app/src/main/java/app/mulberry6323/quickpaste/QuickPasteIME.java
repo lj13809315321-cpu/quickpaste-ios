@@ -119,8 +119,7 @@ public class QuickPasteIME extends InputMethodService {
     private ScrollView listScroll;
     private LinearLayout listBox;
     private LinearLayout calcBox;
-    private TextView calcExpr;
-    private TextView calcResult;
+
     private FrameLayout menuOverlay;
     private LinearLayout menuStack;
     /** v1.6 完整多页设置界面 */
@@ -129,7 +128,7 @@ public class QuickPasteIME extends InputMethodService {
     private FrameLayout imgOverlay;
     private ImageView imgBig;
 
-    private String calcExpression = "";
+
     private boolean isCalcMode = false;
     private final ArrayList<String> undoStack = new ArrayList<String>();
     private float spaceOriginX = 0f;
@@ -231,7 +230,9 @@ public class QuickPasteIME extends InputMethodService {
                 prefs.setSyncUrl(s);
                 return true;
             }
-            return prefs.capture(s);
+            boolean added = prefs.capture(s);
+            if (added) autoPush(s);
+            return added;
         } catch (Exception ignored) { return false; }
     }
 
@@ -377,6 +378,64 @@ public class QuickPasteIME extends InputMethodService {
     private void stopPolling() {
         polling = false;
         ui.removeCallbacks(pollTask);
+    }
+
+    /**
+     * 复制即同步：抓到新内容就 POST 给电脑，不用再手动点「发送到电脑」。
+     * 电脑没连上不丢，进队列，下一次拉取成功后补发。
+     */
+    private void autoPush(String text) {
+        if (!prefs.autoPush()) return;
+        final String t = text.trim();
+        if (t.isEmpty()) return;
+        if (pushedRecent.contains(t)) return;
+        pushedRecent.add(t);
+        while (pushedRecent.size() > 30) pushedRecent.remove(0);
+
+        if (!"online".equals(syncState)) {
+            enqueuePush(t);
+            return;
+        }
+        final SyncClient c = client();
+        net.execute(new Runnable() {
+            @Override public void run() {
+                try {
+                    c.pushText(t);
+                } catch (final Exception e) {
+                    ui.post(new Runnable() {
+                        @Override public void run() {
+                            pushedRecent.remove(t);
+                            enqueuePush(t);
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    private void enqueuePush(String t) {
+        if (!pendingPush.contains(t)) pendingPush.add(t);
+        while (pendingPush.size() > 20) pendingPush.remove(0);
+    }
+
+    private void flushPendingPush() {
+        if (!prefs.autoPush() || !"online".equals(syncState) || pendingPush.isEmpty()) return;
+        java.util.List<String> batch = new java.util.ArrayList<>(pendingPush);
+        pendingPush.clear();
+        for (final String t : batch) {
+            final SyncClient c = client();
+            net.execute(new Runnable() {
+                @Override public void run() {
+                    try {
+                        c.pushText(t);
+                    } catch (final Exception e) {
+                        ui.post(new Runnable() {
+                            @Override public void run() { enqueuePush(t); }
+                        });
+                    }
+                }
+            });
+        }
     }
 
     private void sendTextToPc(String text) {
@@ -592,11 +651,9 @@ public class QuickPasteIME extends InputMethodService {
 
         if (copyBtn != null) {
             boolean on = prefs.continuous();
-            copyBtn.setTextColor(on ? Color.WHITE : TEXT);
-            GradientDrawable g = new GradientDrawable();
-            g.setColor(on ? BLUE : KEY_BG);
-            g.setCornerRadius(dp(10));
-            copyBtn.setBackground(g);
+            // 整排图标都没有底色，「开着」用蓝色图标表示
+            copyBtn.setTextColor(on ? BLUE : TEXT);
+            copyBtn.setBackgroundColor(Color.TRANSPARENT);
         }
     }
 
@@ -667,12 +724,9 @@ public class QuickPasteIME extends InputMethodService {
 
         Button deleteBtn = toolBtn("✕");
         // 原型 .kbTool.dark：宽 76（与底行「发送」同级）、#2B2C31 黑底、白字、靠右
-        GradientDrawable dgd = new GradientDrawable();
-        dgd.setColor(Color.parseColor("#2B2C31"));
-        dgd.setCornerRadius(dp(10));
-        deleteBtn.setBackground(dgd);
-        deleteBtn.setTextColor(Color.WHITE);
-        deleteBtn.setTextSize(18);
+        deleteBtn.setBackgroundColor(Color.TRANSPARENT);
+        deleteBtn.setTextColor(TEXT);
+        deleteBtn.setTextSize(19);
         deleteBtn.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         deleteBtn.setPadding(0, 0, dp(8), 0);
         deleteBtn.setLayoutParams(new LinearLayout.LayoutParams(dp(76), dp(38)));
@@ -1043,104 +1097,84 @@ public class QuickPasteIME extends InputMethodService {
     private void buildCalc() {
         calcBox = new LinearLayout(this);
         calcBox.setOrientation(LinearLayout.VERTICAL);
-        calcBox.setGravity(Gravity.CENTER_VERTICAL);
-        calcBox.setPadding(dp(10), dp(6), dp(10), dp(6));
+        calcBox.setPadding(dp(8), dp(6), dp(8), dp(8));
         calcBox.setVisibility(View.GONE);
 
-        // HTML .calcExpr 24px 居中 / .calcRes 32px 蓝色居中
-        calcExpr = new TextView(this);
-        calcExpr.setTextSize(20);
-        calcExpr.setTextColor(SUB);
-        calcExpr.setGravity(Gravity.CENTER);
-        calcResult = new TextView(this);
-        calcResult.setTextSize(30);
-        calcResult.setTextColor(BLUE);
-        calcResult.setTypeface(Typeface.DEFAULT_BOLD);
-        calcResult.setGravity(Gravity.CENTER);
-        calcResult.setPadding(0, 0, 0, dp(12));
-        calcBox.addView(calcExpr, lp(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        calcBox.addView(calcResult, lp(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        // HTML .calcKeys：gap 8、键高 44、字号 19、圆角 9；「输入」为蓝色主按钮
-        String[][] rows = {
-                {"7", "8", "9", "÷", "⌫"},
-                {"4", "5", "6", "×", "("},
-                {"1", "2", "3", "−", ")"},
-                {"0", ".", "=", "+", "输入"}
+        // 用户给的样式：4 列数字键 + 右侧一列橙色运算符，跟 iOS 版保持一致。
+        // 按键直接输入到目标输入框，按 = 才把光标前那段算式换成结果。
+        String[] keys = {
+                "1", "2", "3", "+",
+                "4", "5", "6", "-",
+                "7", "8", "9", "×",
+                ".", "0", "=", "÷"
         };
-        for (String[] keys : rows) {
-            LinearLayout r = new LinearLayout(this);
-            r.setOrientation(LinearLayout.HORIZONTAL);
-            for (final String k : keys) {
-                Button b = keyBtn(k);
-                b.setTextSize(19);
-                b.setTypeface(Typeface.DEFAULT_BOLD);
-                if ("输入".equals(k)) {
-                    GradientDrawable ib = new GradientDrawable();
-                    ib.setColor(BLUE);
-                    ib.setCornerRadius(dp(9));
-                    b.setBackground(ib);
-                    b.setTextColor(Color.WHITE);
-                }
-                b.setOnClickListener(new View.OnClickListener() {
-                    @Override public void onClick(View v) { handleCalcKey(k); }
-                });
-                LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(40), 1f);
-                p.setMargins(dp(4), dp(3), dp(4), dp(3));
-                r.addView(b, p);
+        LinearLayout row = null;
+        for (int i = 0; i < keys.length; i++) {
+            if (i % 4 == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+                rp.setMargins(0, dp(3), 0, dp(3));
+                calcBox.addView(row, rp);
             }
-            calcBox.addView(r, lp(ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT));
+            final String k = keys[i];
+            boolean digit = k.matches("[0-9.]");
+            Button b = keyBtn("-".equals(k) ? "−" : k);
+            b.setTextSize(26);
+            b.setTypeface(Typeface.DEFAULT);
+            GradientDrawable bd = new GradientDrawable();
+            bd.setColor(digit ? Color.WHITE : Color.parseColor("#E8943F"));
+            bd.setCornerRadius(dp(8));
+            b.setBackground(bd);
+            b.setTextColor(digit ? Color.parseColor("#111111") : Color.WHITE);
+            b.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    if ("=".equals(k)) {
+                        calcEvaluateInline();
+                    } else {
+                        insert(k);
+                    }
+                }
+            });
+            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+            p.setMargins(dp(3), 0, dp(3), 0);
+            if (row != null) row.addView(b, p);
         }
-        // 与列表区共用同一块高度（weight=1），不再与「清空剪贴板」重叠挤压
         content.addView(calcBox, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+    }
+
+    /// 点 = ：取光标前那段算式，求值后替换掉（7+8 → 15）
+    private void calcEvaluateInline() {
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+        CharSequence before = ic.getTextBeforeCursor(64, 0);
+        String s = before == null ? "" : before.toString();
+        int i = s.length();
+        while (i > 0 && "0123456789.+-−×÷*/() ".indexOf(s.charAt(i - 1)) >= 0) i--;
+        String expr = s.substring(i).trim();
+        if (expr.isEmpty()) {
+            toast("先输入算式，例如 7+8，再点 =");
+            return;
+        }
+        String value;
+        try {
+            value = CalcEngine.format(CalcEngine.evaluate(expr));
+        } catch (Exception e) {
+            toast("算式不完整，例如 7+8");
+            return;
+        }
+        int n = s.length() - i;
+        if (n > 0) ic.deleteSurroundingText(n, 0);
+        ic.commitText(value, 1);
     }
 
     private void toggleCalcMode() {
         isCalcMode = !isCalcMode;
         calcBox.setVisibility(isCalcMode ? View.VISIBLE : View.GONE);
         listScroll.setVisibility(isCalcMode ? View.GONE : View.VISIBLE);
-        // 两个 Tab 已移除，无需切换可见性
-        if (isCalcMode) {
-            calcExpression = "";
-            updateCalcDisplay();
-        }
-    }
-
-    private void handleCalcKey(String k) {
-        if ("输入".equals(k)) {
-            try {
-                insert(CalcEngine.format(CalcEngine.evaluate(calcExpression)));
-                toggleCalcMode();
-            } catch (Exception ignored) {
-            }
-        } else if ("⌫".equals(k)) {
-            if (!calcExpression.isEmpty()) {
-                calcExpression = calcExpression.substring(0, calcExpression.length() - 1);
-            }
-            updateCalcDisplay();
-        } else if (!"=".equals(k)) {
-            calcExpression += k;
-            updateCalcDisplay();
-        }
-    }
-
-    private void updateCalcDisplay() {
-        calcExpr.setText(calcExpression.isEmpty() ? "输入算式，例如 128×3" : calcExpression);
-        if (calcExpression.isEmpty()) {
-            calcResult.setText("");
-            return;
-        }
-        try {
-            calcResult.setText("= " + CalcEngine.format(CalcEngine.evaluate(calcExpression)));
-            calcResult.setTextColor(BLUE);
-        } catch (Exception e) {
-            calcResult.setText("—");
-            calcResult.setTextColor(SUB);
-        }
     }
 
     // ------------------------------------------------------------ 底行 (.kbKeys)
@@ -1217,16 +1251,18 @@ public class QuickPasteIME extends InputMethodService {
         sgd.setCornerRadius(dp(9));
         send.setBackground(sgd);
         send.setTypeface(Typeface.DEFAULT_BOLD);
+        // 发送 = 真的发送消息（等同回车），不是「发到电脑」。
+        // 要发到电脑请长按（弹出菜单）或从 ⋯ 菜单里选。
         send.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                sendInputTextToPc();
+                insert("\n");
             }
         });
         send.setOnLongClickListener(new View.OnLongClickListener() {
             @Override
             public boolean onLongClick(View v) {
-                insert("\n");
+                openMenu();
                 return true;
             }
         });
@@ -1734,14 +1770,14 @@ public class QuickPasteIME extends InputMethodService {
         b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setTextColor(TEXT);
         b.setPadding(0, 0, 0, 0);
-        b.setBackground(roundBg(KEY_BG, 9));
-        b.setMinWidth(dp(30));
-        b.setMinimumWidth(dp(30));
+        b.setBackgroundColor(Color.TRANSPARENT);
+        b.setMinWidth(dp(38));
+        b.setMinimumWidth(dp(38));
         b.setLayoutParams(new LinearLayout.LayoutParams(dp(38), dp(38)));
         return b;
     }
 
-    /** 原型 .kbSym：28×32、圆角 8、字号 20 */
+    /** 与工具键同一套尺寸：38×38、无底色（整排图标大小统一） */
     private Button symBtn(String text) {
         Button b = new Button(this);
         b.setText(text);
@@ -1750,8 +1786,8 @@ public class QuickPasteIME extends InputMethodService {
         b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setTextColor(TEXT);
         b.setPadding(0, 0, 0, 0);
-        b.setBackground(roundBg(KEY_BG, 8));
-        b.setLayoutParams(new LinearLayout.LayoutParams(dp(28), dp(32)));
+        b.setBackgroundColor(Color.TRANSPARENT);
+        b.setLayoutParams(new LinearLayout.LayoutParams(dp(38), dp(38)));
         return b;
     }
 

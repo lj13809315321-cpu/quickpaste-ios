@@ -26,7 +26,7 @@ enum AppTutorials {
                     sections: [
             ("首次启用", "1. 打开系统「设置」。\n2. 通用 → 键盘 → 键盘 → 添加新键盘。\n3. 选择 QuickPaste，开启「允许完全访问」。"),
             ("切换与插入", "在任意 App 点输入框，长按地球键选 QuickPaste。点记录或常用语即在光标处插入；顶部地球按钮可切下一个键盘。"),
-            ("发送到电脑", "键盘底行蓝色「发送」把输入框文字发回电脑；⌄ 长按打开菜单可发剪贴板文字/图片。"),
+            ("发送到电脑", "键盘底行蓝色「发送」= 发送消息（等同回车）。要发到电脑请长按「发送」，或从 ⋯ 菜单选「发送输入框文字 / 剪贴板文字 / 图片到电脑」。"),
             ("完全访问的用途", "键盘读取剪贴板、访问局域网同步服务与本机历史都需要它。密码框会强制使用系统键盘，属系统限制。")
         ]),
         AppTutorial(id: "history", title: "剪贴板历史",
@@ -249,7 +249,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("QuickPaste v1.7 · 真·系统输入法", systemImage: "keyboard")
+                        Label("QuickPaste v1.8 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -576,7 +576,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("QuickPaste v1.7 · 真·系统输入法").font(.headline)
+                Text("QuickPaste v1.8 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }
