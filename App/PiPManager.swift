@@ -166,6 +166,8 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     private var lastBeat = Date.distantPast
     private var starting = false
     private var watchOnly = false
+    /// 最近已经推到电脑的文本，避免同一条反复 POST
+    private var pushedRecent: [String] = []
 
     private override init() {
         super.init()
@@ -404,6 +406,7 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
             QPSharedHistory.setBlocked(false)
         }
         if QPSharedHistory.append(s) {
+            pushToPc(s)
             let n = QPSharedHistory.read().items.count
             DispatchQueue.main.async {
                 self.capturedCount = n
@@ -416,6 +419,27 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
             DispatchQueue.main.async {
                 self.capturedCount = n
                 self.contentVC?.update(blocked: false, count: n)
+            }
+        }
+    }
+
+    /// 主 App 在后台（画中画）抓到的新内容，同样直接推给电脑。
+    /// 键盘没弹出来的时候复制，电脑那边照样立刻能看到 —— 这才是「连续复制」的意义。
+    private func pushToPc(_ text: String) {
+        guard !pushedRecent.contains(text) else { return }
+        pushedRecent.append(text)
+        if pushedRecent.count > 30 { pushedRecent.removeFirst(pushedRecent.count - 30) }
+
+        let d = UserDefaults.standard
+        let url = d.string(forKey: "qp.syncURL")
+            ?? d.string(forKey: "qp_server_url")
+            ?? "http://192.168.1.2:8787"
+        let pair = d.string(forKey: "qp.syncPair") ?? ""
+        SyncClient(url: url, pair: pair).pushText(text) { [weak self] error in
+            guard error != nil else { return }
+            DispatchQueue.main.async {
+                // 推失败（电脑没连上）：撤标记，下一条或下次启动再试
+                self?.pushedRecent.removeAll { $0 == text }
             }
         }
     }
