@@ -134,9 +134,9 @@ public class MainActivity extends Activity {
     private void showUrlDialog(final boolean first) {
         final EditText et = new EditText(this);
         et.setInputType(InputType.TYPE_TEXT_VARIATION_URI);
-        et.setHint("http://192.168.1.5:8787");
+        et.setHint("http://192.168.1.2:8787");
         String old = prefs.getString(KEY_URL, "");
-        et.setText(old.isEmpty() ? "http://192.168.1.5:8787" : old);
+        et.setText(old.isEmpty() ? "http://192.168.1.2:8787" : old);
         et.setSelection(et.getText().length());
 
         AlertDialog.Builder b = new AlertDialog.Builder(this)
@@ -156,7 +156,7 @@ public class MainActivity extends Activity {
 
     private static String normalize(String raw) {
         String u = raw == null ? "" : raw.trim();
-        if (u.isEmpty()) u = "http://192.168.1.5:8787";
+        if (u.isEmpty()) u = "http://192.168.1.2:8787";
         if (!u.startsWith("http://") && !u.startsWith("https://")) u = "http://" + u;
         while (u.endsWith("/")) u = u.substring(0, u.length() - 1);
         return u;

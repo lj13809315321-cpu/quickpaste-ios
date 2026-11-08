@@ -45,7 +45,7 @@ struct ContentView: View {
         }
         .onAppear {
             if serverURL.isEmpty {
-                draft = "http://192.168.1.5:8787"
+                draft = "http://192.168.1.2:8787"
                 showSetup = true
             }
         }
@@ -60,7 +60,7 @@ struct ContentView: View {
 
     private func normalize(_ raw: String) -> String {
         var u = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if u.isEmpty { u = "http://192.168.1.5:8787" }
+        if u.isEmpty { u = "http://192.168.1.2:8787" }
         if !u.hasPrefix("http://") && !u.hasPrefix("https://") { u = "http://" + u }
         while u.hasSuffix("/") { u.removeLast() }
         return u
@@ -76,7 +76,7 @@ struct SetupView: View {
         NavigationStack {
             Form {
                 Section("电脑地址") {
-                    TextField("http://192.168.1.5:8787", text: $draft)
+                    TextField("http://192.168.1.2:8787", text: $draft)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled(true)
