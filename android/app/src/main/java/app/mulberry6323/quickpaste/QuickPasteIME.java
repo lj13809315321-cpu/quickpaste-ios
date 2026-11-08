@@ -7,7 +7,14 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ColorFilter;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.PixelFormat;
+import android.graphics.Rect;
+import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.inputmethodservice.InputMethodService;
@@ -76,6 +83,8 @@ public class QuickPasteIME extends InputMethodService {
     private final ExecutorService net = Executors.newSingleThreadExecutor();
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final List<SyncItem> syncItems = new ArrayList<SyncItem>();
+    /** 主列表实际渲染的数据：本机复制历史 + 电脑同步记录（不依赖联网） */
+    private final List<SyncItem> displayItems = new ArrayList<SyncItem>();
     private final Map<String, Bitmap> thumbs = new HashMap<String, Bitmap>();
 
     private String syncSig = "";
@@ -101,7 +110,8 @@ public class QuickPasteIME extends InputMethodService {
     private View headDot;
     private TextView headTitle;
     private TextView headDesc;
-    private Button autoBtn;
+    private Button copyBtn;
+    private View floatingView;
     private LinearLayout symRow;
     private LinearLayout tabBar;
     private Button tabClip;
@@ -178,34 +188,122 @@ public class QuickPasteIME extends InputMethodService {
         // 「历史保留时间」：每次呼出键盘执行一次过期清理
         int pruned = prefs.pruneHistory();
         if (pruned > 0 && prefs.savedTip()) toast("已清理 " + pruned + " 条过期记录");
-        // 「连续复制」开关：呼出时自动收录系统剪贴板新文字
-        if (prefs.continuous() && cm != null) {
-            android.content.ClipData d = cm.getPrimaryClip();
-            if (d != null && d.getItemCount() > 0 && d.getItemAt(0).getText() != null) {
-                if (prefs.capture(d.getItemAt(0).getText().toString()) && prefs.savedTip()) {
-                    toast("新内容已保存");
-                }
-            }
-        }
+        // ★ 每次呼出键盘都读系统剪贴板，与是否联网、是否开启连续复制无关
+        adoptClipboardText();
         applyHeight();
         refreshHead();
         refreshTabBar();
         refreshSymbols();
+        refreshList();
         pull(true);
         startPolling();
+        syncCaptureState();
     }
 
     @Override
     public void onFinishInputView(boolean finishingInput) {
         stopPolling();
+        ui.removeCallbacks(captureTask);
         super.onFinishInputView(finishingInput);
     }
 
     @Override
     public void onDestroy() {
         stopPolling();
+        ui.removeCallbacks(captureTask);
         net.shutdownNow();
         super.onDestroy();
+    }
+
+    // ------------------------------------------------------------ 连续复制
+
+    /** 读一次系统剪贴板写入本机历史，返回是否新增。 */
+    private boolean adoptClipboardText() {
+        if (cm == null) return false;
+        try {
+            ClipData d = cm.getPrimaryClip();
+            if (d == null || d.getItemCount() == 0) return false;
+            CharSequence t = d.getItemAt(0).getText();
+            if (t == null) return false;
+            String s = t.toString().trim();
+            if (s.isEmpty()) return false;
+            if (s.startsWith("http://") && s.contains(":8787")) {
+                prefs.setSyncUrl(s);
+                return true;
+            }
+            return prefs.capture(s);
+        } catch (Exception ignored) { return false; }
+    }
+
+    private final Runnable captureTask = new Runnable() {
+        @Override public void run() {
+            if (!prefs.continuous()) return;
+            if (adoptClipboardText()) refreshList();
+            ui.postDelayed(this, 700);
+        }
+    };
+
+    private void toggleContinuous() {
+        prefs.setContinuous(!prefs.continuous());
+        syncCaptureState();
+        toast(prefs.continuous() ? "连续复制已开启" : "已结束连续复制");
+    }
+
+    private void syncCaptureState() {
+        refreshHead();
+        if (floatingView == null) buildFloatingView();
+        if (floatingView != null) {
+            floatingView.setVisibility(prefs.continuous() ? View.VISIBLE : View.GONE);
+        }
+        ui.removeCallbacks(captureTask);
+        if (prefs.continuous()) ui.post(captureTask);
+    }
+
+    /** HTML floatwin：圆角深色小窗 + 绿点 +「连续复制中…」+ 结束 */
+    private void buildFloatingView() {
+        if (container == null) return;
+        FrameLayout f = new FrameLayout(this);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(Color.parseColor("#202126"));
+        bg.setCornerRadius(dp(16));
+        f.setBackground(bg);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), 0, dp(12), 0);
+        TextView dot = new TextView(this);
+        dot.setText("●");
+        dot.setTextColor(Color.parseColor("#34C759"));
+        dot.setTextSize(10);
+        row.addView(dot);
+        TextView label = new TextView(this);
+        label.setText("  连续复制中…");
+        label.setTextColor(Color.WHITE);
+        label.setTextSize(13);
+        row.addView(label, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        Button stop = new Button(this);
+        stop.setText("结束");
+        stop.setAllCaps(false);
+        stop.setTextSize(12);
+        stop.setTextColor(Color.parseColor("#78BEFF"));
+        stop.setBackgroundColor(Color.TRANSPARENT);
+        stop.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                prefs.setContinuous(false);
+                syncCaptureState();
+                toast("已结束连续复制");
+            }
+        });
+        row.addView(stop);
+        f.addView(row, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dp(212), dp(34),
+                Gravity.CENTER_HORIZONTAL | Gravity.TOP);
+        lp.topMargin = dp(108);
+        container.addView(f, lp);
+        f.setVisibility(View.GONE);
+        floatingView = f;
     }
 
     // ------------------------------------------------------------ 同步
@@ -488,13 +586,13 @@ public class QuickPasteIME extends InputMethodService {
         headTitle.setText(title);
         headDesc.setText(desc);
 
-        if (autoBtn != null) {
-            boolean on = prefs.syncAuto();
-            autoBtn.setTextColor(on ? Color.WHITE : TEXT);
+        if (copyBtn != null) {
+            boolean on = prefs.continuous();
+            copyBtn.setTextColor(on ? Color.WHITE : TEXT);
             GradientDrawable g = new GradientDrawable();
             g.setColor(on ? BLUE : KEY_BG);
-            g.setCornerRadius(dp(9));
-            autoBtn.setBackground(g);
+            g.setCornerRadius(dp(10));
+            copyBtn.setBackground(g);
         }
     }
 
@@ -511,7 +609,10 @@ public class QuickPasteIME extends InputMethodService {
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setPadding(dp(8), 0, dp(8), 0);
 
-        Button collapse = toolBtn("⌄");
+        Button collapse = toolBtn("");
+        // HTML .kbTool.bare + i-kbhide：键盘轮廓 + 两排键点 + 下箭头，透明底
+        collapse.setBackgroundColor(Color.TRANSPARENT);
+        collapse.setBackground(new KbHideDrawable(TEXT));
         collapse.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -536,28 +637,18 @@ public class QuickPasteIME extends InputMethodService {
         });
         bar.addView(globe);
 
-        autoBtn = toolBtn("⧉");
-        autoBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                prefs.setSyncAuto(!prefs.syncAuto());
-                if (prefs.syncAuto()) startPolling();
-                else stopPolling();
-                refreshHead();
-                toast(prefs.syncAuto() ? "自动同步已开启（每 3 秒）" : "自动同步已关闭");
-            }
+        // HTML .kbTool.copyBtn：连续复制一级开关，蓝色=开启；与「同步」无关
+        copyBtn = toolBtn("⧉");
+        copyBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { toggleContinuous(); }
         });
-        autoBtn.setOnLongClickListener(new View.OnLongClickListener() {
-            @Override
-            public boolean onLongClick(View v) {
-                if (prefs.directSwitch()) {
-                    prefs.setTab("clip".equals(prefs.tab()) ? "phrase" : "clip");
-                    refreshTabBar(); refreshList();
-                } else openSettings();
+        copyBtn.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override public boolean onLongClick(View v) {
+                settings.open("continuous");
                 return true;
             }
         });
-        bar.addView(autoBtn);
+        bar.addView(copyBtn);
 
         HorizontalScrollView symScroll = new HorizontalScrollView(this);
         symScroll.setHorizontalScrollBarEnabled(false);
@@ -571,13 +662,16 @@ public class QuickPasteIME extends InputMethodService {
                 ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
         Button deleteBtn = toolBtn("✕");
-        // 原型 .kbTool.dark：黑底白字
+        // 原型 .kbTool.dark：宽 76（与底行「发送」同级）、#2B2C31 黑底、白字、靠右
         GradientDrawable dgd = new GradientDrawable();
         dgd.setColor(Color.parseColor("#2B2C31"));
-        dgd.setCornerRadius(dp(9));
+        dgd.setCornerRadius(dp(10));
         deleteBtn.setBackground(dgd);
         deleteBtn.setTextColor(Color.WHITE);
         deleteBtn.setTextSize(18);
+        deleteBtn.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        deleteBtn.setPadding(0, 0, dp(8), 0);
+        deleteBtn.setLayoutParams(new LinearLayout.LayoutParams(dp(76), dp(38)));
         deleteBtn.setLongClickable(true);
         deleteBtn.setOnLongClickListener(new View.OnLongClickListener() {
             @Override public boolean onLongClick(View v) { openSettings(); return true; }
@@ -622,7 +716,7 @@ public class QuickPasteIME extends InputMethodService {
         int count = Math.min(prefs.symbolCount(), syms.size());
         for (int i = 0; i < count; i++) {
             final String s = syms.get(i);
-            Button b = toolBtn(s);
+            Button b = symBtn(s);
             b.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -631,7 +725,7 @@ public class QuickPasteIME extends InputMethodService {
             });
             symRow.addView(b);
         }
-        Button more = toolBtn("⋯");
+        Button more = symBtn("⋯");
         // 「⋯」是完整设置界面入口
         more.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -668,7 +762,8 @@ public class QuickPasteIME extends InputMethodService {
                 ViewGroup.LayoutParams.MATCH_PARENT, 1f));
         tabBar.addView(tabPhrase, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.MATCH_PARENT, 1f));
-        content.addView(tabBar, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(30)));
+        // 用户要求：去掉「剪贴板（同步）/ 常用语」两个 Tab，位置全留给剪贴板记录
+        // 不再 addView 到 content，tabBar 保持脱离布局（其余刷新调用仍安全）
     }
 
     private void refreshTabBar() {
@@ -702,22 +797,17 @@ public class QuickPasteIME extends InputMethodService {
     private void refreshList() {
         if (listBox == null) return;
         listBox.removeAllViews();
-        if ("phrase".equals(prefs.tab())) {
-            List<String> items = prefs.items("phrase");
-            if (items.isEmpty()) {
-                listBox.addView(emptyText("暂无常用语，可在主 App 里编辑"));
-                return;
-            }
-            for (final String s : items) listBox.addView(makeTextCard(s, false, null));
-            return;
-        }
-        if (syncItems.isEmpty()) {
+        // ★ 主列表 = 本机复制历史 + 电脑同步记录，不依赖是否连上电脑
+        displayItems.clear();
+        displayItems.addAll(mergedItems());
+
+        if (displayItems.isEmpty()) {
             String msg = "error".equals(syncState)
-                    ? "连接失败\n点上方状态栏重试，或到设置里确认电脑地址"
-                    : "暂无同步记录\n在电脑上复制文字或截图，会自动出现在这里";
+                    ? "暂无剪贴板内容\n在任意位置复制文字后切回键盘；连接失败可在设置里检查地址"
+                    : "暂无剪贴板内容\n在任意位置复制文字后切回键盘，或连接电脑同步";
             listBox.addView(emptyText(msg));
             Button b = new Button(this);
-            b.setText("连接并刷新");
+            b.setText("连接电脑并刷新");
             b.setAllCaps(false);
             b.setTextColor(Color.WHITE);
             GradientDrawable gd = new GradientDrawable();
@@ -725,10 +815,7 @@ public class QuickPasteIME extends InputMethodService {
             gd.setCornerRadius(dp(10));
             b.setBackground(gd);
             b.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    pull(true);
-                }
+                @Override public void onClick(View v) { pull(true); }
             });
             LinearLayout.LayoutParams p = lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(40));
             p.setMargins(dp(40), dp(8), dp(40), dp(8));
@@ -736,25 +823,43 @@ public class QuickPasteIME extends InputMethodService {
             return;
         }
         if (prefs.columns() == 1) {
-            for (SyncItem it : syncItems) listBox.addView(makeSyncCard(it, false));
+            for (SyncItem it : displayItems) listBox.addView(makeSyncCard(it, false));
             return;
         }
         LinearLayout row = null;
-        for (int i = 0; i < syncItems.size(); i++) {
+        for (int i = 0; i < displayItems.size(); i++) {
             if (i % 2 == 0) {
                 row = new LinearLayout(this);
                 row.setOrientation(LinearLayout.HORIZONTAL);
                 listBox.addView(row, lp(ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT));
             }
-            row.addView(makeSyncCard(syncItems.get(i), true));
+            row.addView(makeSyncCard(displayItems.get(i), true));
         }
-        if (syncItems.size() % 2 == 1 && row != null) {
+        if (displayItems.size() % 2 == 1 && row != null) {
             View filler = new View(this);
             LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(0, dp(56), 1f);
             flp.setMargins(dp(3), dp(3), dp(3), dp(3));
             row.addView(filler, flp);
         }
+    }
+
+    /** 本机复制历史在前，电脑同步记录在后；按文字去重，最多 30 条。 */
+    private List<SyncItem> mergedItems() {
+        List<SyncItem> all = new ArrayList<SyncItem>();
+        java.util.Set<String> seen = new java.util.HashSet<String>();
+        for (String t : prefs.items("clip")) {
+            if (!seen.add("t:" + t)) continue;
+            all.add(new SyncItem("local:" + t, t, "text", "", "", "local",
+                    System.currentTimeMillis()));
+        }
+        for (SyncItem it : syncItems) {
+            String key = it.isImage() ? "i:" + it.id : "t:" + it.displayText();
+            if (!seen.add(key)) continue;
+            all.add(it);
+        }
+        if (all.size() > 30) return new ArrayList<SyncItem>(all.subList(0, 30));
+        return all;
     }
 
     private TextView emptyText(String text) {
@@ -846,11 +951,12 @@ public class QuickPasteIME extends InputMethodService {
                 ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_VERTICAL));
 
         TextView badge = new TextView(this);
-        badge.setText(it.fromPhone() ? "📱" : "💻");
+        badge.setText(it.isLocal() ? "✂️" : (it.fromPhone() ? "📱" : "💻"));
         badge.setTextSize(11);
         badge.setGravity(Gravity.CENTER);
         GradientDrawable bd = new GradientDrawable();
-        bd.setColor(it.fromPhone() ? Color.parseColor("#E7F8EE") : Color.parseColor("#EEF1FF"));
+        bd.setColor(it.isLocal() ? Color.parseColor("#FFF3E0")
+                : (it.fromPhone() ? Color.parseColor("#E7F8EE") : Color.parseColor("#EEF1FF")));
         bd.setCornerRadius(dp(7));
         badge.setBackground(bd);
         card.addView(badge, new FrameLayout.LayoutParams(dp(20), dp(20),
@@ -933,23 +1039,27 @@ public class QuickPasteIME extends InputMethodService {
     private void buildCalc() {
         calcBox = new LinearLayout(this);
         calcBox.setOrientation(LinearLayout.VERTICAL);
-        calcBox.setPadding(dp(10), dp(2), dp(10), dp(2));
+        calcBox.setGravity(Gravity.CENTER_VERTICAL);
+        calcBox.setPadding(dp(10), dp(6), dp(10), dp(6));
         calcBox.setVisibility(View.GONE);
 
+        // HTML .calcExpr 24px 居中 / .calcRes 32px 蓝色居中
         calcExpr = new TextView(this);
-        calcExpr.setTextSize(12);
+        calcExpr.setTextSize(20);
         calcExpr.setTextColor(SUB);
-        calcExpr.setGravity(Gravity.END);
+        calcExpr.setGravity(Gravity.CENTER);
         calcResult = new TextView(this);
-        calcResult.setTextSize(22);
+        calcResult.setTextSize(30);
         calcResult.setTextColor(BLUE);
         calcResult.setTypeface(Typeface.DEFAULT_BOLD);
-        calcResult.setGravity(Gravity.END);
+        calcResult.setGravity(Gravity.CENTER);
+        calcResult.setPadding(0, 0, 0, dp(12));
         calcBox.addView(calcExpr, lp(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
         calcBox.addView(calcResult, lp(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        // HTML .calcKeys：gap 8、键高 44、字号 19、圆角 9；「输入」为蓝色主按钮
         String[][] rows = {
                 {"7", "8", "9", "÷", "⌫"},
                 {"4", "5", "6", "×", "("},
@@ -961,28 +1071,35 @@ public class QuickPasteIME extends InputMethodService {
             r.setOrientation(LinearLayout.HORIZONTAL);
             for (final String k : keys) {
                 Button b = keyBtn(k);
+                b.setTextSize(19);
+                b.setTypeface(Typeface.DEFAULT_BOLD);
+                if ("输入".equals(k)) {
+                    GradientDrawable ib = new GradientDrawable();
+                    ib.setColor(BLUE);
+                    ib.setCornerRadius(dp(9));
+                    b.setBackground(ib);
+                    b.setTextColor(Color.WHITE);
+                }
                 b.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        handleCalcKey(k);
-                    }
+                    @Override public void onClick(View v) { handleCalcKey(k); }
                 });
-                LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(28), 1f);
-                p.setMargins(dp(2), dp(2), dp(2), dp(2));
+                LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(40), 1f);
+                p.setMargins(dp(4), dp(3), dp(4), dp(3));
                 r.addView(b, p);
             }
             calcBox.addView(r, lp(ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT));
         }
-        content.addView(calcBox, lp(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
+        // 与列表区共用同一块高度（weight=1），不再与「清空剪贴板」重叠挤压
+        content.addView(calcBox, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
     }
 
     private void toggleCalcMode() {
         isCalcMode = !isCalcMode;
         calcBox.setVisibility(isCalcMode ? View.VISIBLE : View.GONE);
         listScroll.setVisibility(isCalcMode ? View.GONE : View.VISIBLE);
-        tabBar.setVisibility(isCalcMode ? View.GONE : View.VISIBLE);
+        // 两个 Tab 已移除，无需切换可见性
         if (isCalcMode) {
             calcExpression = "";
             updateCalcDisplay();
@@ -1286,7 +1403,16 @@ public class QuickPasteIME extends InputMethodService {
                 closeMenu();
             }
         }));
-        if (id != null && !id.isEmpty()) {
+        if (it != null && it.isLocal()) {
+            menuStack.addView(menuRow("🗑 从本机历史删除", new Runnable() {
+                @Override
+                public void run() {
+                    prefs.remove(it.text, "clip");
+                    refreshList();
+                    closeMenu();
+                }
+            }));
+        } else if (id != null && !id.isEmpty()) {
             menuStack.addView(menuRow("🗑 从电脑删除这条", new Runnable() {
                 @Override
                 public void run() {
@@ -1601,7 +1727,21 @@ public class QuickPasteIME extends InputMethodService {
         b.setBackground(roundBg(KEY_BG, 9));
         b.setMinWidth(dp(30));
         b.setMinimumWidth(dp(30));
-        b.setLayoutParams(new LinearLayout.LayoutParams(dp(34), dp(34)));
+        b.setLayoutParams(new LinearLayout.LayoutParams(dp(38), dp(38)));
+        return b;
+    }
+
+    /** 原型 .kbSym：28×32、圆角 8、字号 20 */
+    private Button symBtn(String text) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextSize(19);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setTextColor(TEXT);
+        b.setPadding(0, 0, 0, 0);
+        b.setBackground(roundBg(KEY_BG, 8));
+        b.setLayoutParams(new LinearLayout.LayoutParams(dp(28), dp(32)));
         return b;
     }
 
@@ -1649,6 +1789,8 @@ public class QuickPasteIME extends InputMethodService {
         refreshList();
         if (prefs.syncAuto()) startPolling();
         else stopPolling();
+        // 设置页里改了「启用连续复制」也要立刻同步浮层与轮询
+        syncCaptureState();
     }
 
     private final ImeSettings.Host hostCallbacks = new ImeSettings.Host() {
@@ -1689,7 +1831,49 @@ public class QuickPasteIME extends InputMethodService {
             if ("error".equals(syncState)) return "连接失败";
             return "未连接";
         }
-        @Override public int statusCount() { return syncItems.size(); }
+        @Override public int statusCount() { return displayItems.size(); }
         @Override public String backend() { return backend == null ? "" : backend; }
     };
+
+    /** HTML symbol i-kbhide：键盘轮廓 + 两排键点 + 下箭头（收起键盘） */
+    private static final class KbHideDrawable extends android.graphics.drawable.Drawable {
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        KbHideDrawable(int color) {
+            p.setColor(color);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeCap(Paint.Cap.ROUND);
+            p.setStrokeJoin(Paint.Join.ROUND);
+        }
+
+        @Override
+        public void draw(Canvas c) {
+            Rect b = getBounds();
+            float s = Math.min(b.width(), b.height()) / 24f;
+            if (s <= 0) return;
+            c.save();
+            c.translate(b.left + (b.width() - 24 * s) / 2f,
+                    b.top + (b.height() - 24 * s) / 2f);
+            c.scale(s, s);
+            p.setStrokeWidth(1.7f);
+            c.drawRoundRect(new RectF(2, 3.5f, 22, 14.5f), 2.4f, 2.4f, p);
+            p.setStrokeWidth(1.6f);
+            for (int i = 0; i < 5; i++) {
+                float x = 5.5f + i * 3f;
+                c.drawLine(x, 7.5f, x + 1, 7.5f, p);
+                c.drawLine(x, 10.5f, x + 1, 10.5f, p);
+            }
+            p.setStrokeWidth(2.1f);
+            Path a = new Path();
+            a.moveTo(8, 17.4f);
+            a.lineTo(12, 21.1f);
+            a.lineTo(16, 17.4f);
+            c.drawPath(a, p);
+            c.restore();
+        }
+
+        @Override public void setAlpha(int alpha) { p.setAlpha(alpha); }
+        @Override public void setColorFilter(ColorFilter cf) { p.setColorFilter(cf); }
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+    }
 }

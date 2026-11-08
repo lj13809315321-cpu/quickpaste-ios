@@ -12,6 +12,8 @@ struct SyncItem {
 
     var isImage: Bool { type == "image" && !image.isEmpty }
     var fromPhone: Bool { source == "phone" }
+    /// 本机复制历史（键盘扩展直接读系统剪贴板收录，不依赖电脑端服务）
+    var isLocal: Bool { source == "local" }
 
     var displayText: String {
         let t = text.components(separatedBy: .whitespacesAndNewlines)

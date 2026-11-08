@@ -21,6 +21,12 @@ final class KeyboardViewController: UIInputViewController {
     private var lastSync: Date?
     private var backend = ""
     private var pollTimer: Timer?
+    /// 主列表实际渲染的数据：本机复制历史 + 电脑同步记录（不依赖联网）
+    private var displayItems: [SyncItem] = []
+    /// 连续复制：键盘可见期间轮询系统剪贴板 + 「连续复制中…」浮层
+    private var captureTimer: Timer?
+    private var floatingView: UIView?
+    private weak var copyButton: UIButton?
 
     private let root = UIStackView()
     private let head = UIView()
@@ -80,7 +86,7 @@ final class KeyboardViewController: UIInputViewController {
 
         refreshHead()
         refreshTabBar()
-        refreshAutoButton()
+        refreshCopyButton()
         refreshSymbols()
         refreshList()
     }
@@ -93,23 +99,32 @@ final class KeyboardViewController: UIInputViewController {
         // 「历史保留时间」：每次呼出键盘执行一次过期清理
         let pruned = prefs.pruneHistory()
         if pruned > 0 && prefs.savedTip { showToast("已清理 \(pruned) 条过期记录") }
-        // 「连续复制」开关：控制呼出时是否自动收录系统剪贴板
-        if hasFullAccess && prefs.continuous {
-            if prefsAdoptClipboardText() && prefs.savedTip {
-                showToast("新内容已保存")
-            }
-        }
+        // ★ 每次呼出键盘都读取系统剪贴板，与是否联网、是否开启连续复制无关。
+        // iOS 16+ 首次读取会弹「是否允许粘贴」，用户点允许后由 viewDidAppear 补读。
+        adoptClipboardText()
         refreshHead()
         refreshTabBar()
-        refreshAutoButton()
+        refreshCopyButton()
         refreshSymbols()
+        refreshList()
         pull(showConnecting: true)
         startPolling()
+        syncCaptureState()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // 系统粘贴授权弹窗关闭后补读一次；连续复制开启时轮询会持续补读
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self = self else { return }
+            if self.adoptClipboardText() { self.refreshList() }
+        }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         stopPolling()
+        stopCaptureTimer()
     }
 
     override func viewWillLayoutSubviews() {
@@ -119,9 +134,119 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
-    private func prefsAdoptClipboardText() -> Bool {
-        guard hasFullAccess, let s = UIPasteboard.general.string else { return false }
+    /// 读一次系统剪贴板并写入本机历史。返回是否新增了记录。
+    @discardableResult
+    private func adoptClipboardText() -> Bool {
+        guard hasFullAccess,
+              let s = UIPasteboard.general.string?
+                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              !s.isEmpty else { return false }
+        // http://IP:8787 形式的内容优先当作电脑地址，不占剪贴板历史
+        if prefs.adoptPasteboardURL() { return true }
         return prefs.capture(s)
+    }
+
+    // MARK: - 连续复制（HTML 原型 copyBtn + floatwin）
+
+    private func toggleContinuous() {
+        prefs.continuous.toggle()
+        syncCaptureState()
+        showToast(prefs.continuous ? "连续复制已开启" : "已结束连续复制")
+    }
+
+    @objc private func openContinuousSettings(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began else { return }
+        settings.show(.continuous)
+    }
+
+    private func syncCaptureState() {
+        if prefs.continuous && !hasFullAccess {
+            prefs.continuous = false
+            showToast("请先开启「允许完全访问」才能连续复制")
+        }
+        refreshCopyButton()
+        if prefs.continuous {
+            if floatingView == nil {
+                let f = buildFloatingView()
+                view.addSubview(f)
+                NSLayoutConstraint.activate([
+                    f.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                    f.topAnchor.constraint(equalTo: view.topAnchor, constant: 108),
+                    f.widthAnchor.constraint(equalToConstant: 212)
+                ])
+                floatingView = f
+            }
+            floatingView?.isHidden = false
+            startCaptureTimer()
+        } else {
+            floatingView?.isHidden = true
+            stopCaptureTimer()
+        }
+    }
+
+    private func startCaptureTimer() {
+        stopCaptureTimer()
+        captureTimer = Timer.scheduledTimer(withTimeInterval: 0.7, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            if self.adoptClipboardText() { self.refreshList() }
+        }
+    }
+
+    private func stopCaptureTimer() {
+        captureTimer?.invalidate()
+        captureTimer = nil
+    }
+
+    /// HTML 原型 floatwin：圆角深色小窗 + 绿点 + 「连续复制中…」+ 结束
+    private func buildFloatingView() -> UIView {
+        let v = UIView()
+        v.backgroundColor = UIColor.rgb(32, 33, 38)
+        v.layer.cornerRadius = 16
+        v.layer.shadowColor = UIColor.black.cgColor
+        v.layer.shadowOpacity = 0.22
+        v.layer.shadowRadius = 8
+        v.layer.shadowOffset = CGSize(width: 0, height: 3)
+        v.translatesAutoresizingMaskIntoConstraints = false
+
+        let dot = UIView()
+        dot.backgroundColor = QPColor.green
+        dot.layer.cornerRadius = 4
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        v.addSubview(dot)
+
+        let label = UILabel()
+        label.text = "连续复制中…"
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        v.addSubview(label)
+
+        let stop = UIButton(type: .system)
+        stop.setTitle("结束", for: .normal)
+        stop.setTitleColor(UIColor.rgb(120, 190, 255), for: .normal)
+        stop.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
+        stop.translatesAutoresizingMaskIntoConstraints = false
+        stop.addAction(UIAction { [weak self] _ in
+            guard let self = self else { return }
+            self.prefs.continuous = false
+            self.syncCaptureState()
+            self.showToast("已结束连续复制")
+        }, for: .touchUpInside)
+        v.addSubview(stop)
+
+        NSLayoutConstraint.activate([
+            dot.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 12),
+            dot.centerYAnchor.constraint(equalTo: v.centerYAnchor),
+            dot.widthAnchor.constraint(equalToConstant: 8),
+            dot.heightAnchor.constraint(equalToConstant: 8),
+            label.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 8),
+            label.centerYAnchor.constraint(equalTo: v.centerYAnchor),
+            stop.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 10),
+            stop.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -12),
+            stop.centerYAnchor.constraint(equalTo: v.centerYAnchor),
+            v.heightAnchor.constraint(equalToConstant: 34)
+        ])
+        return v
     }
 
     // MARK: - 同步
@@ -322,7 +447,7 @@ final class KeyboardViewController: UIInputViewController {
         if !hasFullAccess {
             dot.backgroundColor = QPColor.orange
             title.text = "需要「允许完全访问」"
-            desc.text = "设置 → 通用 → 键盘 → QuickPaste → 允许完全访问，才能联网同步"
+            desc.text = "设置 → 通用 → 键盘 → QuickPaste → 允许完全访问，才能读取剪贴板、联网同步"
             return
         }
 
@@ -343,7 +468,7 @@ final class KeyboardViewController: UIInputViewController {
         default:
             dot.backgroundColor = UIColor.rgb(199, 199, 206)
             title.text = "未连接"
-            desc.text = "点此连接 · 或长按工具条 ⧉ 打开设置"
+            desc.text = "点此连接 · 或长按工具条按键打开设置"
         }
     }
 
@@ -357,7 +482,11 @@ final class KeyboardViewController: UIInputViewController {
         toolbar.layoutMargins = UIEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
         toolbar.heightAnchor.constraint(equalToConstant: 42).isActive = true
 
-        let collapse = toolButton("⌄")
+        let collapse = toolButton("")
+        // HTML 原型 .kbTool.bare + i-kbhide：键盘轮廓 + 两排键点 + 下箭头，透明底
+        collapse.setImage(kbHideIcon(UIColor.rgb(17, 17, 17)).withRenderingMode(.alwaysOriginal),
+                          for: .normal)
+        collapse.backgroundColor = .clear
         collapse.addAction(UIAction { [weak self] _ in self?.dismissKeyboard() },
                            for: .touchUpInside)
         let holdCollapse = UILongPressGestureRecognizer(target: self,
@@ -371,20 +500,18 @@ final class KeyboardViewController: UIInputViewController {
                         for: .touchUpInside)
         toolbar.addArrangedSubview(globe)
 
-        let autoBtn = toolButton("⧉")
-        autoBtn.tag = 101
-        autoBtn.addAction(UIAction { [weak self] _ in
-            guard let self = self else { return }
-            self.prefs.syncAuto.toggle()
-            if self.prefs.syncAuto { self.startPolling() } else { self.stopPolling() }
-            self.refreshAutoButton()
-            self.showToast(self.prefs.syncAuto ? "自动同步已开启" : "自动同步已关闭")
-        }, for: .touchUpInside)
-        let holdAuto = UILongPressGestureRecognizer(target: self,
-                                                    action: #selector(handleMenuPress(_:)))
-        holdAuto.minimumPressDuration = 1.0
-        autoBtn.addGestureRecognizer(holdAuto)
-        toolbar.addArrangedSubview(autoBtn)
+        // HTML 原型 .kbTool.copyBtn：连续复制一级开关，蓝色=开启；与「同步」无关
+        let copyBtn = toolButton("")
+        copyBtn.tag = 101
+        copyBtn.setImage(copyIcon(.black).withRenderingMode(.alwaysTemplate), for: .normal)
+        copyButton = copyBtn
+        copyBtn.addAction(UIAction { [weak self] _ in self?.toggleContinuous() },
+                          for: .touchUpInside)
+        let holdCopy = UILongPressGestureRecognizer(target: self,
+                                                    action: #selector(openContinuousSettings(_:)))
+        holdCopy.minimumPressDuration = 0.6
+        copyBtn.addGestureRecognizer(holdCopy)
+        toolbar.addArrangedSubview(copyBtn)
 
         symScroll.showsHorizontalScrollIndicator = false
         symScroll.translatesAutoresizingMaskIntoConstraints = false
@@ -409,7 +536,10 @@ final class KeyboardViewController: UIInputViewController {
         deleteKey.backgroundColor = UIColor.rgb(43, 44, 49)
         deleteKey.setTitleColor(.white, for: .normal)
         deleteKey.titleLabel?.font = .systemFont(ofSize: 18, weight: .medium)
-        deleteKey.widthAnchor.constraint(equalToConstant: 66).isActive = true
+        // HTML .kbTool.dark：宽 76（与底行「发送」同级），图标靠右、右内边距 8
+        deleteKey.widthAnchor.constraint(equalToConstant: 76).isActive = true
+        deleteKey.contentHorizontalAlignment = .right
+        deleteKey.contentEdgeInsets = UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 8)
         deleteKey.addAction(UIAction { [weak self] _ in
             self?.textDocumentProxy.deleteBackward()
         }, for: .touchUpInside)
@@ -428,13 +558,12 @@ final class KeyboardViewController: UIInputViewController {
         root.addArrangedSubview(toolbar)
     }
 
-    private func refreshAutoButton() {
-        guard let b = toolbar.arrangedSubviews.first(where: { $0.tag == 101 }) as? UIButton else {
-            return
-        }
-        b.backgroundColor = prefs.syncAuto ? QPColor.blue : QPColor.keyBg
-        b.setTitleColor(prefs.syncAuto ? .white : .label, for: .normal)
-        b.layer.cornerRadius = 9
+    private func refreshCopyButton() {
+        guard let b = copyButton else { return }
+        let on = prefs.continuous
+        b.backgroundColor = on ? QPColor.blue : QPColor.keyBg
+        b.tintColor = on ? .white : UIColor.rgb(17, 17, 17)
+        b.layer.cornerRadius = 10
     }
 
     private func refreshSymbols() {
@@ -502,6 +631,8 @@ final class KeyboardViewController: UIInputViewController {
             tabBar.addArrangedSubview(b)
         }
         root.addArrangedSubview(tabBar)
+        // 用户要求：去掉「剪贴板（同步）/ 常用语」两个 Tab，位置全留给剪贴板记录
+        tabBar.isHidden = true
     }
 
     private func refreshTabBar() {
@@ -534,26 +665,16 @@ final class KeyboardViewController: UIInputViewController {
 
     private func refreshList() {
         listStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        // ★ 主列表 = 本机复制历史 + 电脑同步记录，不依赖是否连上电脑
+        displayItems = mergedItems()
 
-        if prefs.tab == "phrase" {
-            let list = prefs.items(for: "phrase")
-            if list.isEmpty {
-                listStack.addArrangedSubview(emptyLabel("暂无常用语"))
-                return
-            }
-            for (i, text) in list.enumerated() {
-                listStack.addArrangedSubview(makePhraseCard(text: text, index: i))
-            }
-            return
-        }
-
-        guard !items.isEmpty else {
-            let msg = syncState == "error"
-                ? "连接失败\n点上方状态栏重试，或长按 ⧉ 检查地址"
-                : "暂无同步记录\n在电脑上复制文字或截图，会自动出现在这里"
+        guard !displayItems.isEmpty else {
+            let msg = !hasFullAccess
+                ? "无法读取剪贴板\n请到 设置 → 通用 → 键盘 → QuickPaste\n开启「允许完全访问」"
+                : "暂无剪贴板内容\n在任意 App 复制文字后切回键盘，或连接电脑同步"
             listStack.addArrangedSubview(emptyLabel(msg))
             let b = UIButton(type: .system)
-            b.setTitle("连接并刷新", for: .normal)
+            b.setTitle("连接电脑并刷新", for: .normal)
             b.setTitleColor(.white, for: .normal)
             b.backgroundColor = QPColor.blue
             b.layer.cornerRadius = 10
@@ -565,13 +686,13 @@ final class KeyboardViewController: UIInputViewController {
         }
 
         if prefs.columns == 1 {
-            for (i, item) in items.enumerated() {
+            for (i, item) in displayItems.enumerated() {
                 listStack.addArrangedSubview(makeSyncCard(item: item, index: i))
             }
             return
         }
         var row: UIStackView?
-        for (i, item) in items.enumerated() {
+        for (i, item) in displayItems.enumerated() {
             if i % 2 == 0 {
                 let r = UIStackView()
                 r.axis = .horizontal
@@ -582,7 +703,25 @@ final class KeyboardViewController: UIInputViewController {
             }
             row?.addArrangedSubview(makeSyncCard(item: item, index: i))
         }
-        if items.count % 2 == 1 { row?.addArrangedSubview(UIView()) }
+        if displayItems.count % 2 == 1 { row?.addArrangedSubview(UIView()) }
+    }
+
+    /// 本机复制历史在前，电脑同步记录在后；按文字去重，最多 30 条。
+    private func mergedItems() -> [SyncItem] {
+        var all: [SyncItem] = []
+        var seen = Set<String>()
+        for text in prefs.items(for: "clip") {
+            guard seen.insert("t:" + text).inserted else { continue }
+            all.append(SyncItem(id: "local:" + text, text: text, type: "text",
+                                image: "", mime: "", source: "local",
+                                ts: Date().timeIntervalSince1970 * 1000))
+        }
+        for it in items {
+            let key = it.isImage ? "i:" + it.id : "t:" + it.displayText
+            guard seen.insert(key).inserted else { continue }
+            all.append(it)
+        }
+        return Array(all.prefix(30))
     }
 
     private func emptyLabel(_ text: String) -> UILabel {
@@ -673,11 +812,12 @@ final class KeyboardViewController: UIInputViewController {
         ])
 
         let badge = UILabel()
-        badge.text = item.fromPhone ? "📱" : "💻"
+        badge.text = item.isLocal ? "✂️" : (item.fromPhone ? "📱" : "💻")
         badge.font = .systemFont(ofSize: 11)
         badge.textAlignment = .center
-        badge.backgroundColor = item.fromPhone
-            ? UIColor.rgb(231, 248, 238) : UIColor.rgb(238, 241, 255)
+        badge.backgroundColor = item.isLocal
+            ? UIColor.rgb(255, 243, 224)
+            : (item.fromPhone ? UIColor.rgb(231, 248, 238) : UIColor.rgb(238, 241, 255))
         badge.layer.cornerRadius = 7
         badge.clipsToBounds = true
         badge.translatesAutoresizingMaskIntoConstraints = false
@@ -737,21 +877,25 @@ final class KeyboardViewController: UIInputViewController {
 
     private func buildCalc() {
         calcBox.axis = .vertical
-        calcBox.spacing = 4
+        calcBox.spacing = 8
+        calcBox.alignment = .fill
         calcBox.isHidden = true
         calcBox.isLayoutMarginsRelativeArrangement = true
-        calcBox.layoutMargins = UIEdgeInsets(top: 4, left: 10, bottom: 2, right: 10)
+        calcBox.layoutMargins = UIEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
 
-        calcExprLabel.font = .systemFont(ofSize: 12)
-        calcExprLabel.textColor = .secondaryLabel
-        calcExprLabel.textAlignment = .right
-        calcResultLabel.font = .systemFont(ofSize: 22, weight: .semibold)
+        // HTML .calcExpr 24px 居中 / .calcRes 32px 蓝色居中
+        calcExprLabel.font = .systemFont(ofSize: 20, weight: .medium)
+        calcExprLabel.textColor = QPColor.sub
+        calcExprLabel.textAlignment = .center
+        calcResultLabel.font = .systemFont(ofSize: 30, weight: .semibold)
         calcResultLabel.textColor = QPColor.blue
-        calcResultLabel.textAlignment = .right
+        calcResultLabel.textAlignment = .center
         let display = UIStackView(arrangedSubviews: [calcExprLabel, calcResultLabel])
         display.axis = .vertical
+        display.spacing = 2
         calcBox.addArrangedSubview(display)
 
+        // HTML .calcKeys：gap 8、键高 44、字号 19、圆角 9；「输入」为蓝色主按钮
         let rows: [[String]] = [
             ["7", "8", "9", "÷", "⌫"],
             ["4", "5", "6", "×", "("],
@@ -761,15 +905,19 @@ final class KeyboardViewController: UIInputViewController {
         for keys in rows {
             let r = UIStackView()
             r.axis = .horizontal
-            r.spacing = 4
+            r.spacing = 8
             r.distribution = .fillEqually
             for key in keys {
                 let b = UIButton(type: .system)
                 b.setTitle(key, for: .normal)
-                b.titleLabel?.font = .systemFont(ofSize: 15, weight: .medium)
-                b.layer.cornerRadius = 6
-                b.backgroundColor = QPColor.keyBg
-                b.heightAnchor.constraint(greaterThanOrEqualToConstant: 26).isActive = true
+                b.titleLabel?.font = .systemFont(ofSize: 19, weight: .semibold)
+                b.setTitleColor(key == "输入" ? .white : UIColor.rgb(17, 17, 17),
+                                for: .normal)
+                b.layer.cornerRadius = 9
+                b.backgroundColor = key == "输入" ? QPColor.blue : QPColor.keyBg
+                let h = b.heightAnchor.constraint(equalToConstant: 40)
+                h.priority = UILayoutPriority(999)
+                h.isActive = true
                 b.addAction(UIAction { [weak self] _ in self?.handleCalcKey(key) },
                             for: .touchUpInside)
                 r.addArrangedSubview(b)
@@ -783,7 +931,7 @@ final class KeyboardViewController: UIInputViewController {
         isCalcMode.toggle()
         calcBox.isHidden = !isCalcMode
         listScroll.isHidden = isCalcMode
-        tabBar.isHidden = isCalcMode
+        // tabBar 始终隐藏（已按用户要求移除两个 Tab）
         if isCalcMode {
             calcExpression = ""
             updateCalcDisplay()
@@ -964,7 +1112,7 @@ final class KeyboardViewController: UIInputViewController {
             guard let self = self else { return }
             self.prefs.syncAuto.toggle()
             if self.prefs.syncAuto { self.startPolling() } else { self.stopPolling() }
-            self.refreshAutoButton()
+            self.refreshCopyButton()
             self.openMenu()
         })
         menuStack.addArrangedSubview(menuRow("列数：\(prefs.columns) 列") { [weak self] in
@@ -1020,9 +1168,17 @@ final class KeyboardViewController: UIInputViewController {
             } else { self.sendTextToPc(item.text) }
             self.closeMenu()
         })
-        menuStack.addArrangedSubview(menuRow("🗑 从电脑删除这条") { [weak self] in
-            self?.deleteItem(id: item.id); self?.closeMenu()
-        })
+        if item.isLocal {
+            menuStack.addArrangedSubview(menuRow("🗑 从本机历史删除") { [weak self] in
+                guard let self = self else { return }
+                self.prefs.remove(item.text, from: "clip")
+                self.refreshList(); self.closeMenu()
+            })
+        } else {
+            menuStack.addArrangedSubview(menuRow("🗑 从电脑删除这条") { [weak self] in
+                self?.deleteItem(id: item.id); self?.closeMenu()
+            })
+        }
         menuStack.addArrangedSubview(menuRow("关闭菜单") { [weak self] in self?.closeMenu() })
     }
 
@@ -1040,20 +1196,14 @@ final class KeyboardViewController: UIInputViewController {
 
     @objc private func handleMenuPress(_ g: UILongPressGestureRecognizer) {
         guard g.state == .began else { return }
-        // 长按工具条按键：开启「点击直接切换」时直接切 Tab，否则打开设置界面
-        if prefs.directSwitch {
-            prefs.tab = prefs.tab == "clip" ? "phrase" : "clip"
-            refreshTabBar(); refreshList()
-            showToast(prefs.tab == "clip" ? "已切到剪贴板" : "已切到常用语")
-        } else {
-            settings.show(.root)
-        }
+        // 两个 Tab 已移除；长按工具条按键统一打开完整设置界面
+        settings.show(.root)
     }
 
     @objc private func cardLongPress(_ g: UILongPressGestureRecognizer) {
         guard g.state == .began, let card = g.view,
-              card.tag >= 0, card.tag < items.count else { return }
-        openCardMenu(items[card.tag])
+              card.tag >= 0, card.tag < displayItems.count else { return }
+        openCardMenu(displayItems[card.tag])
     }
 
     private func menuTitle(_ text: String) -> UIView {
@@ -1208,7 +1358,8 @@ final class KeyboardViewController: UIInputViewController {
         textDocumentProxy.insertText(last)
     }
 
-    /// 原型 .kbTool：38×38、#D4D6DE 灰底、圆角 10
+    /// 原型 .kbTool：38×38、#D4D6DE 灰底、圆角 10。
+    /// 宽度约束降到 999，让 .kbTool.dark 的 76 宽能覆盖（两个 required 约束会冲突）。
     private func toolButton(_ title: String) -> UIButton {
         let b = UIButton(type: .system)
         b.setTitle(title, for: .normal)
@@ -1216,9 +1367,64 @@ final class KeyboardViewController: UIInputViewController {
         b.setTitleColor(.black, for: .normal)
         b.backgroundColor = QPColor.keyBg
         b.layer.cornerRadius = 10
-        b.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        let w = b.widthAnchor.constraint(equalToConstant: 38)
+        w.priority = UILayoutPriority(999)
+        w.isActive = true
         b.heightAnchor.constraint(equalToConstant: 38).isActive = true
         return b
+    }
+
+    /// HTML symbol i-kbhide：键盘轮廓 + 两排键点 + 下箭头（收起键盘）
+    private func kbHideIcon(_ color: UIColor) -> UIImage {
+        let fmt = UIGraphicsImageRendererFormat()
+        fmt.scale = 3
+        return UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24), format: fmt).image { _ in
+            color.setStroke()
+            let frame = UIBezierPath(roundedRect: CGRect(x: 2, y: 3.5, width: 20, height: 11),
+                                     cornerRadius: 2.4)
+            frame.lineWidth = 1.7
+            frame.stroke()
+            let dots = UIBezierPath()
+            for i in 0..<5 {
+                let x = CGFloat(5.5 + Double(i) * 3.0)
+                dots.move(to: CGPoint(x: x, y: 7.5)); dots.addLine(to: CGPoint(x: x + 1, y: 7.5))
+                dots.move(to: CGPoint(x: x, y: 10.5)); dots.addLine(to: CGPoint(x: x + 1, y: 10.5))
+            }
+            dots.lineWidth = 1.6
+            dots.lineCapStyle = .round
+            dots.stroke()
+            let arrow = UIBezierPath()
+            arrow.move(to: CGPoint(x: 8, y: 17.4))
+            arrow.addLine(to: CGPoint(x: 12, y: 21.1))
+            arrow.addLine(to: CGPoint(x: 16, y: 17.4))
+            arrow.lineWidth = 2.1
+            arrow.lineCapStyle = .round
+            arrow.lineJoinStyle = .round
+            arrow.stroke()
+        }
+    }
+
+    /// HTML symbol i-copy：两个重叠矩形（连续复制）
+    private func copyIcon(_ color: UIColor) -> UIImage {
+        let fmt = UIGraphicsImageRendererFormat()
+        fmt.scale = 3
+        return UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24), format: fmt).image { _ in
+            color.setStroke()
+            let back = UIBezierPath(roundedRect: CGRect(x: 8, y: 3, width: 13, height: 15),
+                                    cornerRadius: 2.6)
+            back.lineWidth = 1.9
+            back.stroke()
+            let front = UIBezierPath()
+            front.move(to: CGPoint(x: 16, y: 19))
+            front.addLine(to: CGPoint(x: 5, y: 19))
+            front.addCurve(to: CGPoint(x: 3, y: 17),
+                           controlPoint1: CGPoint(x: 3.9, y: 19),
+                           controlPoint2: CGPoint(x: 3, y: 18.1))
+            front.addLine(to: CGPoint(x: 3, y: 6))
+            front.lineWidth = 1.9
+            front.lineCapStyle = .round
+            front.stroke()
+        }
     }
 
     private func showToast(_ text: String) {
@@ -1253,7 +1459,7 @@ final class KeyboardViewController: UIInputViewController {
         // refreshSymbols 内部会按 prefs.align 重排工具条符号区
         refreshSymbols()
         refreshTabBar()
-        refreshAutoButton()
+        refreshCopyButton()
         refreshList()
         refreshHead()
         if heightConstraint.constant != prefs.height {
@@ -1261,6 +1467,8 @@ final class KeyboardViewController: UIInputViewController {
         }
         view.setNeedsLayout()
         if prefs.syncAuto { startPolling() } else { stopPolling() }
+        // 设置页里改了「启用连续复制」也要立刻同步浮层与轮询
+        syncCaptureState()
     }
 
 }
@@ -1277,7 +1485,7 @@ extension KeyboardViewController: KeyboardSettingsDelegate {
         case "error": title = "连接失败"
         default: title = "未连接"
         }
-        return (title, items.count, prefs.syncURL, backend)
+        return (title, displayItems.count, prefs.syncURL, backend)
     }
 
     func settingsDidChange() { applySettings() }

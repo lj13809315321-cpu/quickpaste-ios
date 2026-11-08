@@ -44,6 +44,11 @@ public final class SyncItem {
         return "phone".equals(source);
     }
 
+    /** 本机复制历史（键盘直接读系统剪贴板收录，不依赖电脑端服务） */
+    public boolean isLocal() {
+        return "local".equals(source);
+    }
+
     /** 列表上显示的文字：折叠空白，空内容给占位符。 */
     public String displayText() {
         String t = text.replaceAll("\\s+", " ").trim();
