@@ -317,50 +317,68 @@ final class KeyboardViewController: UIInputViewController {
             if ok {
                 self?.showToast("已打开 QuickPaste，小窗会自动开启")
             } else {
-                self?.showToast("系统不让键盘跳转，请回主屏点 QuickPaste 图标")
+                self?.showToast("没跳过去？回主屏点一下 QuickPaste 图标，小窗照样会自动开")
             }
         }
     }
 
-    /// 打开主 App 并**如实回报**结果。键盘扩展里 openURL 经常直接失败，
-    /// 所以必须拿到 completion 里的 Bool 再告诉用户，而不是先弹一句假的「点下面按钮」。
+    /// 打开主 App 并**如实回报**结果。
+    /// 键盘扩展里 extensionContext.open 基本都被系统拦掉，真正能用的是
+    /// 「运行期取 UIApplication.shared 再 openURL:」（第三方输入法都是这么做的）。
+    /// 所以先走那条，再等一小会儿看键盘是不是真的被 App 盖住了来判断成败。
     private func openMainAppReporting(_ path: String,
                                       completion: @escaping (Bool) -> Void) {
         guard let url = URL(string: "quickpaste://" + path) else {
             completion(false)
             return
         }
-        guard let ctx = extensionContext else {
-            _ = openURLString(url.absoluteString)
-            completion(false)
-            return
-        }
-        ctx.open(url) { [weak self] ok in
-            // 失败再试一次响应链（个别系统版本只有这条路通）
-            if !ok { _ = self?.openURLString(url.absoluteString) }
-            DispatchQueue.main.async { completion(ok) }
+        // 先把所有能试的都试一遍（官方 API + UIApplication.shared + 响应链）
+        let tried = openURLString(url.absoluteString)
+        // 键盘还在原位 = 没跳走；被盖住后本扩展会挂起，这段也就不会跑了
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+            guard let self = self else { return }
+            let stillHere = self.viewIfLoaded?.window != nil
+            completion(tried && !stillHere)
         }
     }
 
-    /// 键盘扩展里打开 URL：三层尝试，任意一层成功就行。
-    /// ① 官方扩展 API（部分系统版本对键盘也放行）
-    /// ② 沿响应链找 openURL:（iOS 13~15 常见的做法）
-    /// ③ 从 NSClassFromString 取 UIApplication.shared 再 perform
-    ///    （扩展里不能直接写 UIApplication.shared，编译器会拦；运行期取出来是允许的）
-    @discardableResult
-    private func openMainApp(_ path: String) -> Bool {
-        openURLString("quickpaste://" + path)
-    }
-
+    /// 键盘扩展里打开 URL：把能试的路径全试一遍，任意一条生效即可。
+    /// ① 运行期取 UIApplication.shared → openURL:（第三方输入法通用做法，成功率最高）
+    /// ② open(_:options:completionHandler:) 新 API 兜底
+    /// ③ 官方扩展 API extensionContext.open（多数系统版本对键盘直接拒绝）
+    /// ④ 沿响应链找 openURL:
     @discardableResult
     private func openURLString(_ string: String) -> Bool {
         guard let url = URL(string: string) else { return false }
-        var opened = false
+        let sel = NSSelectorFromString("openURL:")
+        var tried = false
+
+        // ① ② 运行期拿到 UIApplication 实例（扩展里不能直接写 .shared）
+        if let app = sharedApplicationInstance() {
+            if app.responds(to: sel) {
+                // 同一条 URL 只开一次，避免 App 收到两遍
+                _ = app.perform(sel, with: url)
+                return true
+            }
+            let sel3 = NSSelectorFromString("open:options:completionHandler:")
+            if app.responds(to: sel3), let imp = app.method(for: sel3) {
+                typealias OpenFn = @convention(c) (AnyObject, Selector, NSURL,
+                                                   NSDictionary,
+                                                   @convention(block) (Bool) -> Void) -> Void
+                let fn = unsafeBitCast(imp, to: OpenFn.self)
+                fn(app, sel3, url as NSURL, NSDictionary(), { _ in })
+                tried = true
+            }
+            if tried { return true }
+        }
+
+        // ③ 官方扩展 API（异步，同步拿不到结果）
         if let ctx = extensionContext {
             ctx.open(url, completionHandler: nil)
-            opened = true
+            tried = true
         }
-        let sel = NSSelectorFromString("openURL:")
+
+        // ④ 响应链（有些系统版本只有这条路通）
         var responder: UIResponder? = self
         while let r = responder {
             if r.responds(to: sel) {
@@ -369,16 +387,17 @@ final class KeyboardViewController: UIInputViewController {
             }
             responder = r.next
         }
-        // 扩展里不能直接写 UIApplication.shared（编译期被标成不可用），
-        // 但运行期从 NSClassFromString 取出来再 perform 是允许的。
-        let cls: AnyObject? = NSClassFromString("UIApplication")
-        let sharedSel = NSSelectorFromString("sharedApplication")
-        if let cls = cls, cls.responds(to: sharedSel),
-           let app = cls.perform(sharedSel)?.takeUnretainedValue() {
-            _ = app.perform(sel, with: url)
-            return true
-        }
-        return opened
+        return tried
+    }
+
+    /// 扩展里不能直接引用 `UIApplication.shared`（编译期会被标成「扩展不可用」），
+    /// 运行期从 NSClassFromString 取类对象再 perform 是允许的 —— 这也是各家输入法
+    /// 能在键盘里跳回自家 App 的实际做法。
+    private func sharedApplicationInstance() -> NSObject? {
+        guard let cls = NSClassFromString("UIApplication") as? NSObject.Type else { return nil }
+        let sel = NSSelectorFromString("sharedApplication")
+        guard cls.responds(to: sel), let unmanaged = cls.perform(sel) else { return nil }
+        return unmanaged.takeUnretainedValue() as? NSObject
     }
 
     @objc private func openContinuousSettings(_ g: UILongPressGestureRecognizer) {
@@ -1396,7 +1415,7 @@ final class KeyboardViewController: UIInputViewController {
     private func openMenu() {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.1 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.2 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)

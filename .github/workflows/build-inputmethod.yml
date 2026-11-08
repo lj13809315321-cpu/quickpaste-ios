@@ -1,4 +1,4 @@
-# QuickPaste v1.8.1 真·同步输入法：一次编译产出「安卓 APK + iOS IPA」。
+# QuickPaste v1.8.2 真·同步输入法：一次编译产出「安卓 APK + iOS IPA」。
 #
 # 与之前的 WebView 壳完全不同：
 #   安卓 = InputMethodService（BIND_INPUT_METHOD / android.view.im）
@@ -255,7 +255,7 @@ jobs:
           git rm -f --ignore-unmatch out/QuickPaste-Sync-iOS.ipa || true
           rm -f out/QuickPaste-Sync-iOS.ipa
           {
-            echo "QuickPaste v1.8.1 同步输入法 手机安装包"
+            echo "QuickPaste v1.8.2 同步输入法 手机安装包"
             echo "形态：安卓 IME / iOS 键盘扩展（原生键盘，非 WebView 壳）"
             echo "苹果交付：未签名 IPA（手机端签名工具直接导入）"
             echo "构建时间 (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
