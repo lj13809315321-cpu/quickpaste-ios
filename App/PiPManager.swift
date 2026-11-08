@@ -398,7 +398,8 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         guard !s.isEmpty, s.count < 20000 else { return }
         // 纯电脑服务地址是配置项，不占剪贴板历史
         guard !(s.count <= 64 && s.hasPrefix("http") && s.contains(":8787")) else { return }
-        if QPSharedHistory.read().isBlocked {
+        // 读到正文 = 没被拦，立刻把红字撤掉
+        if blocked || QPSharedHistory.read().isBlocked {
             blocked = false
             QPSharedHistory.setBlocked(false)
         }

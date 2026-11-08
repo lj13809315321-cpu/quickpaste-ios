@@ -297,33 +297,30 @@ final class KeyboardViewController: UIInputViewController {
         showContinuousGuide()
     }
 
-    /// 大字指引面板：取代原来那行 10.5pt 的小字。
-    /// 为什么不直接跳系统设置：键盘扩展能不能开 URL 取决于系统版本，
-    /// 跳得动就跳，跳不动必须让用户看懂要做什么。
+    /// 指引面板：取代原来那行 10.5pt 的小字。
+    /// 键盘高度只有 240~360pt，所以只放一个大按钮，其余压成两三行大字。
     private func showContinuousGuide() {
         let box = UIStackView()
         box.axis = .vertical
-        box.spacing = 10
+        box.spacing = 8
 
         let title = UILabel()
-        title.text = pipBlocked
-            ? "需要允许粘贴，后台才收得到"
-            : "连续复制要主 App 帮忙"
-        title.font = .systemFont(ofSize: 20, weight: .bold)
-        title.numberOfLines = 2
+        title.text = pipBlocked ? "需要「允许粘贴」才收得到" : "连续复制要主 App 在后台"
+        title.font = .systemFont(ofSize: 19, weight: .bold)
+        title.numberOfLines = 0
         title.textColor = .black
         box.addArrangedSubview(title)
 
         let body = UILabel()
         body.text = pipBlocked
-            ? "iOS 不让 App 在后台随便读剪贴板。到 设置 → QuickPaste → 从其他 App 粘贴 → 选「允许」，之后在别的 App 复制就会一条条自动进列表。"
-            : "键盘收起后系统会把它挂起，只有主 App 的小窗能一直在后台抓。点下面第一个按钮打开 QuickPaste，进去会自动开启小窗。"
-        body.font = .systemFont(ofSize: 15, weight: .regular)
+            ? "系统不许 App 在后台读剪贴板。打开 QuickPaste 后点「去系统设置允许粘贴」，把「从其他 App 粘贴」改成【允许】即可，一次就够。"
+            : "键盘一收起就被系统挂起，只有主 App 的小窗能继续抓。点下面按钮打开 QuickPaste，进去会自动开小窗。"
+        body.font = .systemFont(ofSize: 14, weight: .regular)
         body.numberOfLines = 0
         body.textColor = UIColor.rgb(70, 72, 78)
         box.addArrangedSubview(body)
 
-        let openApp = bigSheetButton("打开 QuickPaste（自动开小窗）",
+        let openApp = bigSheetButton("打开 QuickPaste",
                                      bg: QPColor.blue, fg: .white)
         openApp.addAction(UIAction { [weak self] _ in
             guard let self = self else { return }
@@ -333,22 +330,11 @@ final class KeyboardViewController: UIInputViewController {
         }, for: .touchUpInside)
         box.addArrangedSubview(openApp)
 
-        let openSys = bigSheetButton("打开本 App 的系统设置",
-                                     bg: UIColor.rgb(240, 241, 245),
-                                     fg: UIColor.rgb(17, 17, 17))
-        openSys.addAction(UIAction { [weak self] _ in
-            guard let self = self else { return }
-            if !self.openURLString(UIApplication.openSettingsURLString) {
-                self.showToast("请手动打开 设置 → QuickPaste")
-            }
-        }, for: .touchUpInside)
-        box.addArrangedSubview(openSys)
-
         let tip = UILabel()
-        tip.text = "按钮没反应 = 系统不允许键盘跳转。回主屏幕点 QuickPaste 图标即可，进去会自动开启。"
-        tip.font = .systemFont(ofSize: 13)
+        tip.text = "按钮没反应 = 系统不允许键盘跳转，回主屏点 QuickPaste 图标就行。"
+        tip.font = .systemFont(ofSize: 12)
         tip.numberOfLines = 0
-        tip.textColor = UIColor.rgb(140, 142, 150)
+        tip.textColor = UIColor.rgb(150, 152, 160)
         box.addArrangedSubview(tip)
 
         showSheet(title: "连续复制", body: box)
@@ -361,7 +347,7 @@ final class KeyboardViewController: UIInputViewController {
         b.setTitleColor(fg, for: .normal)
         b.backgroundColor = bg
         b.layer.cornerRadius = 12
-        b.heightAnchor.constraint(equalToConstant: 50).isActive = true
+        b.heightAnchor.constraint(equalToConstant: 46).isActive = true
         return b
     }
 
