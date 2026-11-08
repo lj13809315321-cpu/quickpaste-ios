@@ -1,7 +1,7 @@
 QuickPaste v1.6 同步输入法 手机安装包
 形态：安卓 IME / iOS 键盘扩展（原生键盘，非 WebView 壳）
 苹果交付：未签名 IPA（手机端签名工具直接导入）
-构建时间 (UTC): 2026-11-08 11:02:50
-commit: e0731c4edaa4567c1f35a969aa10a3ebbcb112d1
+构建时间 (UTC): 2026-11-08 11:30:16
+commit: 6be1b2359015497c66079d174e649ab3a40655f8
 APK: 72965 bytes
-IPA(未签名): 356017 bytes
+IPA(未签名): 363192 bytes
