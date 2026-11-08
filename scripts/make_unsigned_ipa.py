@@ -23,9 +23,9 @@ import sys
 import zipfile
 
 SRC = (sys.argv[1] if len(sys.argv) > 1 else
-       r"E:/剪贴/dist/手机安装包/① 苹果版-QuickPaste输入法-爱思7天签.ipa")
-DST = (sys.argv[2] if len(sys.argv) > 2 else
        r"E:/剪贴/dist/手机安装包/① 苹果版-未签名-手机端签名用.ipa")
+DST = (sys.argv[2] if len(sys.argv) > 2 else
+       r"E:/qpbuild/自检输出.ipa")
 
 
 def macho_facts(d):

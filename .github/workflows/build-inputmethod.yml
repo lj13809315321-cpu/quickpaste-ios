@@ -8,8 +8,8 @@
 #
 # 1) push 自动触发，不需要 token / 手动点 Run。
 # 2) 产物由 publish job 提交回仓库 out/，本机 git pull 即可取回。
-# 3) iOS 同时产出两种包：ad-hoc 预签名版（爱思等用）、未签名版（手机端
-#    签名工具直接导入，构造对齐用户提供的未签名 IPA 参照样本）。
+# 3) iOS 只交付【未签名 IPA】，供手机端签名工具直接导入；构造对齐用户
+#    提供的未签名 IPA 参照样本。ad-hoc 预签名只作为编译中间步骤，不交付。
 
 name: 编译同步输入法 (APK + IPA)
 
@@ -128,7 +128,7 @@ jobs:
           echo "=== 键盘扩展 ==="
           plutil -p "$APP/PlugIns/QuickPasteKeyboard.appex/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundlePackageType|NSExtension|NSAppTransportSecurity' || true
 
-      - name: ad-hoc 预签名（先扩展，后主 app）
+      - name: 中间步骤：生成代码签名槽位（预签名包不交付）
         run: |
           set -euo pipefail
           APP="$PWD/build/Build/Products/Release-iphoneos/QuickPaste.app"
@@ -185,16 +185,14 @@ jobs:
           python3 scripts/make_unsigned_ipa.py \
             dist/QuickPaste-Sync-iOS.ipa \
             dist/QuickPaste-Sync-iOS-unsigned.ipa
-          echo "=== 两个 IPA ==="
-          ls -lh dist/*.ipa
+          echo "=== 交付产物 ==="
+          ls -lh dist/QuickPaste-Sync-iOS-unsigned.ipa
 
-      - name: 上传 IPA 产物
+      - name: 上传 IPA 产物（只传未签名包）
         uses: actions/upload-artifact@v4
         with:
           name: qp-ipa
-          path: |
-            dist/QuickPaste-Sync-iOS.ipa
-            dist/QuickPaste-Sync-iOS-unsigned.ipa
+          path: dist/QuickPaste-Sync-iOS-unsigned.ipa
           if-no-files-found: error
 
       - name: 上传构建日志（失败时排查）
@@ -227,23 +225,24 @@ jobs:
           echo "=== out/ 内容 ==="
           ls -lh out/
           APK=out/QuickPaste-Sync-Android.apk
-          IPA=out/QuickPaste-Sync-iOS.ipa
           UIPA=out/QuickPaste-Sync-iOS-unsigned.ipa
           [ -f "$APK" ] || { echo "::error::缺 APK"; exit 1; }
-          [ -f "$IPA" ] || { echo "::error::缺 IPA"; exit 1; }
           [ -f "$UIPA" ] || { echo "::error::缺未签名 IPA"; exit 1; }
+          # 旧的 ad-hoc 预签名包不再交付，从仓库移除
+          git rm -f --ignore-unmatch out/QuickPaste-Sync-iOS.ipa || true
+          rm -f out/QuickPaste-Sync-iOS.ipa
           {
             echo "QuickPaste v1.6 同步输入法 手机安装包"
             echo "形态：安卓 IME / iOS 键盘扩展（原生键盘，非 WebView 壳）"
+            echo "苹果交付：未签名 IPA（手机端签名工具直接导入）"
             echo "构建时间 (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
             echo "commit: ${GITHUB_SHA}"
             echo "APK: $(stat -c%s "$APK") bytes"
-            echo "IPA(预签名): $(stat -c%s "$IPA") bytes"
             echo "IPA(未签名): $(stat -c%s "$UIPA") bytes"
           } > out/BUILD_INFO.txt
           git config user.name "quickpaste-bot"
           git config user.email "quickpaste-bot@users.noreply.github.com"
-          git add -f out/QuickPaste-Sync-Android.apk out/QuickPaste-Sync-iOS.ipa out/QuickPaste-Sync-iOS-unsigned.ipa out/BUILD_INFO.txt
+          git add -f out/QuickPaste-Sync-Android.apk out/QuickPaste-Sync-iOS-unsigned.ipa out/BUILD_INFO.txt
           git commit -m "chore: 自动回传同步输入法 APK + IPA [skip ci]" || echo "无变更，跳过提交"
           git pull --rebase origin main || true
           git push origin HEAD:main
