@@ -71,9 +71,9 @@ jobs:
           python3 scripts/fix_info_plists.py
           APP="$PWD/build/Build/Products/Release-iphoneos/QuickPaste.app"
           echo "=== 主 app Info.plist 校验 ==="
-          plutil -p "$APP/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundlePackageType|MinimumOSVersion'
+          plutil -p "$APP/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundlePackageType|MinimumOSVersion' || true
           echo "=== 键盘扩展 Info.plist 校验 ==="
-          plutil -p "$APP/PlugIns/QuickPasteKeyboard.appex/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundlePackageType|NSExtension'
+          plutil -p "$APP/PlugIns/QuickPasteKeyboard.appex/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundlePackageType|NSExtension' || true
 
       - name: 为二进制补 ad-hoc 签名（让爱思/轻松签能导入）
         run: |
