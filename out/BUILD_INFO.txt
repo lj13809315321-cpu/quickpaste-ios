@@ -1,5 +1,5 @@
 QuickPaste 同步版 手机安装包
-构建时间 (UTC): 2026-11-08 05:06:28
-commit: e5f070c266fcdff5f0fd5a80a0e6199edf464f81
+构建时间 (UTC): 2026-11-08 05:33:12
+commit: 195ce08976bcceca634886281f2b21927099acc9
 APK: 11873 bytes
-IPA: 45378 bytes
+IPA: 45382 bytes
