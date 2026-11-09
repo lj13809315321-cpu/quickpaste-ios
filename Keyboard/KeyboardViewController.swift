@@ -97,6 +97,11 @@ final class KeyboardViewController: UIInputViewController {
     /// 系统会自动节流，快速滑动不会震成一团。
     private var cursorFeedback: UISelectionFeedbackGenerator?
     private var currentImageItem: SyncItem?
+    /// 路线 E：底部快捷条（黄白风格：切换/关闭/粘贴/撤销/←/→）
+    private var kbBar: KBKeyboardButtonBar?
+    private let kbBarRow = UIView()
+    /// 键盘总高度 = 用户设定高度 + 底部快捷条高度
+    private var kbBarHeight: CGFloat { kbBar?.barHeight ?? 0 }
 
     private var client: SyncClient {
         SyncClient(url: prefs.syncURL, pair: prefs.syncPair)
@@ -111,7 +116,9 @@ final class KeyboardViewController: UIInputViewController {
         //（Apple 开发者论坛 thread 793686 的官方适配结论）。按钮/卡片自带底色不受影响。
         view.backgroundColor = .clear
 
-        heightConstraint = view.heightAnchor.constraint(equalToConstant: prefs.height)
+        // 路线 E：底部快捷条先就位，root 的底部约束要抬到它之上
+        setupKBButtonBar()
+        heightConstraint = view.heightAnchor.constraint(equalToConstant: prefs.height + kbBarHeight)
         heightConstraint.priority = .required
         heightConstraint.isActive = true
 
@@ -174,6 +181,8 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // 用户可能刚从系统设置改过「允许完全访问」，刷新粘贴按钮可用态
+        kbBar?.refreshAccessState()
         // iOS 16+ 首次读取会弹「是否允许粘贴」，弹窗关闭后分两次补读，
         // 覆盖用户点「允许」较慢的情况。
         for delay in [0.35, 1.20] {
@@ -185,14 +194,17 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // 撤销栈只在同一个输入框会话内有效，收起键盘即作废
+        kbBar?.clearHistory()
         stopPolling()
         stopPasteboardTimer()
     }
 
     override func viewWillLayoutSubviews() {
         super.viewWillLayoutSubviews()
-        if heightConstraint.constant != prefs.height {
-            heightConstraint.constant = prefs.height
+        let totalHeight = prefs.height + kbBarHeight
+        if heightConstraint.constant != totalHeight {
+            heightConstraint.constant = totalHeight
         }
     }
 
@@ -614,12 +626,46 @@ final class KeyboardViewController: UIInputViewController {
         root.spacing = 2
         root.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(root)
+        // 路线 E：root 底部抬到快捷条之上，整块键盘不与新增底栏重叠
         NSLayoutConstraint.activate([
             root.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             root.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             root.topAnchor.constraint(equalTo: view.topAnchor),
-            root.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            root.bottomAnchor.constraint(equalTo: kbBarRow.topAnchor)
         ])
+    }
+
+    // MARK: - 底部快捷条（路线 E：黄白微信助手底栏等价复刻）
+
+    /// 黄白底栏六键在扩展沙盒内的等价实现：切换/关闭/撤销/←/→完全等价；
+    /// 截图无公开 API（扩展看不到宿主窗口），按《对接上下文》推荐换成
+    /// 「粘贴」（剪贴板键盘更实用）；系统听写不能主动调，不放。
+    /// 独立一行贴键盘最底部，不与「返回/空格/发送」底栏冲突。
+    private func setupKBButtonBar() {
+        let bar = KBKeyboardButtonBar(inputViewController: self)
+        bar.buttonActions = KBKeyboardButtonBar.actions(fromNames:
+            ["nextKeyboard", "dismiss", "paste", "undo", "cursorLeft", "cursorRight"])
+        bar.barHeight = 40
+        bar.buttonSpacing = 8
+        bar.edgeInset = 8
+
+        kbBarRow.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(kbBarRow)
+        NSLayoutConstraint.activate([
+            kbBarRow.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            kbBarRow.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            kbBarRow.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            kbBarRow.heightAnchor.constraint(equalToConstant: bar.barHeight)
+        ])
+        bar.embed(inBottomRow: kbBarRow)
+        kbBar = bar
+    }
+
+    /// 路线 E：本键盘插入的文本统一走这里，底部「撤销」才有可回退记录
+    /// （扩展撤销只能回退本会话由本键盘插入的文本，无法感知宿主直接改动）
+    private func insertText(_ text: String) {
+        textDocumentProxy.insertText(text)
+        kbBar?.recordInsertedText(text)
     }
 
     /// 状态头整块已删掉：连接提示只占工具条上一个 9pt 小圆点，
@@ -827,7 +873,7 @@ final class KeyboardViewController: UIInputViewController {
             b.widthAnchor.constraint(equalToConstant: QPTool.size).isActive = true
             b.heightAnchor.constraint(equalToConstant: QPTool.size).isActive = true
             b.addAction(UIAction { [weak self] _ in
-                self?.textDocumentProxy.insertText(symbol)
+                self?.insertText(symbol)
             }, for: .touchUpInside)
             symStack.addArrangedSubview(b)
         }
@@ -1053,7 +1099,7 @@ final class KeyboardViewController: UIInputViewController {
             label.centerYAnchor.constraint(equalTo: card.centerYAnchor)
         ])
         card.addAction(UIAction { [weak self] _ in
-            self?.textDocumentProxy.insertText(text)
+            self?.insertText(text)
             if self?.prefs.autoCollapse == true { self?.dismissKeyboard() }
         }, for: .touchUpInside)
         return card
@@ -1136,7 +1182,7 @@ final class KeyboardViewController: UIInputViewController {
             guard let self = self else { return }
             if item.isImage { self.showImage(item) }
             else {
-                self.textDocumentProxy.insertText(item.text)
+                self.insertText(item.text)
                 if self.prefs.autoCollapse { self.dismissKeyboard() }
             }
         }
@@ -1257,7 +1303,7 @@ final class KeyboardViewController: UIInputViewController {
         space.layer.cornerRadius = 8
         space.heightAnchor.constraint(equalToConstant: 42).isActive = true
         space.addAction(UIAction { [weak self] _ in
-            self?.textDocumentProxy.insertText(" ")
+            self?.insertText(" ")
         }, for: .touchUpInside)
         bottom.addArrangedSubview(space)
 
@@ -1271,7 +1317,7 @@ final class KeyboardViewController: UIInputViewController {
         send.heightAnchor.constraint(equalToConstant: 42).isActive = true
         // 发送 = 真的发送消息（等价于按系统回车键），不是发到电脑
         send.addAction(UIAction { [weak self] _ in
-            self?.textDocumentProxy.insertText("\n")
+            self?.insertText("\n")
         }, for: .touchUpInside)
         bottom.addArrangedSubview(send)
 
@@ -1299,7 +1345,7 @@ final class KeyboardViewController: UIInputViewController {
         listScroll.isHidden = isCalcMode
         bottomBar.isHidden = isCalcMode
         // 计算器要放得下 5 行大键，比列表模式高一点；退出时恢复用户设的高度
-        heightConstraint.constant = isCalcMode ? 356 : prefs.height
+        heightConstraint.constant = (isCalcMode ? 356 : prefs.height) + kbBarHeight
         UIView.animate(withDuration: 0.18) { self.view.layoutIfNeeded() }
     }
 
@@ -1308,7 +1354,7 @@ final class KeyboardViewController: UIInputViewController {
             evaluateInline()
         } else {
             // 数字 / 运算符 / 小数点：直接写进当前 App 的输入框
-            textDocumentProxy.insertText(key)
+            insertText(key)
         }
     }
 
@@ -1333,7 +1379,7 @@ final class KeyboardViewController: UIInputViewController {
         }
         // expr 只含 ASCII，字符数即 UTF-16 长度，退格次数安全
         for _ in 0..<expr.count { textDocumentProxy.deleteBackward() }
-        textDocumentProxy.insertText(value.calcText)
+        insertText(value.calcText)
     }
 
     // MARK: - 底行 (.kbKeys)
@@ -1379,7 +1425,7 @@ final class KeyboardViewController: UIInputViewController {
         newline.layer.cornerRadius = 9
         newline.widthAnchor.constraint(equalToConstant: 64).isActive = true
         newline.addAction(UIAction { [weak self] _ in
-            self?.textDocumentProxy.insertText("\n")
+            self?.insertText("\n")
         }, for: .touchUpInside)
         bar.addArrangedSubview(newline)
 
@@ -1395,7 +1441,7 @@ final class KeyboardViewController: UIInputViewController {
         //   之前这里调的是 sendInputTextToPc()，用户一按就把聊天内容推到电脑上去了。
         //   要发到电脑请长按（弹出「发送到电脑」菜单）或从 ⋯ 菜单里选。
         send.addAction(UIAction { [weak self] _ in
-            self?.textDocumentProxy.insertText("\n")
+            self?.insertText("\n")
         }, for: .touchUpInside)
         let longSend = UILongPressGestureRecognizer(target: self,
                                                     action: #selector(sendLongPress(_:)))
@@ -1465,7 +1511,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.6 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.7 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -1872,7 +1918,7 @@ final class KeyboardViewController: UIInputViewController {
             b.layer.cornerRadius = 8
             b.heightAnchor.constraint(equalToConstant: 32).isActive = true
             b.addAction(UIAction { [weak self] _ in
-                self?.textDocumentProxy.insertText(t)
+                self?.insertText(t)
                 self?.closeSheet()
             }, for: .touchUpInside)
             stack.addArrangedSubview(b)
@@ -2226,7 +2272,7 @@ final class KeyboardViewController: UIInputViewController {
                 }
             }
         case .ended, .cancelled, .failed:
-            if spaceLastSteps == 0 { textDocumentProxy.insertText(" ") }
+            if spaceLastSteps == 0 { insertText(" ") }
             cursorFeedback = nil
         default:
             break
@@ -2243,7 +2289,7 @@ final class KeyboardViewController: UIInputViewController {
 
     @objc private func restoreInput() {
         guard let last = undoStack.popLast() else { return }
-        textDocumentProxy.insertText(last)
+        insertText(last)
     }
 
     /// 原型 .kbTool：38×38、#D4D6DE 灰底、圆角 10。
@@ -2361,8 +2407,9 @@ final class KeyboardViewController: UIInputViewController {
         refreshCopyOverlay()
         refreshList()
         refreshHead()
-        if heightConstraint.constant != prefs.height {
-            heightConstraint.constant = prefs.height
+        let totalHeight = prefs.height + kbBarHeight
+        if heightConstraint.constant != totalHeight {
+            heightConstraint.constant = totalHeight
         }
         view.setNeedsLayout()
         if prefs.syncAuto { startPolling() } else { stopPolling() }
@@ -2436,7 +2483,7 @@ extension KeyboardViewController: KeyboardSettingsDelegate {
     func settingsSwitchKeyboard() { advanceToNextInputMode() }
 
     func settingsInsertText(_ text: String) {
-        textDocumentProxy.insertText(text)
+        insertText(text)
         showToast("已插入到输入框")
     }
 

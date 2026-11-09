@@ -48,6 +48,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: app.mulberry6323.twilight7904.keyboard
         PRODUCT_MODULE_NAME: QuickPasteKeyboard
         GENERATE_INFOPLIST_FILE: NO
+        # 路线 E：桥接 ObjC 参考实现 KeyboardButtonBar（黄白风格底栏按钮）。
+        # 该文件只需 import 需要的 ObjC 头文件，路径相对工程根目录。
+        SWIFT_OBJC_BRIDGING_HEADER: Keyboard/QuickPasteKeyboard-Bridging-Header.h
 
 schemes:
   QuickPaste:
