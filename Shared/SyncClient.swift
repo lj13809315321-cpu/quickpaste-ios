@@ -11,6 +11,10 @@ final class SyncClient {
         var count = 0
         var backend = ""
         var items: [SyncItem] = []
+        /// v1.8.12 卡顿优化：电脑端内容与客户端签名一致时服务端只回这个小对象，
+        /// items 为空 —— 免去每 3 秒全量下载（含图片 base64）+ JSON 全量解码。
+        var unchanged = false
+        var sig = ""
     }
 
     private let base: String
@@ -45,8 +49,18 @@ final class SyncClient {
         return nil
     }
 
-    func fetch(limit: Int = 30, completion: @escaping (Result?, String?) -> Void) {
-        guard var req = request("/api/items?limit=\(limit)") else {
+    /// - parameter sig: 上一轮的服务端签名；命中时服务端返回 unchanged（体积只有几十字节，
+    ///   不再带 items / 图片 base64）。传 nil 或空 = 全量拉取。
+    func fetch(limit: Int = 30, sig: String? = nil,
+               completion: @escaping (Result?, String?) -> Void) {
+        var path = "/api/items?limit=\(limit)"
+        if let s = sig, !s.isEmpty {
+            // sig 里含 "|" 与 "#"，只放行 URL 安全字符，其余全部百分号编码
+            let safe = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+            let e = s.addingPercentEncoding(withAllowedCharacters: safe) ?? s
+            path += "&sig=\(e)"
+        }
+        guard var req = request(path) else {
             completion(nil, "未设置电脑地址")
             return
         }
@@ -64,6 +78,8 @@ final class SyncClient {
             var r = Result()
             r.count = (obj["count"] as? NSNumber)?.intValue ?? 0
             r.backend = obj["backend"] as? String ?? ""
+            r.unchanged = (obj["unchanged"] as? Bool) ?? false
+            r.sig = obj["sig"] as? String ?? ""
             if let arr = obj["items"] as? [[String: Any]] {
                 r.items = arr.map { SyncItem.from($0) }
             }

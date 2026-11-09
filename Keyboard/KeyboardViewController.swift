@@ -194,6 +194,7 @@ final class KeyboardViewController: UIInputViewController {
         pull(showConnecting: true)
         startPolling()
         syncCaptureState()
+        QPHapticButton.hapticEnabled = prefs.cursorHaptic
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -249,12 +250,16 @@ final class KeyboardViewController: UIInputViewController {
     // MARK: - 剪贴板监听（连续复制的真正实现）
 
     /// 只要键盘可见就常驻轮询，和「连续复制 / 画中画」开关无关。
+    /// ★ v1.8.12 卡顿修复：run loop 模式从 .common 改 .default ——
+    ///   之前滚动列表/拖动手势进行中定时器照样触发（.common 跟踪模式下也跑），
+    ///   每 0.5 秒在主线程插一段「XPC + 文件读 + JSON 解码」，滚动就会顿一下。
+    ///   改 .default 后手势期间暂停轮询，松手自动恢复，复制内容最迟 0.5 秒补收。
     private func startPasteboardTimer() {
         stopPasteboardTimer()
         let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.checkClipboard()
         }
-        RunLoop.main.add(t, forMode: .common)
+        RunLoop.main.add(t, forMode: .default)
         pasteboardTimer = t
     }
 
@@ -263,8 +268,12 @@ final class KeyboardViewController: UIInputViewController {
         pasteboardTimer = nil
     }
 
+    // ★ v1.8.12 卡顿修复：点按改为「非强制」读 —— changeCount 没变就只做
+    //   一次廉价的版本号比对，不碰 pb.string（剪贴板 XPC 全量读，剪贴板里
+    //   有长文/图片时一次几十毫秒，之前每按一次键都来一遍，微信里打字必卡）。
+    //   复制新内容后 changeCount 必然变化，点按照样能立刻收录，行为不丢。
     @objc private func userDidInteract() {
-        checkClipboard(force: true)
+        checkClipboard()
     }
 
     /// ★ 只有 changeCount 真的变了才读正文。
@@ -298,11 +307,17 @@ final class KeyboardViewController: UIInputViewController {
         }
         // 主 App 在后台（画中画）收的条目：并入列表的同时也推到电脑，
         // 否则「键盘收起时复制的」永远只留在手机里。
+        // ★ v1.8.12 卡顿修复：prefs.clips / isMuted 每次访问都是一整份
+        //   UserDefaults 数组读取，之前循环里逐条调用 = 每 0.5 秒最多
+        //   几十次数组反序列化。改成进循环前取一次快照，循环内查内存 Set。
+        var clipSet = Set(prefs.clips)
+        let mutedSet = Set(prefs.mutedTexts)
         for text in shared.items.reversed() where !text.isEmpty {
             // ★ 已收录的条目绝不再走 capture：capture 遇到「已存在但不在首位」会
             //   重排并返回 true，导致每 0.5 秒 refreshList 重建整列，
             //   手指按住卡片不到 0.4 秒就被销毁 → 长按菜单永远弹不出来。
-            if !prefs.isMuted(text), !prefs.clips.contains(text), prefs.capture(text) {
+            if !mutedSet.contains(text), !clipSet.contains(text), prefs.capture(text) {
+                clipSet.insert(text)
                 dirty = true
                 autoPush(text)
             }
@@ -479,7 +494,9 @@ final class KeyboardViewController: UIInputViewController {
             syncState = "connecting"
             refreshHead()
         }
-        client.fetch(limit: 30) { [weak self] result, error in
+        // v1.8.12：带上上一轮签名 —— 电脑端内容没变时只回几十字节的
+        // unchanged 小对象，不再每 3 秒全量下载（图片 base64）+ 解码。
+        client.fetch(limit: 30, sig: syncSig.isEmpty ? nil : syncSig) { [weak self] result, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if let r = result {
@@ -494,10 +511,23 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func apply(_ r: SyncClient.Result) {
+        // v1.8.12：内容没变（sig 命中）→ 只更新状态头，不碰条目、不重建列表
+        if r.unchanged {
+            syncCount = r.count
+            backend = r.backend
+            lastSync = Date()
+            syncState = "online"
+            refreshHead()
+            flushPendingPush()
+            return
+        }
         // ⚠️ 签名只看「有哪些条目」，不看时间戳：
         //   服务端对重复内容会刷新 ts，用 ts 参与比较会导致每 3 秒拉一次就重建整列，
         //   手指正在滑/长按的卡片被删掉重建 → 表现成「左右滑没反应、长按不弹菜单」。
-        let sig = r.items.prefix(20).map { $0.id }.joined(separator: "|") + "#\(r.items.count)"
+        //   优先用服务端算好的签名（新旧服务端都能对上：公式与本地一致）。
+        let sig = r.sig.isEmpty
+            ? r.items.prefix(20).map { $0.id }.joined(separator: "|") + "#\(r.items.count)"
+            : r.sig
         if sig != syncSig {
             syncSig = sig
             items = r.items
@@ -1583,7 +1613,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.11 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.12 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -3012,11 +3042,14 @@ extension KeyboardViewController: KeyboardSettingsDelegate {
 /// 按键震动（v1.8.6）：键盘里所有按钮共用这一个子类，
 /// 按下（touchesBegan）就轻震一下，不等抬起，跟手感最好。
 /// 开关沿用「按键震动」（qp.cursorHaptic，默认开），关掉后所有按钮都不震。
+/// ★ v1.8.12 卡顿修复：开关值缓存进静态变量（键盘出现 / 设置页切换时刷新），
+///   之前每次触摸都读一次 UserDefaults，高频打字时白白加主线程开销。
 final class QPHapticButton: UIButton {
     private static let feedback = UIImpactFeedbackGenerator(style: .light)
+    static var hapticEnabled = true
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         super.touchesBegan(touches, with: event)
-        if (UserDefaults.standard.object(forKey: "qp.cursorHaptic") as? Bool) ?? true {
+        if Self.hapticEnabled {
             Self.feedback.impactOccurred()
         }
     }

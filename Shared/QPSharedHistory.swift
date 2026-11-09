@@ -81,11 +81,34 @@ enum QPSharedHistory {
         return Payload()
     }
 
+    // ★ v1.8.12 卡顿修复：read() 在键盘侧被 0.5 秒轮询、每次点按、每次
+    //   refreshList 各调一遍，之前每遍都是「读整个文件 + JSONDecoder 全量解码」
+    //   （文件几十 KB 时主线程一次几毫秒，高频调用累积成可感知卡顿）。
+    //   主 App 是唯一写入方且每次写必改 mtime —— 用 mtime+size 做键缓存，
+    //   文件没变直接返回内存里的上一份，只有真变了才重新读盘解码。
+    private static var cachedPayload: Payload?
+    private static var cachedMtime: Double = -1
+    private static var cachedSize: Int64 = -1
+
     private static func readGroup() -> Payload? {
-        guard let url = groupURL(),
-              let data = try? Data(contentsOf: url.appendingPathComponent(fileName))
-        else { return nil }
-        return try? JSONDecoder().decode(Payload.self, from: data)
+        guard let url = groupURL() else { return nil }
+        let fileURL = url.appendingPathComponent(fileName)
+        let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+        if let a = attrs,
+           let m = (a[.modificationDate] as? Date)?.timeIntervalSince1970,
+           let s = (a[.size] as? NSNumber)?.int64Value,
+           m == cachedMtime, s == cachedSize, let p = cachedPayload {
+            return p
+        }
+        guard let data = try? Data(contentsOf: fileURL),
+              let p = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
+        cachedPayload = p
+        if let a = attrs,
+           let m = (a[.modificationDate] as? Date)?.timeIntervalSince1970 {
+            cachedMtime = m
+            cachedSize = (a[.size] as? NSNumber)?.int64Value ?? -1
+        }
+        return p
     }
 
     /// 只取我们自己的那个自定义类型，不遍历 items、不碰正文，
