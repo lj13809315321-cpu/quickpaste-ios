@@ -654,14 +654,14 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: - 底部快捷条（路线 E：黄白微信助手底栏等价复刻）
 
-    /// 黄白底栏等价复刻（v1.8.9 按用户要求重排）：
-    /// 「切换」整键删掉（不切输入法），「撤销」顶到第一位；
-    /// 「←/→」放正中间；末尾新增「全选」（近似 = 全文复制到剪贴板）。
+    /// 黄白底栏等价复刻（v1.8.10 按用户要求再调）：
+    /// 「切换」维持删除不再动；「粘贴」整键去掉（v1.8.10 试运行），
+    /// 「撤销」换到原「粘贴」的位置；「←/→」保持正中间。
     /// 独立一行贴键盘最底部，不与「返回/空格/发送」底栏冲突。
     private func setupKBButtonBar() {
         let bar = KBKeyboardButtonBar(inputViewController: self)
         bar.buttonActions = KBKeyboardButtonBar.actions(fromNames:
-            ["undo", "dismiss", "cursorLeft", "cursorRight", "paste", "selectAll"])
+            ["dismiss", "cursorLeft", "cursorRight", "undo", "selectAll"])
         bar.barHeight = 40
         bar.buttonSpacing = 8
         bar.edgeInset = 8
@@ -1579,7 +1579,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.9 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.10 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
