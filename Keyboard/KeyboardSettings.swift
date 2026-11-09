@@ -291,6 +291,8 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             },
             switchRow("空格键滑动移动光标", sub: "按住空格左右滑动移动光标，轻点仍输入空格",
                       isOn: prefs.spaceCursor) { [weak self] v in self?.prefs.spaceCursor = v },
+            switchRow("光标移动震动", sub: "滑动光标时每移动一个字符轻震一下，跟手更明显",
+                      isOn: prefs.cursorHaptic) { [weak self] v in self?.prefs.cursorHaptic = v },
             switchRow("发送后自动收起键盘", sub: "默认关闭，可连续发送",
                       isOn: prefs.autoCollapse) { [weak self] v in self?.prefs.autoCollapse = v },
             switchRow("键盘可见时自动抓取", sub: "键盘弹着的时候，连续复制第 2、3、N 段都会实时进列表，无需收起再弹出",

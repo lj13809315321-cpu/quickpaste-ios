@@ -93,6 +93,9 @@ final class KeyboardViewController: UIInputViewController {
     private var undoStack: [String] = []
     private var spaceOriginX: CGFloat = 0
     private var spaceLastSteps = 0
+    /// 空格滑光标的离散步进震动：选择反馈器专用于「一次一格」的场景，
+    /// 系统会自动节流，快速滑动不会震成一团。
+    private var cursorFeedback: UISelectionFeedbackGenerator?
     private var currentImageItem: SyncItem?
 
     private var client: SyncClient {
@@ -2194,6 +2197,14 @@ final class KeyboardViewController: UIInputViewController {
         case .began:
             spaceOriginX = x
             spaceLastSteps = 0
+            // 按下就预热震动器，第一次移动时才不会有延迟
+            if prefs.spaceCursor && prefs.cursorHaptic {
+                let f = UISelectionFeedbackGenerator()
+                f.prepare()
+                cursorFeedback = f
+            } else {
+                cursorFeedback = nil
+            }
         case .changed:
             guard prefs.spaceCursor else { return }
             let steps = Int((x - spaceOriginX) / 10)
@@ -2201,9 +2212,15 @@ final class KeyboardViewController: UIInputViewController {
             if delta != 0 {
                 textDocumentProxy.adjustTextPosition(byCharacterOffset: delta)
                 spaceLastSteps = steps
+                // 移动一个字符震一下；一次跨了多格就补齐次数，最多 4 次防手麻
+                if let f = cursorFeedback {
+                    for _ in 0..<min(abs(delta), 4) { f.selectionChanged() }
+                    f.prepare()
+                }
             }
         case .ended, .cancelled, .failed:
             if spaceLastSteps == 0 { textDocumentProxy.insertText(" ") }
+            cursorFeedback = nil
         default:
             break
         }
