@@ -24,6 +24,18 @@ final class KeyboardViewController: UIInputViewController {
     private var pollTimer: Timer?
     /// 主列表实际渲染的数据：本机复制历史 + 画中画抓取记录 + 电脑同步记录
     private var displayItems: [SyncItem] = []
+
+    // MARK: - v1.8.8 筛选 / 排序 / 导出
+    /// 类型筛选弹层（漏斗按钮点按）：磨砂圆角小菜单，选中项带 ✓
+    private let filterOverlay = UIView()
+    private let filterBox = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
+    private let filterStack = UIStackView()
+    /// 导出弹层（漏斗按钮长按）：TXT / CSV / 图片，发到电脑 sync 服务
+    private let exportOverlay = UIView()
+    private let exportBox = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
+    private let exportStack = UIStackView()
+    private weak var filterButton: UIButton?
+    private weak var sortButton: UIButton?
     /// 当前滑开的卡片，滑开新的就把旧的收回去
     private weak var openedCard: QPSwipeCard?
     /// 手指正在卡片上滑动/长按：这期间不许重建列表，否则手势立刻作废
@@ -135,6 +147,8 @@ final class KeyboardViewController: UIInputViewController {
         buildBottomBar()
         buildMenu()
         buildCardMenu()
+        buildFilterMenu()
+        buildExportMenu()
         buildSheet()
         buildImageOverlay()
         settings.delegate = self
@@ -767,6 +781,37 @@ final class KeyboardViewController: UIInputViewController {
         copyBtn.addGestureRecognizer(holdCopy)
         toolbar.addArrangedSubview(copyBtn)
 
+        // v1.8.8 剪贴板筛选：点按弹类型筛选菜单（全部/文本/链接/图片/文件），
+        // 长按弹导出菜单（TXT / CSV / 图片 -> 发送到电脑）。
+        // 图标 = 三条递减横线，单色墨色，与整排图标统一；有筛选时变蓝提示。
+        let filterBtn = toolButton("")
+        filterBtn.setImage(UIImage(systemName: "line.3.decrease",
+                                   withConfiguration: toolIconConfig())?
+                            .withRenderingMode(.alwaysTemplate), for: .normal)
+        filterBtn.tintColor = QPColor.ink
+        filterBtn.addAction(UIAction { [weak self] _ in
+            guard let self = self else { return }
+            self.openFilterMenu(anchor: filterBtn)
+        }, for: .touchUpInside)
+        let holdFilter = UILongPressGestureRecognizer(target: self,
+                                                      action: #selector(handleExportPress(_:)))
+        holdFilter.minimumPressDuration = 0.6
+        filterBtn.addGestureRecognizer(holdFilter)
+        toolbar.addArrangedSubview(filterBtn)
+        filterButton = filterBtn
+
+        // v1.8.8 剪贴板排序：↑ = 最新在上（默认，不改变历史行为），
+        // 点按切 ↓ = 最旧在上，列表立即重排，方向记住。
+        let sortBtn = toolButton("")
+        sortBtn.setImage(UIImage(systemName: prefs.sortNewestTop ? "arrow.up" : "arrow.down",
+                                 withConfiguration: toolIconConfig())?
+                          .withRenderingMode(.alwaysTemplate), for: .normal)
+        sortBtn.tintColor = QPColor.ink
+        sortBtn.addAction(UIAction { [weak self] _ in self?.toggleSort() },
+                          for: .touchUpInside)
+        toolbar.addArrangedSubview(sortBtn)
+        sortButton = sortBtn
+
         symScroll.showsHorizontalScrollIndicator = false
         symScroll.translatesAutoresizingMaskIntoConstraints = false
         symStack.axis = .horizontal
@@ -1064,11 +1109,29 @@ final class KeyboardViewController: UIInputViewController {
             }
         }
 
-        // ★ 按时间倒序：电脑刚推的那条就该在第一格
-        all.sort { $0.ts > $1.ts }
+        // ★ 排序方向（v1.8.8 工具条可切）：↑ 最新在上（默认，电脑刚推的那条
+        //   就该在第一格）/ ↓ 最旧在上
+        if prefs.sortNewestTop {
+            all.sort { $0.ts > $1.ts }
+        } else {
+            all.sort { $0.ts < $1.ts }
+        }
         // ★ 清空闸门：清空时记下时刻，比它旧的条目（电脑端回传的历史、画中画旧记录）不再冒出来
         let gate = prefs.clearedAt
         if gate > 0 { all = all.filter { $0.ts > gate } }
+        // v1.8.8 类型筛选（工具条漏斗按钮）：text = 文本里去掉链接，
+        // link = 整条是网址或含 http(s)/www，image / file 按记录类型。
+        let ft = prefs.clipFilter
+        if ft != "all" {
+            all = all.filter { item in
+                switch ft {
+                case "link": return Self.isLinkItem(item)
+                case "image": return item.isImage
+                case "file": return item.type == "file" && !item.isImage
+                default: return !item.isImage && item.type != "file" && !Self.isLinkItem(item)
+                }
+            }
+        }
         // 置顶条目排在最前（本机与电脑记录一起参与）
         let pins = prefs.pinned
         if !pins.isEmpty {
@@ -1523,7 +1586,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.7 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.8 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -1720,6 +1783,8 @@ final class KeyboardViewController: UIInputViewController {
     /// 但菜单本体不会再变成压住整个键盘的 7 行大白块。
     private func openCardMenu(_ item: SyncItem, anchor: UIView) {
         closeMenu()
+        closeFilterMenu()
+        closeExportMenu()
         cardMenuAnchorView?.alpha = 1
         anchor.alpha = 0
         cardMenuAnchorView = anchor
@@ -2407,6 +2472,304 @@ final class KeyboardViewController: UIInputViewController {
             front.lineWidth = 1.9
             front.lineCapStyle = .round
             front.stroke()
+        }
+    }
+
+    // MARK: - v1.8.8 筛选 / 排序 / 导出（工具条漏斗 + 箭头按钮）
+
+    /// 整条内容是否是链接：纯网址，或包含 http(s):// / www. 开头的片段
+    private static func isLinkItem(_ it: SyncItem) -> Bool {
+        guard !it.isImage, it.type != "file" else { return false }
+        let t = it.displayText
+        return t.range(of: "https?://\\S+", options: .regularExpression) != nil
+            || t.lowercased().hasPrefix("www.")
+    }
+
+    private func toggleSort() {
+        prefs.sortNewestTop.toggle()
+        refreshSortIcon()
+        refreshList()
+        showToast(prefs.sortNewestTop ? "已切到最新在上（↑）" : "已切到最旧在上（↓）")
+    }
+
+    private func refreshSortIcon() {
+        guard let b = sortButton else { return }
+        b.setImage(UIImage(systemName: prefs.sortNewestTop ? "arrow.up" : "arrow.down",
+                           withConfiguration: toolIconConfig())?
+                    .withRenderingMode(.alwaysTemplate), for: .normal)
+        b.tintColor = QPColor.ink
+    }
+
+    private func refreshFilterTint() {
+        filterButton?.tintColor = prefs.clipFilter == "all" ? QPColor.ink : .systemBlue
+    }
+
+    private func buildFilterMenu() {
+        filterOverlay.isHidden = true
+        filterOverlay.frame = view.bounds
+        filterOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        let tap = UITapGestureRecognizer(target: self, action: #selector(closeFilterMenu))
+        tap.cancelsTouchesInView = false
+        filterOverlay.addGestureRecognizer(tap)
+        view.addSubview(filterOverlay)
+        filterBox.layer.cornerRadius = 18
+        filterBox.clipsToBounds = true
+        filterOverlay.addSubview(filterBox)
+        filterStack.axis = .vertical
+        filterStack.distribution = .fillEqually
+        filterStack.spacing = 0
+        filterBox.contentView.addSubview(filterStack)
+    }
+
+    private func buildExportMenu() {
+        exportOverlay.isHidden = true
+        exportOverlay.frame = view.bounds
+        exportOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        let tap = UITapGestureRecognizer(target: self, action: #selector(closeExportMenu))
+        tap.cancelsTouchesInView = false
+        exportOverlay.addGestureRecognizer(tap)
+        view.addSubview(exportOverlay)
+        exportBox.layer.cornerRadius = 18
+        exportBox.clipsToBounds = true
+        exportOverlay.addSubview(exportBox)
+        exportStack.axis = .vertical
+        exportStack.distribution = .fillEqually
+        exportStack.spacing = 0
+        exportBox.contentView.addSubview(exportStack)
+    }
+
+    @objc private func closeFilterMenu() { filterOverlay.isHidden = true }
+    @objc private func closeExportMenu() { exportOverlay.isHidden = true }
+
+    /// 筛选菜单：磨砂圆角小卡片，贴在漏斗按钮正下方，选中项右侧 ✓（图2 样式）
+    private func openFilterMenu(anchor: UIView) {
+        closeMenu()
+        closeCardMenu()
+        closeExportMenu()
+        filterStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let options: [(String, String)] = [
+            ("all", "全部类型"), ("text", "文本"), ("link", "链接"),
+            ("image", "图片"), ("file", "文件"),
+        ]
+        let current = prefs.clipFilter
+        for (key, title) in options {
+            filterStack.addArrangedSubview(
+                filterRow(title, selected: current == key) { [weak self] in
+                    guard let self = self else { return }
+                    self.prefs.clipFilter = key
+                    self.closeFilterMenu()
+                    self.refreshFilterTint()
+                    self.refreshList()
+                    self.showToast(key == "all" ? "已显示全部类型" : "已筛选：\(title)")
+                })
+        }
+        let bounds = view.bounds
+        let w: CGFloat = 170
+        let rowH: CGFloat = 42
+        let h = CGFloat(options.count) * rowH
+        let r = anchor.convert(anchor.bounds, to: view)
+        let x = min(max(r.minX - 24, 8), bounds.width - w - 8)
+        var y = r.maxY + 4
+        if y + h > bounds.height - 8 { y = max(8, r.minY - h - 4) }
+        filterOverlay.frame = bounds
+        filterBox.frame = CGRect(x: x, y: y, width: w, height: h)
+        filterStack.frame = CGRect(x: 0, y: 0, width: w, height: h)
+        filterOverlay.isHidden = false
+        view.bringSubviewToFront(filterOverlay)
+    }
+
+    private func filterRow(_ title: String, selected: Bool,
+                           action: @escaping () -> Void) -> UIButton {
+        let b = QPHapticButton(type: .custom)
+        b.backgroundColor = .clear
+        b.contentHorizontalAlignment = .leading
+        b.setTitle(title, for: .normal)
+        b.setTitleColor(QPColor.ink, for: .normal)
+        b.titleLabel?.font = .systemFont(ofSize: 16, weight: selected ? .semibold : .regular)
+        b.contentEdgeInsets = UIEdgeInsets(top: 0, left: 18, bottom: 0, right: 40)
+        if selected {
+            let check = UIImageView(image: UIImage(systemName: "checkmark")?
+                .withConfiguration(UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)))
+            check.tintColor = QPColor.ink
+            check.contentMode = .scaleAspectFit
+            check.translatesAutoresizingMaskIntoConstraints = false
+            b.addSubview(check)
+            NSLayoutConstraint.activate([
+                check.trailingAnchor.constraint(equalTo: b.trailingAnchor, constant: -16),
+                check.centerYAnchor.constraint(equalTo: b.centerYAnchor),
+            ])
+        }
+        b.addAction(UIAction { _ in action() }, for: .touchUpInside)
+        return b
+    }
+
+    /// 长按漏斗按钮弹导出菜单（图3 类似效果）
+    @objc private func handleExportPress(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began else { return }
+        openExportMenu()
+    }
+
+    private func openExportMenu() {
+        closeMenu()
+        closeCardMenu()
+        closeFilterMenu()
+        exportStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        exportStack.addArrangedSubview(exportRow("导出为 TXT", icon: "doc.plaintext") {
+            self.exportClipboard(as: "txt")
+        })
+        exportStack.addArrangedSubview(exportRow("导出为 CSV", icon: "tablecells") {
+            self.exportClipboard(as: "csv")
+        })
+        exportStack.addArrangedSubview(exportRow("导出为图片", icon: "photo.on.rectangle") {
+            self.exportClipboard(as: "image")
+        })
+        let bounds = view.bounds
+        let w: CGFloat = 190
+        let rowH: CGFloat = 42
+        let h = CGFloat(exportStack.arrangedSubviews.count) * rowH
+        let r = filterButton?.convert(filterButton!.bounds, to: view)
+            ?? CGRect(x: bounds.width - 100, y: 0, width: 38, height: 38)
+        let x = min(max(r.minX - 30, 8), bounds.width - w - 8)
+        var y = r.maxY + 4
+        if y + h > bounds.height - 8 { y = max(8, r.minY - h - 4) }
+        exportOverlay.frame = bounds
+        exportBox.frame = CGRect(x: x, y: y, width: w, height: h)
+        exportStack.frame = CGRect(x: 0, y: 0, width: w, height: h)
+        exportOverlay.isHidden = false
+        view.bringSubviewToFront(exportOverlay)
+    }
+
+    private func exportRow(_ title: String, icon: String,
+                           action: @escaping () -> Void) -> UIButton {
+        let b = QPHapticButton(type: .custom)
+        b.backgroundColor = .clear
+        b.contentHorizontalAlignment = .leading
+        b.setTitle(title, for: .normal)
+        b.setTitleColor(QPColor.ink, for: .normal)
+        b.titleLabel?.font = .systemFont(ofSize: 16, weight: .regular)
+        b.contentEdgeInsets = UIEdgeInsets(top: 0, left: 52, bottom: 0, right: 12)
+        let iv = UIImageView(image: UIImage(systemName: icon)?
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)))
+        iv.tintColor = QPColor.ink
+        iv.contentMode = .scaleAspectFit
+        iv.translatesAutoresizingMaskIntoConstraints = false
+        b.addSubview(iv)
+        NSLayoutConstraint.activate([
+            iv.leadingAnchor.constraint(equalTo: b.leadingAnchor, constant: 18),
+            iv.centerYAnchor.constraint(equalTo: b.centerYAnchor),
+            iv.widthAnchor.constraint(equalToConstant: 22),
+            iv.heightAnchor.constraint(equalToConstant: 22),
+        ])
+        b.addAction(UIAction { _ in action() }, for: .touchUpInside)
+        return b
+    }
+
+    /// 把当前列表（已按筛选/排序，所见即所得）导出成文件发到电脑 sync 服务。
+    /// 走 POST /api/file（LocalSend 风格），电脑端落在 sync/files/ 并进列表。
+    private func exportClipboard(as format: String) {
+        closeExportMenu()
+        guard hasFullAccess else { showToast("需要开启「允许完全访问」才能导出"); return }
+        let items = displayItems
+        guard !items.isEmpty else { showToast("列表为空，没有可导出的内容"); return }
+        let texts = items.filter { !$0.isImage && $0.type != "file" }
+        let images = items.filter { $0.isImage }
+
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let stamp = DateFormatter()
+        stamp.dateFormat = "yyyyMMdd-HHmmss"
+
+        func send(_ data: Data, name: String, mime: String) {
+            client.pushFile(data, name: name, mime: mime) { err in
+                DispatchQueue.main.async {
+                    self.showToast(err == nil ? "已导出到电脑：\(name)"
+                                               : "导出失败：\(err ?? "")")
+                }
+            }
+        }
+
+        switch format {
+        case "txt":
+            let lines = texts.enumerated().map { (i, it) -> String in
+                let time = fmt.string(from: Date(timeIntervalSince1970: it.ts / 1000))
+                return "【\(i + 1)】\(time)（\(it.fromPhone ? "手机" : "电脑")）\n\(it.text)"
+            }
+            let head = "QuickPaste 剪贴板导出（\(fmt.string(from: Date()))，共 \(texts.count) 条）"
+            let body = head + "\n\n" + lines.joined(separator: "\n\n————\n\n")
+            send(body.data(using: .utf8) ?? Data(),
+                 name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).txt",
+                 mime: "text/plain")
+        case "csv":
+            var rows = ["序号,时间,来源,类型,内容"]
+            for (i, it) in texts.enumerated() {
+                let time = fmt.string(from: Date(timeIntervalSince1970: it.ts / 1000))
+                let content = it.text
+                    .replacingOccurrences(of: "\r", with: "")
+                    .replacingOccurrences(of: "\n", with: "\\n")
+                    .replacingOccurrences(of: "\"", with: "\"\"")
+                rows.append("\(i + 1),\(time),\(it.fromPhone ? "手机" : "电脑"),\(it.type),\"\(content)\"")
+            }
+            var data = Data([0xEF, 0xBB, 0xBF])   // BOM：Excel 打开中文不乱码
+            data.append(rows.joined(separator: "\r\n").data(using: .utf8) ?? Data())
+            send(data, name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).csv",
+                 mime: "text/csv")
+        case "image":
+            let text = texts.map { $0.text }.joined(separator: "\n\n")
+            guard !text.isEmpty else { showToast("没有可渲染的文字内容"); return }
+            let png = renderTextImage(text, title: "QuickPaste 剪贴板导出 · \(fmt.string(from: Date()))")
+            guard let data = png.pngData() else { showToast("图片生成失败"); return }
+            send(data, name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).png",
+                 mime: "image/png")
+            // 列表里的图片条目：原图一并推送（最多 5 张）
+            for it in images.prefix(5) {
+                if let d = it.imageData {
+                    client.pushImage(d, mime: it.mime) { err in
+                        DispatchQueue.main.async {
+                            if err != nil { self.showToast("图片推送失败：\(err ?? "")") }
+                        }
+                    }
+                }
+            }
+        default:
+            break
+        }
+    }
+
+    /// 文字渲染成白底长图（宽 640pt，@2x），用于「导出为图片」
+    private func renderTextImage(_ text: String, title: String) -> UIImage {
+        let width: CGFloat = 640
+        let inset: CGFloat = 24
+        let titleAttr: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 18, weight: .semibold)
+        ]
+        let para = NSMutableParagraphStyle()
+        para.lineSpacing = 5
+        let bodyAttr: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 15), .paragraphStyle: para
+        ]
+        let measure = CGSize(width: width - inset * 2, height: .greatestFiniteMagnitude)
+        let titleH = (title as NSString).boundingRect(
+            with: measure, options: [.usesLineFragmentOrigin],
+            attributes: titleAttr, context: nil).height
+        let bodyH = (text as NSString).boundingRect(
+            with: measure, options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: bodyAttr, context: nil).height
+        let height = min(max(titleH + bodyH + inset * 2 + 20, 200), 12000)
+        let rfmt = UIGraphicsImageRendererFormat()
+        rfmt.scale = 2
+        return UIGraphicsImageRenderer(size: CGSize(width: width, height: height),
+                                       format: rfmt).image { ctx in
+            UIColor(red: 0.97, green: 0.97, blue: 0.98, alpha: 1).setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            var y = inset
+            (title as NSString).draw(
+                in: CGRect(x: inset, y: y, width: width - inset * 2, height: titleH + 8),
+                withAttributes: titleAttr)
+            y += titleH + 14
+            (text as NSString).draw(
+                with: CGRect(x: inset, y: y, width: width - inset * 2, height: height - y - inset),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: bodyAttr, context: nil)
         }
     }
 

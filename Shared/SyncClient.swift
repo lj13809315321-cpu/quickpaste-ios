@@ -105,6 +105,26 @@ final class SyncClient {
         }.resume()
     }
 
+    /// 发送任意文件到电脑（v1.8.8 导出用）：二进制 body，元数据走 query，
+    /// 与电脑端 sync/server.js 的 POST /api/file 约定一致。
+    func pushFile(_ data: Data, name: String, mime: String,
+                  completion: @escaping (String?) -> Void) {
+        func enc(_ s: String) -> String {
+            s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s
+        }
+        var path = "/api/file?name=\(enc(name))&mime=\(enc(mime))&source=phone"
+        if !pair.isEmpty { path += "&pair=\(enc(pair))" }
+        guard var req = request(path, method: "POST") else {
+            completion("未设置电脑地址")
+            return
+        }
+        req.setValue(mime, forHTTPHeaderField: "Content-Type")
+        req.httpBody = data
+        URLSession.shared.dataTask(with: req) { d, r, e in
+            completion(self.check(d, r, e))
+        }.resume()
+    }
+
     func delete(id: String?, completion: @escaping (String?) -> Void) {
         var path = "/api/items"
         if let id = id, !id.isEmpty {

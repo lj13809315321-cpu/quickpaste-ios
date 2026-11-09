@@ -84,6 +84,19 @@ struct KeyboardPrefs {
         set { store.set(newValue, forKey: "qp.cursorHaptic") }
     }
 
+    /// 剪贴板类型筛选（v1.8.8 工具条漏斗按钮）：all / text / link / image / file
+    var clipFilter: String {
+        get { store.string(forKey: "qp.clipFilter") ?? "all" }
+        set { store.set(newValue, forKey: "qp.clipFilter") }
+    }
+
+    /// 列表排序方向（v1.8.8 工具条排序按钮）：true = 最新在上（↑，默认，
+    /// 与历史行为一致）；false = 最旧在上（↓）。
+    var sortNewestTop: Bool {
+        get { (store.object(forKey: "qp.sortNewestTop") as? Bool) ?? true }
+        set { store.set(newValue, forKey: "qp.sortNewestTop") }
+    }
+
     var autoCollapse: Bool {
         get { (store.object(forKey: "qp.autoCollapse") as? Bool) ?? false }
         set { store.set(newValue, forKey: "qp.autoCollapse") }
