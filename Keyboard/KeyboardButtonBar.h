@@ -89,6 +89,10 @@ typedef NS_ENUM(NSInteger, KBKeyboardAction) {
 /// 这是「不增高、还是原来那一排」的推荐接法；只在没有自绘底栏时才退回贴底新增一行。
 - (void)embedInBottomRow:(UIView *)bottomRow;
 
+/// 动作结果的提示回调（全选/复制/粘贴的成败与字数），由宿主键盘显示 toast。
+/// 不设置则这些动作静默执行。
+@property (nonatomic, copy, nullable) void (^onFeedback)(NSString *message);
+
 /// 完全访问状态变化时（viewDidAppear:、用户改完设置回来）刷新按钮可用状态。
 - (void)refreshAccessState;
 

@@ -375,13 +375,22 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
     if (![self kb_hasFullAccess]) {
         return;
     }
-    NSString *selected = proxy.selectedText;
-    if (selected.length == 0) {
+    NSString *text = proxy.selectedText;
+    if (text.length == 0) {
+        // 无选区时兜底：复制输入框全文（配合「全选」键使用，光标在哪都能复制整段）
+        text = [proxy.documentContextBeforeInput ?: @""
+                 stringByAppendingString:proxy.documentContextAfterInput ?: @""];
+        if (text.length > 0 && self.onFeedback) {
+            self.onFeedback(@"当前无选区，已复制输入框全文");
+        }
+    }
+    if (text.length == 0) {
+        if (self.onFeedback) self.onFeedback(@"没有可复制的内容");
         return;
     }
-    [[UIPasteboard generalPasteboard] setString:selected];
+    [[UIPasteboard generalPasteboard] setString:text];
     if (cut) {
-        NSUInteger steps = KBBarComposedLength(selected);
+        NSUInteger steps = KBBarComposedLength(text);
         for (NSUInteger i = 0; i < steps; i++) {
             [proxy deleteBackward];
         }
@@ -395,6 +404,7 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
     }
     NSString *text = [UIPasteboard generalPasteboard].string;
     if (text.length == 0) {
+        if (self.onFeedback) self.onFeedback(@"剪贴板里没有文字可粘贴");
         return;
     }
     [proxy insertText:text];
@@ -437,6 +447,15 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
     NSString *all = [before stringByAppendingString:after];
     if (all.length > 0) {
         [[UIPasteboard generalPasteboard] setString:all];
+        if (self.onFeedback) {
+            self.onFeedback([NSString stringWithFormat:
+                @"已全选：全文 %lu 字已复制到剪贴板",
+                (unsigned long)KBBarComposedLength(all)]);
+        }
+    } else {
+        if (self.onFeedback) {
+            self.onFeedback(@"未能读取输入框内容（该输入框限制了上下文读取）");
+        }
     }
 }
 

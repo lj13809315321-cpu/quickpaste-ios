@@ -654,14 +654,18 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: - 底部快捷条（路线 E：黄白微信助手底栏等价复刻）
 
-    /// 黄白底栏等价复刻（v1.8.10 按用户要求再调）：
-    /// 「切换」维持删除不再动；「粘贴」整键去掉（v1.8.10 试运行），
-    /// 「撤销」换到原「粘贴」的位置；「←/→」保持正中间。
+    /// 黄白底栏等价复刻（v1.8.11 按用户要求再调）：
+    /// 「切换」加回「关闭」左边；「←/→」换成「复制/粘贴」。
+    /// 最终顺序 = 切换 | 关闭 | 复制 | 粘贴 | 撤销 | 全选。
     /// 独立一行贴键盘最底部，不与「返回/空格/发送」底栏冲突。
     private func setupKBButtonBar() {
         let bar = KBKeyboardButtonBar(inputViewController: self)
         bar.buttonActions = KBKeyboardButtonBar.actions(fromNames:
-            ["dismiss", "cursorLeft", "cursorRight", "undo", "selectAll"])
+            ["nextKeyboard", "dismiss", "copy", "paste", "undo", "selectAll"])
+        // 底栏动作的提示文字（全选/复制/粘贴结果）走键盘统一 toast
+        bar.onFeedback = { [weak self] msg in
+            DispatchQueue.main.async { self?.showToast(msg as String) }
+        }
         bar.barHeight = 40
         bar.buttonSpacing = 8
         bar.edgeInset = 8
@@ -1579,7 +1583,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.10 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.11 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -2636,6 +2640,15 @@ final class KeyboardViewController: UIInputViewController {
         exportStack.addArrangedSubview(exportRow("导出为 CSV", icon: "tablecells") {
             self.exportClipboard(as: "csv")
         })
+        exportStack.addArrangedSubview(exportRow("导出为 Word", icon: "doc.richtext") {
+            self.exportClipboard(as: "word")
+        })
+        exportStack.addArrangedSubview(exportRow("导出为 PDF", icon: "doc.text") {
+            self.exportClipboard(as: "pdf")
+        })
+        exportStack.addArrangedSubview(exportRow("导出为 HTML", icon: "curlybraces") {
+            self.exportClipboard(as: "html")
+        })
         exportStack.addArrangedSubview(exportRow("导出为图片", icon: "photo.on.rectangle") {
             self.exportClipboard(as: "image")
         })
@@ -2689,11 +2702,11 @@ final class KeyboardViewController: UIInputViewController {
         guard !items.isEmpty else { showToast("列表为空，没有可导出的内容"); return }
         let texts = items.filter { !$0.isImage && $0.type != "file" }
         let images = items.filter { $0.isImage }
-
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
         let stamp = DateFormatter()
         stamp.dateFormat = "yyyyMMdd-HHmmss"
+        let head = "QuickPaste 剪贴板导出（\(fmt.string(from: Date()))，共 \(texts.count) 条）"
 
         func send(_ data: Data, name: String, mime: String) {
             client.pushFile(data, name: name, mime: mime) { err in
@@ -2710,7 +2723,6 @@ final class KeyboardViewController: UIInputViewController {
                 let time = fmt.string(from: Date(timeIntervalSince1970: it.ts / 1000))
                 return "【\(i + 1)】\(time)（\(it.fromPhone ? "手机" : "电脑")）\n\(it.text)"
             }
-            let head = "QuickPaste 剪贴板导出（\(fmt.string(from: Date()))，共 \(texts.count) 条）"
             let body = head + "\n\n" + lines.joined(separator: "\n\n————\n\n")
             send(body.data(using: .utf8) ?? Data(),
                  name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).txt",
@@ -2729,6 +2741,19 @@ final class KeyboardViewController: UIInputViewController {
             data.append(rows.joined(separator: "\r\n").data(using: .utf8) ?? Data())
             send(data, name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).csv",
                  mime: "text/csv")
+        case "word":
+            // .doc（HTML 包装，Word/WPS 直接打开，带 Office 命名空间）
+            send(exportHTML(texts, head: head, fmt: fmt).data(using: .utf8) ?? Data(),
+                 name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).doc",
+                 mime: "application/msword")
+        case "html":
+            send(exportHTML(texts, head: head, fmt: fmt).data(using: .utf8) ?? Data(),
+                 name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).html",
+                 mime: "text/html")
+        case "pdf":
+            send(exportPDFData(texts, head: head, fmt: fmt),
+                 name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).pdf",
+                 mime: "application/pdf")
         case "image":
             let text = texts.map { $0.text }.joined(separator: "\n\n")
             guard !text.isEmpty else { showToast("没有可渲染的文字内容"); return }
@@ -2748,6 +2773,81 @@ final class KeyboardViewController: UIInputViewController {
             }
         default:
             break
+        }
+    }
+
+    // MARK: - v1.8.11 导出：Word(.doc) / HTML / PDF
+
+    /// HTML 转义（正文按调用处补 <br>）
+    private func htmlEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;")
+         .replacingOccurrences(of: "<", with: "&lt;")
+         .replacingOccurrences(of: ">", with: "&gt;")
+         .replacingOccurrences(of: "\"", with: "&quot;")
+    }
+
+    /// Word(.doc) 与 .html 共用同一份内容：带 Office 命名空间的 HTML，
+    /// Word / WPS 双击即开，浏览器打开 .html 也正常显示。
+    private func exportHTML(_ texts: [SyncItem], head: String, fmt: DateFormatter) -> String {
+        var rows = ""
+        for (i, it) in texts.enumerated() {
+            let time = fmt.string(from: Date(timeIntervalSince1970: it.ts / 1000))
+            let body = htmlEscape(it.text).replacingOccurrences(of: "\n", with: "<br>")
+            rows += "<h3 style=\"font-size:12pt;color:#444;margin:10pt 0 2pt;\">"
+            rows += "【\(i + 1)】\(time)（\(it.fromPhone ? "手机" : "电脑")）</h3>"
+            rows += "<p style=\"font-size:10.5pt;line-height:1.6;margin:2pt 0;\">\(body)</p><hr>"
+        }
+        return "<html xmlns:o=\"urn:schemas-microsoft-com:office:office\" "
+             + "xmlns:w=\"urn:schemas-microsoft-com:office:word\">"
+             + "<head><meta charset=\"utf-8\"><title>\(htmlEscape(head))</title></head>"
+             + "<body><h2 style=\"font-size:15pt;\">\(htmlEscape(head))</h2>\(rows)"
+             + "<p style=\"color:#999;font-size:9pt;\">由 QuickPaste 输入法导出</p></body></html>"
+    }
+
+    /// 多页 A4 PDF：条目标题 + 正文，逐段换页；超长正文按 900 字分段防截断
+    private func exportPDFData(_ texts: [SyncItem], head: String, fmt: DateFormatter) -> Data {
+        let pageRect = CGRect(x: 0, y: 0, width: 595.2, height: 841.8) // A4 72dpi
+        let format = UIGraphicsPDFRendererFormat()
+        format.documentInfo = [kCGPDFContextTitle as String: head,
+                               kCGPDFContextCreator as String: "QuickPaste"]
+        let renderer = UIGraphicsPDFRenderer(bounds: pageRect, format: format)
+        return renderer.pdfData { ctx in
+            var y: CGFloat = 50
+            let maxW = pageRect.width - 80
+            func draw(_ text: String, font: UIFont, color: UIColor, spacing: CGFloat) {
+                let para = NSMutableParagraphStyle()
+                para.lineBreakMode = .byCharWrapping   // 中文整段换行更自然
+                let attr: [NSAttributedString.Key: Any] = [
+                    .font: font, .paragraphStyle: para, .foregroundColor: color
+                ]
+                var rest = text
+                while !rest.isEmpty {
+                    let chunk = String(rest.prefix(900))   // < 单页容量，分段安全
+                    rest = String(rest.dropFirst(chunk.count))
+                    let box = (chunk as NSString).boundingRect(
+                        with: CGSize(width: maxW, height: .greatestFiniteMagnitude),
+                        options: [.usesLineFragmentOrigin, .usesFontLeading],
+                        attributes: attr, context: nil)
+                    let h = ceil(box.height)
+                    if y + h > pageRect.height - 50 { ctx.beginPage(); y = 50 }
+                    (chunk as NSString).draw(
+                        with: CGRect(x: 40, y: y, width: maxW, height: h),
+                        options: [.usesLineFragmentOrigin, .usesFontLeading],
+                        attributes: attr, context: nil)
+                    y += h + spacing
+                }
+            }
+            ctx.beginPage()
+            draw(head, font: .boldSystemFont(ofSize: 15), color: .black, spacing: 14)
+            for (i, it) in texts.enumerated() {
+                let time = fmt.string(from: Date(timeIntervalSince1970: it.ts / 1000))
+                draw("【\(i + 1)】\(time)（\(it.fromPhone ? "手机" : "电脑")）",
+                     font: .boldSystemFont(ofSize: 10.5),
+                     color: UIColor(red: 0.35, green: 0.35, blue: 0.35, alpha: 1),
+                     spacing: 3)
+                draw(it.text.isEmpty ? "（图片）" : it.text,
+                     font: .systemFont(ofSize: 11.5), color: .black, spacing: 12)
+            }
         }
     }
 
