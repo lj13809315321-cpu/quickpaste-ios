@@ -38,7 +38,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
     private let panel = UIView()
     private let navBar = UIView()
     private let navTitle = UILabel()
-    private let navBack = UIButton(type: .system)
+    private let navBack = QPHapticButton(type: .system)
     private let scroll = UIScrollView()
     private let body = UIStackView()
     private var stack: [Page] = []
@@ -94,7 +94,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             navTitle.leadingAnchor.constraint(greaterThanOrEqualTo: navBack.trailingAnchor, constant: 4)
         ])
 
-        let close = UIButton(type: .system)
+        let close = QPHapticButton(type: .system)
         close.setTitle("完成", for: .normal)
         close.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
         close.translatesAutoresizingMaskIntoConstraints = false
@@ -255,7 +255,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             navRow("重新播放引导页") { [weak self] in self?.push(.onboarding) },
             navRow("关于本版本") { [weak self] in self?.push(.about) }
         ]))
-        body.addArrangedSubview(foot("QuickPaste v1.8.5 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
+        body.addArrangedSubview(foot("QuickPaste v1.8.6 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
     }
 
     // MARK: - 键盘设置（开关）
@@ -291,7 +291,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             },
             switchRow("空格键滑动移动光标", sub: "按住空格左右滑动移动光标，轻点仍输入空格",
                       isOn: prefs.spaceCursor) { [weak self] v in self?.prefs.spaceCursor = v },
-            switchRow("光标移动震动", sub: "滑动光标时每移动一个字符轻震一下，跟手更明显",
+            switchRow("按键震动", sub: "按下任意按键轻震一下；空格滑光标每移动一格也会震",
                       isOn: prefs.cursorHaptic) { [weak self] v in self?.prefs.cursorHaptic = v },
             switchRow("发送后自动收起键盘", sub: "默认关闭，可连续发送",
                       isOn: prefs.autoCollapse) { [weak self] v in self?.prefs.autoCollapse = v },
@@ -601,7 +601,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
 
     private func renderAbout() {
         body.addArrangedSubview(card([
-            info("QuickPaste v1.8.5 · 真·系统输入法"),
+            info("QuickPaste v1.8.6 · 真·系统输入法"),
             info("iOS：键盘扩展 .appex（com.apple.keyboard-service）"),
             info("安卓：系统输入法 InputMethodService"),
             info("界面按 quickpaste-ios-prototype.html v1.6 原型原生实现，无 WebView、无演示动画。"),
@@ -717,7 +717,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         box.backgroundColor = QPColor.blueSoft
         box.layer.cornerRadius = 10
         let l = UILabel()
-        l.text = "QuickPaste v1.8.5 · 真·系统输入法\n按 HTML 最新版效果原生实现，无网页、无演示动画"
+        l.text = "QuickPaste v1.8.6 · 真·系统输入法\n按 HTML 最新版效果原生实现，无网页、无演示动画"
         l.font = .systemFont(ofSize: 12, weight: .medium)
         l.textColor = QPColor.blue
         l.numberOfLines = 0
@@ -761,7 +761,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             s.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -6)
         ])
         l.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let b = UIButton(type: .custom)
+        let b = QPHapticButton(type: .custom)
         b.translatesAutoresizingMaskIntoConstraints = false
         b.addAction(UIAction { _ in action() }, for: .touchUpInside)
         row.addSubview(b)
@@ -776,7 +776,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
 
     private func actionRow(_ title: String, tint: UIColor? = nil,
                            action: @escaping () -> Void) -> UIView {
-        let b = UIButton(type: .system)
+        let b = QPHapticButton(type: .system)
         b.setTitle(title, for: .normal)
         b.titleLabel?.font = .systemFont(ofSize: 14)
         b.setTitleColor(tint ?? QPColor.blue, for: .normal)
@@ -838,12 +838,12 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         v.text = value
         v.font = .systemFont(ofSize: 14, weight: .medium)
         v.textColor = QPColor.blue
-        let minus = UIButton(type: .system)
+        let minus = QPHapticButton(type: .system)
         minus.setTitle("−", for: .normal)
         minus.titleLabel?.font = .systemFont(ofSize: 20)
         minus.widthAnchor.constraint(equalToConstant: 40).isActive = true
         minus.addAction(UIAction { _ in onStep(-1) }, for: .touchUpInside)
-        let plus = UIButton(type: .system)
+        let plus = QPHapticButton(type: .system)
         plus.setTitle("+", for: .normal)
         plus.titleLabel?.font = .systemFont(ofSize: 20)
         plus.widthAnchor.constraint(equalToConstant: 40).isActive = true
@@ -1040,7 +1040,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         f.delegate = self
         f.translatesAutoresizingMaskIntoConstraints = false
         symbolField = f
-        let add = UIButton(type: .system)
+        let add = QPHapticButton(type: .system)
         add.setTitle("添加", for: .normal)
         add.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
         add.widthAnchor.constraint(equalToConstant: 52).isActive = true
@@ -1071,7 +1071,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
 
     private func miniButton(_ title: String, enabled: Bool, danger: Bool = false,
                             action: @escaping () -> Void) -> UIButton {
-        let b = UIButton(type: .system)
+        let b = QPHapticButton(type: .system)
         b.setTitle(title, for: .normal)
         b.titleLabel?.font = .systemFont(ofSize: 14)
         b.setTitleColor(danger ? .systemRed : QPColor.blue, for: .normal)

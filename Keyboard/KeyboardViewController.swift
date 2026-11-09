@@ -106,7 +106,10 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = QPColor.bg
+        // iOS 26 起系统给键盘画整体圆角玻璃底（键盘顶部那截灰带就是它），
+        // 根视图必须透明才能融入系统玻璃底、和宿主 App 背景连成一片
+        //（Apple 开发者论坛 thread 793686 的官方适配结论）。按钮/卡片自带底色不受影响。
+        view.backgroundColor = .clear
 
         heightConstraint = view.heightAnchor.constraint(equalToConstant: prefs.height)
         heightConstraint.priority = .required
@@ -757,6 +760,10 @@ final class KeyboardViewController: UIInputViewController {
         let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(restoreInput))
         swipeDown.direction = .down
         deleteKey.addGestureRecognizer(swipeDown)
+        // 用户要求（对齐搜狗输入法）：清除键往左滑也清空输入栏，与上滑清空等效；下滑恢复保留
+        let swipeLeft = UISwipeGestureRecognizer(target: self, action: #selector(clearInput))
+        swipeLeft.direction = .left
+        deleteKey.addGestureRecognizer(swipeLeft)
         let holdDelete = UILongPressGestureRecognizer(target: self,
                                                       action: #selector(handleMenuPress(_:)))
         holdDelete.minimumPressDuration = 1.0
@@ -810,7 +817,7 @@ final class KeyboardViewController: UIInputViewController {
         if prefs.align != "left" { symStack.addArrangedSubview(leadSpacer) }
 
         for symbol in prefs.symbols.prefix(prefs.symbolCount) {
-            let b = UIButton(type: .system)
+            let b = QPHapticButton(type: .system)
             b.setTitle(symbol, for: .normal)
             // 原型 .kbSym：28×32、#D4D6DE、圆角 8、字号 20
             b.titleLabel?.font = .systemFont(ofSize: 19, weight: .semibold)
@@ -824,7 +831,7 @@ final class KeyboardViewController: UIInputViewController {
             }, for: .touchUpInside)
             symStack.addArrangedSubview(b)
         }
-        let more = UIButton(type: .system)
+        let more = QPHapticButton(type: .system)
         more.setTitle("⋯", for: .normal)
         more.titleLabel?.font = .systemFont(ofSize: 18, weight: .medium)
         more.setTitleColor(UIColor.rgb(17, 17, 17), for: .normal)
@@ -852,7 +859,7 @@ final class KeyboardViewController: UIInputViewController {
         tabBar.layoutMargins = UIEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
         tabBar.heightAnchor.constraint(equalToConstant: 28).isActive = true
         for (index, title) in ["剪贴板（同步）", "常用语"].enumerated() {
-            let b = UIButton(type: .system)
+            let b = QPHapticButton(type: .system)
             b.setTitle(title, for: .normal)
             b.titleLabel?.font = .systemFont(ofSize: 12, weight: .medium)
             b.layer.cornerRadius = 7
@@ -916,7 +923,7 @@ final class KeyboardViewController: UIInputViewController {
                 ? "无法读取剪贴板\n请到 设置 → 通用 → 键盘 → QuickPaste\n开启「允许完全访问」"
                 : "暂无剪贴板内容\n在任意 App 复制文字后切回键盘，或连接电脑同步"
             listStack.addArrangedSubview(emptyLabel(msg))
-            let b = UIButton(type: .system)
+            let b = QPHapticButton(type: .system)
             b.setTitle("连接电脑并刷新", for: .normal)
             b.setTitleColor(.white, for: .normal)
             b.backgroundColor = QPColor.blue
@@ -1028,7 +1035,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func makePhraseCard(text: String, index: Int) -> UIView {
-        let card = UIButton(type: .custom)
+        let card = QPHapticButton(type: .custom)
         card.backgroundColor = .white
         card.layer.cornerRadius = 12
         card.clipsToBounds = true
@@ -1184,7 +1191,7 @@ final class KeyboardViewController: UIInputViewController {
     /// 不再单独占一整行：作为列表最后一个随内容滚动的小条目，
     /// 清空之后列表空了它依旧显示，空间全部留给剪贴板记录。
     private func makeClearFooter() -> UIButton {
-        let b = UIButton(type: .system)
+        let b = QPHapticButton(type: .system)
         b.setTitle("清空剪贴板  🗑", for: .normal)
         b.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
         b.setTitleColor(QPColor.sub, for: .normal)
@@ -1231,7 +1238,7 @@ final class KeyboardViewController: UIInputViewController {
         bottom.spacing = 7
         bottom.alignment = .center
 
-        let back = UIButton(type: .system)
+        let back = QPHapticButton(type: .system)
         back.setTitle("‹ 返回", for: .normal)
         back.titleLabel?.font = .systemFont(ofSize: 17)
         back.setTitleColor(UIColor.rgb(17, 17, 17), for: .normal)
@@ -1242,7 +1249,7 @@ final class KeyboardViewController: UIInputViewController {
         back.heightAnchor.constraint(equalToConstant: 42).isActive = true
         bottom.addArrangedSubview(back)
 
-        let space = UIButton(type: .system)
+        let space = QPHapticButton(type: .system)
         space.setTitle("空格", for: .normal)
         space.titleLabel?.font = .systemFont(ofSize: 17)
         space.setTitleColor(UIColor.rgb(17, 17, 17), for: .normal)
@@ -1254,7 +1261,7 @@ final class KeyboardViewController: UIInputViewController {
         }, for: .touchUpInside)
         bottom.addArrangedSubview(space)
 
-        let send = UIButton(type: .system)
+        let send = QPHapticButton(type: .system)
         send.setTitle("发送", for: .normal)
         send.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
         send.setTitleColor(.white, for: .normal)
@@ -1275,7 +1282,7 @@ final class KeyboardViewController: UIInputViewController {
     private enum CalcKeyKind { case digit, op, equal }
 
     private func calcKeyButton(_ title: String, key: String, kind: CalcKeyKind) -> UIButton {
-        let b = UIButton(type: .system)
+        let b = QPHapticButton(type: .system)
         b.setTitle(title, for: .normal)
         b.titleLabel?.font = .systemFont(ofSize: 26, weight: .regular)
         b.setTitleColor(kind == .digit ? UIColor.rgb(17, 17, 17) : .white, for: .normal)
@@ -1339,7 +1346,7 @@ final class KeyboardViewController: UIInputViewController {
         bar.layoutMargins = UIEdgeInsets(top: 2, left: 10, bottom: 6, right: 10)
         bar.heightAnchor.constraint(equalToConstant: 46).isActive = true
 
-        let calc = UIButton(type: .system)
+        let calc = QPHapticButton(type: .system)
         // 原型 .kbKey.calc：f(x) 计算，宽度 68
         calc.setTitle("f(x) 计算", for: .normal)
         calc.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
@@ -1351,7 +1358,7 @@ final class KeyboardViewController: UIInputViewController {
                        for: .touchUpInside)
         bar.addArrangedSubview(calc)
 
-        let space = UIButton(type: .system)
+        let space = QPHapticButton(type: .system)
         // 原型 .kbKey.space：白底、字号 17
         space.setTitle("空格", for: .normal)
         space.titleLabel?.font = .systemFont(ofSize: 17)
@@ -1364,7 +1371,7 @@ final class KeyboardViewController: UIInputViewController {
         space.addGestureRecognizer(hold)
         bar.addArrangedSubview(space)
 
-        let newline = UIButton(type: .system)
+        let newline = QPHapticButton(type: .system)
         newline.setTitle("换行", for: .normal)
         newline.titleLabel?.font = .systemFont(ofSize: 15)
         newline.setTitleColor(.black, for: .normal)
@@ -1376,7 +1383,7 @@ final class KeyboardViewController: UIInputViewController {
         }, for: .touchUpInside)
         bar.addArrangedSubview(newline)
 
-        let send = UIButton(type: .system)
+        let send = QPHapticButton(type: .system)
         send.setTitle("发送", for: .normal)
         // 原型 .kbKey.send：蓝色、白字、宽 66、字重 600
         send.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
@@ -1458,7 +1465,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.5 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.6 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -1609,7 +1616,7 @@ final class KeyboardViewController: UIInputViewController {
     private func cardMenuRow(_ title: String, icon: String,
                              action: @escaping () -> Void) -> UIButton {
         let color = UIColor.rgb(24, 24, 27)
-        let b = UIButton(type: .custom)
+        let b = QPHapticButton(type: .custom)
         b.backgroundColor = .clear
         b.contentHorizontalAlignment = .leading
         b.setTitle(title, for: .normal)
@@ -1636,7 +1643,7 @@ final class KeyboardViewController: UIInputViewController {
     /// 让下方主菜单可以严格保持图二的 4 项尺寸
     private func cardLiftButton(_ icon: String, tint: UIColor,
                                 action: @escaping () -> Void) -> UIButton {
-        let b = UIButton(type: .custom)
+        let b = QPHapticButton(type: .custom)
         b.backgroundColor = UIColor(red: 0.93, green: 0.94, blue: 0.96, alpha: 1)
         b.layer.cornerRadius = 15
         b.tintColor = tint
@@ -1855,7 +1862,7 @@ final class KeyboardViewController: UIInputViewController {
             stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor)
         ])
         for t in tokens.prefix(40) {
-            let b = UIButton(type: .system)
+            let b = QPHapticButton(type: .system)
             b.setTitle(t, for: .normal)
             b.titleLabel?.font = .systemFont(ofSize: 14)
             b.setTitleColor(UIColor.rgb(17, 17, 17), for: .normal)
@@ -1939,7 +1946,7 @@ final class KeyboardViewController: UIInputViewController {
         row.spacing = 6
         row.distribution = .fillEqually
         for (title, kind) in [("⌫ 退格", 0), ("补空格", 1), ("清空", 2)] {
-            let b = UIButton(type: .system)
+            let b = QPHapticButton(type: .system)
             b.setTitle(title, for: .normal)
             b.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
             b.setTitleColor(UIColor.rgb(17, 17, 17), for: .normal)
@@ -2041,7 +2048,7 @@ final class KeyboardViewController: UIInputViewController {
         bar.axis = .horizontal
         bar.spacing = 8
         bar.distribution = .fillEqually
-        let cancel = UIButton(type: .system)
+        let cancel = QPHapticButton(type: .system)
         cancel.setTitle("关闭", for: .normal)
         cancel.titleLabel?.font = .systemFont(ofSize: 15, weight: .medium)
         cancel.setTitleColor(QPColor.sub, for: .normal)
@@ -2051,7 +2058,7 @@ final class KeyboardViewController: UIInputViewController {
         cancel.addAction(UIAction { [weak self] _ in self?.closeSheet() }, for: .touchUpInside)
         bar.addArrangedSubview(cancel)
         if let title = confirmTitle {
-            let ok = UIButton(type: .system)
+            let ok = QPHapticButton(type: .system)
             ok.setTitle(title, for: .normal)
             ok.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
             ok.setTitleColor(.white, for: .normal)
@@ -2076,7 +2083,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func menuRow(_ title: String, action: @escaping () -> Void) -> UIButton {
-        let b = UIButton(type: .system)
+        let b = QPHapticButton(type: .system)
         b.setTitle(title, for: .normal)
         b.titleLabel?.font = .systemFont(ofSize: 13)
         b.setTitleColor(.label, for: .normal)
@@ -2118,7 +2125,7 @@ final class KeyboardViewController: UIInputViewController {
         bar.spacing = 8
         bar.distribution = .fillEqually
         bar.translatesAutoresizingMaskIntoConstraints = false
-        let copyBtn = UIButton(type: .system)
+        let copyBtn = QPHapticButton(type: .system)
         copyBtn.setTitle("复制到剪贴板", for: .normal)
         copyBtn.setTitleColor(.white, for: .normal)
         copyBtn.backgroundColor = QPColor.blue
@@ -2128,7 +2135,7 @@ final class KeyboardViewController: UIInputViewController {
             self?.closeImage()
         }, for: .touchUpInside)
         bar.addArrangedSubview(copyBtn)
-        let close = UIButton(type: .system)
+        let close = QPHapticButton(type: .system)
         close.setTitle("关闭", for: .normal)
         close.setTitleColor(.white, for: .normal)
         close.backgroundColor = UIColor.white.withAlphaComponent(0.2)
@@ -2248,7 +2255,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func toolButton(_ title: String) -> UIButton {
-        let b = UIButton(type: .system)
+        let b = QPHapticButton(type: .system)
         b.setTitle(title, for: .normal)
         b.titleLabel?.font = .systemFont(ofSize: 17, weight: .medium)
         b.setTitleColor(.black, for: .normal)
@@ -2437,6 +2444,19 @@ extension KeyboardViewController: KeyboardSettingsDelegate {
 }
 
 // MARK: - v1.6 原型配色
+
+/// 按键震动（v1.8.6）：键盘里所有按钮共用这一个子类，
+/// 按下（touchesBegan）就轻震一下，不等抬起，跟手感最好。
+/// 开关沿用「按键震动」（qp.cursorHaptic，默认开），关掉后所有按钮都不震。
+final class QPHapticButton: UIButton {
+    private static let feedback = UIImpactFeedbackGenerator(style: .light)
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesBegan(touches, with: event)
+        if (UserDefaults.standard.object(forKey: "qp.cursorHaptic") as? Bool) ?? true {
+            Self.feedback.impactOccurred()
+        }
+    }
+}
 
 enum QPColor {
     static let bg = UIColor.rgb(243, 244, 249)

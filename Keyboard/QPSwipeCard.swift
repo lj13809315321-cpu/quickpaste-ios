@@ -247,7 +247,7 @@ final class QPSwipeCard: UIView {
     // MARK: - 工具
 
     private static func makeButton(_ title: String, _ color: UIColor) -> UIButton {
-        let b = UIButton(type: .custom)
+        let b = QPHapticButton(type: .custom)
         b.setTitle(title, for: .normal)
         b.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
         b.setTitleColor(.white, for: .normal)

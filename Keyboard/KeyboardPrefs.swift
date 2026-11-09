@@ -77,7 +77,8 @@ struct KeyboardPrefs {
         set { store.set(newValue, forKey: "qp.spaceCursor") }
     }
 
-    /// 空格滑光标时，每移动一个字符给一次轻震动；默认开，可在键盘设置里关
+    /// 按键震动（v1.8.6 扩展为全局）：按下任意按钮轻震一下；
+    /// 空格滑光标每移动一格也会震。默认开，可在键盘设置里关
     var cursorHaptic: Bool {
         get { (store.object(forKey: "qp.cursorHaptic") as? Bool) ?? true }
         set { store.set(newValue, forKey: "qp.cursorHaptic") }
