@@ -493,8 +493,14 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             }
         ]))
 
-        body.addArrangedSubview(groupTitle("同步开关"))
+        body.addArrangedSubview(groupTitle("连接开关"))
         body.addArrangedSubview(card([
+            switchRow("连接电脑",
+                      sub: "断开连接：键盘不再每 3 秒轮询电脑、不再自动推送，不连电脑也流畅使用；手动「立即同步」仍可临时连一次",
+                      isOn: prefs.syncEnabled) { [weak self] v in
+                self?.prefs.syncEnabled = v
+                self?.delegate?.settingsDidChange()
+            },
             switchRow("复制后自动发到电脑",
                       sub: "手机上一复制，电脑那边立刻就有这条（电脑没连上会排队，连上补发）",
                       isOn: prefs.autoPush) { [weak self] v in

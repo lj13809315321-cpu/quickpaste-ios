@@ -437,6 +437,10 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     /// 主 App 在后台（画中画）抓到的新内容，同样直接推给电脑。
     /// 键盘没弹出来的时候复制，电脑那边照样立刻能看到 —— 这才是「连续复制」的意义。
     private func pushToPc(_ text: String) {
+        // v1.8.13「断开连接」（主 App 侧总开关）：关掉后画中画后台收录的
+        // 内容也不再自动推给电脑；键盘侧开关独立存放在键盘进程里。
+        let d0 = UserDefaults.standard
+        guard (d0.object(forKey: "qp.app.syncEnabled") as? Bool) ?? true else { return }
         guard !pushedRecent.contains(text) else { return }
         pushedRecent.append(text)
         if pushedRecent.count > 30 { pushedRecent.removeFirst(pushedRecent.count - 30) }

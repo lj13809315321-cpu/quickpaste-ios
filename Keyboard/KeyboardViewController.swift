@@ -489,7 +489,17 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: - 同步
 
-    private func pull(showConnecting: Bool) {
+    /// 拉取电脑剪贴板。v1.8.13 加「断开连接」总开关：
+    /// - 开关关着时，轮询/被动调用（force=false）直接短路，一个字节都不发；
+    /// - 用户手动点「立即同步 / 连接电脑并刷新 / 状态头」（force=true）
+    ///   仍可临时连一次 —— 断开的是「自动连着」，不是「永远不能连」。
+    private func pull(showConnecting: Bool, force: Bool = false) {
+        if !prefs.syncEnabled && !force {
+            syncState = "off"
+            syncError = "已断开连接（设置 → 局域网同步 → 连接电脑）"
+            if showConnecting { refreshHead() }
+            return
+        }
         if showConnecting {
             syncState = "connecting"
             refreshHead()
@@ -548,7 +558,7 @@ final class KeyboardViewController: UIInputViewController {
     /// 复制即同步：抓到新内容就 POST 给电脑。
     /// 电脑没连上不丢，先进队列，等下一次拉取成功再补发。
     private func autoPush(_ text: String) {
-        guard prefs.autoPush else { return }
+        guard prefs.syncEnabled, prefs.autoPush else { return }
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty, !isServerAddress(t) else { return }
         if pushedRecent.contains(t) { return }
@@ -590,7 +600,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func startPolling() {
         stopPolling()
-        guard prefs.syncAuto else { return }
+        guard prefs.syncEnabled && prefs.syncAuto else { return }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             self?.pull(showConnecting: false)
         }
@@ -748,7 +758,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     @objc private func headTapped() {
-        pull(showConnecting: true)
+        pull(showConnecting: true, force: true)
     }
 
     /// 长按小圆点直接进「局域网同步」设置页
@@ -1055,7 +1065,7 @@ final class KeyboardViewController: UIInputViewController {
             b.backgroundColor = QPColor.blue
             b.layer.cornerRadius = 10
             b.heightAnchor.constraint(equalToConstant: 38).isActive = true
-            b.addAction(UIAction { [weak self] _ in self?.pull(showConnecting: true) },
+            b.addAction(UIAction { [weak self] _ in self?.pull(showConnecting: true, force: true) },
                         for: .touchUpInside)
             listStack.addArrangedSubview(b)
             // 清空后列表为空，这个入口也还在
@@ -1613,13 +1623,13 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.12 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.13 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
         })
         menuStack.addArrangedSubview(menuRow("⟳ 立即同步（\(items.count) 条）") { [weak self] in
-            self?.pull(showConnecting: true); self?.closeMenu()
+            self?.pull(showConnecting: true, force: true); self?.closeMenu()
         })
         menuStack.addArrangedSubview(menuRow("↑ 发送输入框文字到电脑") { [weak self] in
             self?.sendInputTextToPc(); self?.closeMenu()
@@ -1634,7 +1644,7 @@ final class KeyboardViewController: UIInputViewController {
             guard let self = self else { return }
             if self.prefs.adoptPasteboardURL() {
                 self.showToast("地址已更新：" + self.prefs.syncURL)
-                self.pull(showConnecting: true)
+                self.pull(showConnecting: true, force: true)
             } else {
                 self.showToast("剪贴板里没有有效地址（需 http://…:8787）")
             }
@@ -1644,7 +1654,22 @@ final class KeyboardViewController: UIInputViewController {
             guard let self = self else { return }
             self.prefs.syncURL = KeyboardPrefs.defaultURL
             self.showToast("已重置")
-            self.pull(showConnecting: true)
+            self.pull(showConnecting: true, force: true)
+            self.closeMenu()
+        })
+        menuStack.addArrangedSubview(menuRow("连接电脑（同步总开关）：" + (prefs.syncEnabled ? "开" : "关")) { [weak self] in
+            guard let self = self else { return }
+            self.prefs.syncEnabled.toggle()
+            if self.prefs.syncEnabled {
+                self.showToast("已恢复连接电脑")
+                self.pull(showConnecting: true, force: true)
+                self.startPolling()
+            } else {
+                self.stopPolling()
+                self.syncState = "off"
+                self.showToast("已断开连接：不再轮询/自动推送，手动同步仍可用")
+            }
+            self.refreshHead()
             self.closeMenu()
         })
         menuStack.addArrangedSubview(menuRow("自动同步（每 3 秒）：" + (prefs.syncAuto ? "开" : "关")) { [weak self] in
@@ -2959,7 +2984,7 @@ final class KeyboardViewController: UIInputViewController {
             heightConstraint.constant = totalHeight
         }
         view.setNeedsLayout()
-        if prefs.syncAuto { startPolling() } else { stopPolling() }
+        if prefs.syncEnabled && prefs.syncAuto { startPolling() } else { stopPolling() }
         // 设置页里改了「启用连续复制」也要立刻同步浮层与轮询
         syncCaptureState()
     }
@@ -2994,18 +3019,22 @@ extension KeyboardViewController: KeyboardSettingsDelegate {
 
     func settingsStatus() -> (title: String, count: Int, url: String, backend: String) {
         let title: String
-        switch syncState {
-        case "online": title = "已连接"
-        case "connecting": title = "连接中"
-        case "error": title = "连接失败"
-        default: title = "未连接"
+        if !prefs.syncEnabled {
+            title = "已断开连接"
+        } else {
+            switch syncState {
+            case "online": title = "已连接"
+            case "connecting": title = "连接中"
+            case "error": title = "连接失败"
+            default: title = "未连接"
+            }
         }
         return (title, displayItems.count, prefs.syncURL, backend)
     }
 
     func settingsDidChange() { applySettings() }
 
-    func settingsSyncNow() { pull(showConnecting: true) }
+    func settingsSyncNow() { pull(showConnecting: true, force: true) }
 
     func settingsSendInputText() { sendInputTextToPc() }
 

@@ -39,6 +39,14 @@ struct KeyboardPrefs {
         set { store.set(newValue, forKey: "qp.syncAuto") }
     }
 
+    /// 连接电脑总开关（v1.8.13「断开连接」）：关掉后键盘不再轮询拉取、
+    /// 不再自动推送，状态头显示「已断开连接」；手动「立即同步 / 连接电脑
+    /// 并刷新」仍可临时连一次（force）。默认开。
+    var syncEnabled: Bool {
+        get { (store.object(forKey: "qp.syncEnabled") as? Bool) ?? true }
+        set { store.set(newValue, forKey: "qp.syncEnabled") }
+    }
+
     /// 主 App 把地址写进系统剪贴板，键盘出现时自动采用（仅在完全访问开启时可读）。
     /// 返回是否发生了变更。
     @discardableResult

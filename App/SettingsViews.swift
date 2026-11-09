@@ -332,11 +332,17 @@ struct SettingsView: View {
 struct SyncSettingsView: View {
     @AppStorage("qp_server_url") private var savedURL: String = ""
     @AppStorage("qp.app.pair") private var pair: String = ""
+    @AppStorage("qp.app.syncEnabled") private var appSyncEnabled: Bool = true
     @State private var draft = ""
     @State private var status = "未检测"
 
     var body: some View {
         Form {
+            Section("连接开关") {
+                Toggle("连接电脑同步（主 App）", isOn: $appSyncEnabled)
+                Text("断开连接：主 App 不再把复制的内容（含画中画后台收录的）自动发到电脑，「立即检测」仍可手动测一次。\n注意：主 App 和键盘的设置不互通 —— 键盘的轮询要在键盘里断开：切到 QuickPaste 键盘 → 工具条「⋯」→ 设置 → 局域网同步 → 关掉「连接电脑」。\n断开后手机照常使用键盘，只是不再自动和电脑互传。")
+                    .font(.footnote).foregroundColor(.secondary)
+            }
             Section("连接状态") {
                 HStack { Text("状态"); Spacer(); Text(status).foregroundColor(.secondary) }
                 Button("立即检测") { check() }
