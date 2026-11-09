@@ -60,6 +60,11 @@ final class KeyboardViewController: UIInputViewController {
     private let menuOverlay = UIView()
     private let menuScroll = UIScrollView()
     private let menuStack = UIStackView()
+    /// 长按条目专用菜单：圆角磨砂卡片 + 线性图标 + 红色删除（对齐用户两张截图）
+    private let cardMenuOverlay = UIView()
+    private let cardMenuBox = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterialLight))
+    private let cardMenuScroll = UIScrollView()
+    private let cardMenuStack = UIStackView()
     private let imageOverlay = UIView()
     private let imageBig = UIImageView()
     private var imageCloseButton: UIButton?
@@ -101,6 +106,7 @@ final class KeyboardViewController: UIInputViewController {
         // 「清空剪贴板」不再单独占一行，改为列表最下边的可滚动条目
         buildBottomBar()
         buildMenu()
+        buildCardMenu()
         buildSheet()
         buildImageOverlay()
         settings.delegate = self
@@ -246,7 +252,10 @@ final class KeyboardViewController: UIInputViewController {
         // 主 App 在后台（画中画）收的条目：并入列表的同时也推到电脑，
         // 否则「键盘收起时复制的」永远只留在手机里。
         for text in shared.items.reversed() where !text.isEmpty {
-            if !prefs.isMuted(text) && prefs.capture(text) {
+            // ★ 已收录的条目绝不再走 capture：capture 遇到「已存在但不在首位」会
+            //   重排并返回 true，导致每 0.5 秒 refreshList 重建整列，
+            //   手指按住卡片不到 0.4 秒就被销毁 → 长按菜单永远弹不出来。
+            if !prefs.isMuted(text), !prefs.clips.contains(text), prefs.capture(text) {
                 dirty = true
                 autoPush(text)
             }
@@ -1031,6 +1040,9 @@ final class KeyboardViewController: UIInputViewController {
     private func makeSyncCard(item: SyncItem, index: Int) -> UIView {
         // 卡片本体（白底圆角）交给 QPSwipeCard 包一层：右滑分词/预览、左滑编辑/删除
         let card = UIView()
+        // 卡片内容不接收触摸：所有事件落到 QPSwipeCard 自己身上，
+        // touchesBegan 才能在按下的第一帧就置「交互中」，避免长按被列表重建打断。
+        card.isUserInteractionEnabled = false
         card.backgroundColor = .white
         card.layer.cornerRadius = 12
         card.clipsToBounds = true
@@ -1106,8 +1118,9 @@ final class KeyboardViewController: UIInputViewController {
                 if self.prefs.autoCollapse { self.dismissKeyboard() }
             }
         }
-        wrap.onLongPress = { [weak self] in
-            self?.openCardMenu(item)
+        wrap.onLongPress = { [weak self, weak wrap] in
+            guard let self = self, let wrap = wrap else { return }
+            self.openCardMenu(item, anchor: wrap)
         }
         wrap.onAction = { [weak self] action in
             guard let self = self else { return }
@@ -1389,8 +1402,10 @@ final class KeyboardViewController: UIInputViewController {
             menuOverlay.topAnchor.constraint(equalTo: view.topAnchor),
             menuOverlay.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
-        menuOverlay.addGestureRecognizer(UITapGestureRecognizer(target: self,
-                                                                action: #selector(closeMenu)))
+        let outsideTap = UITapGestureRecognizer(target: self, action: #selector(closeMenu))
+        outsideTap.cancelsTouchesInView = false
+        outsideTap.delegate = self
+        menuOverlay.addGestureRecognizer(outsideTap)
 
         // 键盘只有 300 来点高，菜单 8 行放不下会被挤出屏幕 —— 套一层可滚动容器，限高居中
         menuScroll.translatesAutoresizingMaskIntoConstraints = false
@@ -1417,12 +1432,18 @@ final class KeyboardViewController: UIInputViewController {
             menuStack.bottomAnchor.constraint(equalTo: menuScroll.contentLayoutGuide.bottomAnchor),
             menuStack.widthAnchor.constraint(equalTo: menuScroll.frameLayoutGuide.widthAnchor)
         ])
+        // 只有「<=」没有下界时 UIScrollView 会被压成 0 高，菜单整个看不见；
+        // 用一条低优先级的「高度 = 内容」把容器撑起来，超高时仍受上面的限高约束。
+        let fitMenu = menuScroll.heightAnchor.constraint(equalTo: menuStack.heightAnchor)
+        fitMenu.priority = .defaultHigh
+        fitMenu.isActive = true
     }
 
     private func openMenu() {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.3 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.4 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -1481,40 +1502,95 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.addArrangedSubview(menuRow("关闭菜单") { [weak self] in self?.closeMenu() })
     }
 
-    /// 长按条目的菜单：分词 / 置顶 / 预览 / 编辑 / 删除（对齐用户第 6 张截图）
-    private func openCardMenu(_ item: SyncItem?) {
-        menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        menuOverlay.isHidden = false
-        guard let item = item else { return }
-        let preview = item.isImage ? "图片" : String(item.displayText.prefix(24))
-        menuStack.addArrangedSubview(menuTitle(preview))
+    // MARK: - 长按条目菜单（对齐用户两张截图：圆角磨砂卡片 + 线性图标 + 红色删除）
 
-        if !item.isImage {
-            menuStack.addArrangedSubview(menuRow("✂️ 分词") { [weak self] in
-                self?.closeMenu(); self?.openSegment(item)
-            })
+    /// 单独一层，不复用「快捷操作」大菜单：后者滚动容器只有高度上限，
+    /// 且被后续添加的设置面板压在下面，长按看起来就像没反应。
+    private func buildCardMenu() {
+        cardMenuOverlay.backgroundColor = UIColor.black.withAlphaComponent(0.12)
+        cardMenuOverlay.isHidden = true
+        cardMenuOverlay.frame = view.bounds
+        cardMenuOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        let cardOutsideTap = UITapGestureRecognizer(target: self,
+                                                   action: #selector(closeCardMenu))
+        cardOutsideTap.cancelsTouchesInView = false
+        cardOutsideTap.delegate = self
+        cardMenuOverlay.addGestureRecognizer(cardOutsideTap)
+        view.addSubview(cardMenuOverlay)
+
+        cardMenuBox.layer.cornerRadius = 26
+        cardMenuBox.clipsToBounds = true
+        cardMenuBox.layer.borderWidth = 0.5
+        cardMenuBox.layer.borderColor = UIColor.white.withAlphaComponent(0.55).cgColor
+        cardMenuOverlay.addSubview(cardMenuBox)
+
+        cardMenuScroll.showsVerticalScrollIndicator = false
+        cardMenuScroll.alwaysBounceVertical = false
+        cardMenuScroll.backgroundColor = .clear
+        cardMenuBox.contentView.addSubview(cardMenuScroll)
+
+        cardMenuStack.axis = .vertical
+        cardMenuStack.distribution = .fillEqually
+        cardMenuStack.spacing = 0
+        cardMenuScroll.addSubview(cardMenuStack)
+    }
+
+    @objc private func closeCardMenu() { cardMenuOverlay.isHidden = true }
+
+    private func cardMenuRow(_ title: String, icon: String, destructive: Bool = false,
+                             action: @escaping () -> Void) -> UIButton {
+        let color: UIColor = destructive ? QPColor.red : UIColor.rgb(24, 24, 27)
+        let b = UIButton(type: .custom)
+        b.backgroundColor = .clear
+        b.contentHorizontalAlignment = .leading
+        b.setTitle(title, for: .normal)
+        b.setTitleColor(color, for: .normal)
+        b.titleLabel?.font = .systemFont(ofSize: 18, weight: .regular)
+        // 左侧线性图标：x=22、宽 24，与文字之间留 16pt
+        b.contentEdgeInsets = UIEdgeInsets(top: 0, left: 62, bottom: 0, right: 12)
+        let iv = UIImageView(image: UIImage(systemName: icon)?
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 21, weight: .regular)))
+        iv.tintColor = color
+        iv.contentMode = .scaleAspectFit
+        iv.frame = CGRect(x: 22, y: 11, width: 24, height: 22)
+        iv.autoresizingMask = [.flexibleRightMargin]
+        b.addSubview(iv)
+        b.addAction(UIAction { _ in action() }, for: .touchUpInside)
+        return b
+    }
+
+    /// 两张截图的操作项合并：复制 / 编辑 / 分词 / 预览全文 / 发送到电脑 / 置顶 / 删除。
+    /// 图片条目自动隐藏「编辑、分词」；键盘高度有限时菜单内部可滚动。
+    private func openCardMenu(_ item: SyncItem, anchor: UIView) {
+        closeMenu()
+        cardMenuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+
+        func add(_ title: String, _ icon: String, _ destructive: Bool = false,
+                 _ action: @escaping () -> Void) {
+            cardMenuStack.addArrangedSubview(
+                cardMenuRow(title, icon: icon, destructive: destructive) { [weak self] in
+                    self?.closeCardMenu()
+                    action()
+                })
         }
-        let pinKey = item.isLocal ? item.text : item.displayText
-        let pinned = prefs.pinned.contains(pinKey)
-        menuStack.addArrangedSubview(menuRow(pinned ? "📌 取消置顶" : "📌 置顶") { [weak self] in
+
+        add("复制", "doc.on.doc") { [weak self] in
             guard let self = self else { return }
-            self.prefs.togglePin(pinKey)
-            self.refreshList(); self.closeMenu()
-            self.showToast(pinned ? "已取消置顶" : "已置顶")
-        })
-        menuStack.addArrangedSubview(menuRow(item.isImage ? "👁 放大查看（并复制）" : "👁 预览") { [weak self] in
-            self?.closeMenu()
-            if item.isImage { self?.showImage(item) } else { self?.openPreview(item) }
-        })
-        if !item.isImage {
-            menuStack.addArrangedSubview(menuRow("✏️ 编辑") { [weak self] in
-                self?.closeMenu(); self?.openEdit(item)
-            })
+            if item.isImage, let d = item.imageData, let img = UIImage(data: d) {
+                UIPasteboard.general.image = img
+            } else {
+                UIPasteboard.general.string = item.text
+            }
+            self.showToast("已复制")
         }
-        menuStack.addArrangedSubview(menuRow("🗑 删除") { [weak self] in
-            self?.closeMenu(); self?.deleteCard(item)
-        })
-        menuStack.addArrangedSubview(menuRow("↑ 发送到电脑") { [weak self] in
+        if !item.isImage {
+            add("编辑", "pencil") { [weak self] in self?.openEdit(item) }
+            add("分词", "list.bullet") { [weak self] in self?.openSegment(item) }
+        }
+        add("预览全文", "magnifyingglass") { [weak self] in
+            if item.isImage { self?.showImage(item) } else { self?.openPreview(item) }
+        }
+        add("发送到电脑", "desktopcomputer") { [weak self] in
             guard let self = self else { return }
             if item.isImage, let d = item.imageData {
                 self.client.pushImage(d, mime: item.mime) { err in
@@ -1523,9 +1599,36 @@ final class KeyboardViewController: UIInputViewController {
                     }
                 }
             } else { self.sendTextToPc(item.text) }
-            self.closeMenu()
-        })
-        menuStack.addArrangedSubview(menuRow("关闭菜单") { [weak self] in self?.closeMenu() })
+        }
+        let pinKey = item.isLocal ? item.text : item.displayText
+        let pinned = prefs.pinned.contains(pinKey)
+        add(pinned ? "取消置顶" : "置顶", "pin") { [weak self] in
+            guard let self = self else { return }
+            self.prefs.togglePin(pinKey)
+            self.refreshList()
+            self.showToast(pinned ? "已取消置顶" : "已置顶")
+        }
+        add("删除", "trash", true) { [weak self] in self?.deleteCard(item) }
+
+        // 贴近被长按的卡片：优先放在卡片下方，下方放不下就翻到上方。
+        let bounds = view.bounds
+        let rowH: CGFloat = 44
+        let contentH = CGFloat(cardMenuStack.arrangedSubviews.count) * rowH
+        let w = min(max(bounds.width * 0.62, 240), bounds.width - 24)
+        let h = min(contentH, bounds.height - 16)
+        let r = anchor.convert(anchor.bounds, to: view)
+        var y = r.maxY + 6
+        if y + h > bounds.height - 8 { y = r.minY - h - 6 }
+        if y < 8 { y = 8 }
+        if y + h > bounds.height - 8 { y = bounds.height - h - 8 }
+
+        cardMenuOverlay.frame = bounds
+        cardMenuBox.frame = CGRect(x: 14, y: y, width: w, height: h)
+        cardMenuScroll.frame = CGRect(x: 0, y: 0, width: w, height: h)
+        cardMenuStack.frame = CGRect(x: 0, y: 0, width: w, height: contentH)
+        cardMenuScroll.contentSize = CGSize(width: w, height: contentH)
+        cardMenuOverlay.isHidden = false
+        view.bringSubviewToFront(cardMenuOverlay)
     }
 
     /// 删除一条：本机历史进「最近删除」可恢复，电脑记录走 /api/delete。
@@ -2097,6 +2200,19 @@ extension KeyboardViewController: UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
         true
+    }
+
+    /// 菜单遮罩的「点外部关闭」不要吃掉菜单按钮自己的点击
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer.view === cardMenuOverlay ||
+              gestureRecognizer.view === menuOverlay else { return true }
+        var v: UIView? = touch.view
+        while let cur = v {
+            if cur is UIButton { return false }
+            v = cur.superview
+        }
+        return true
     }
 }
 

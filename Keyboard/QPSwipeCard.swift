@@ -166,7 +166,7 @@ final class QPSwipeCard: UIView {
                 if armed { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
             }
         case .ended, .cancelled, .failed:
-            setBusy(false)
+            // busy 由 touchesBegan/Ended 统一收口，手势结束时不提前放开
             onHorizontalSwipe?(false)
             guard horizontal else { return }
             horizontal = false
@@ -209,10 +209,28 @@ final class QPSwipeCard: UIView {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             onLongPress?()
         case .ended, .cancelled, .failed:
-            setBusy(false)
+            break
         default:
             break
         }
+    }
+
+    // MARK: - 手指按下到抬起全程标记为「交互中」
+    // 长按识别需要 0.4 秒；这期间任何 refreshList 都会把正在被按住的卡片
+    // 从列表里销毁，手势被系统取消，表现为「随便长按一条都不弹菜单」。
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesBegan(touches, with: event)
+        setBusy(true)
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesEnded(touches, with: event)
+        setBusy(false)
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesCancelled(touches, with: event)
+        setBusy(false)
     }
 
     private func setBusy(_ v: Bool) {

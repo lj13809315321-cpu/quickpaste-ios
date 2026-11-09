@@ -17,9 +17,9 @@
     <key>CFBundlePackageType</key>
     <string>XPC!</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.8.3</string>
+    <string>1.8.4</string>
     <key>CFBundleVersion</key>
-    <string>21</string>
+    <string>22</string>
     <key>MinimumOSVersion</key>
     <string>16.0</string>
     <!-- 键盘扩展内 URLSession 访问 http://电脑IP:8787 必须允许明文 HTTP -->
