@@ -654,14 +654,14 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: - 底部快捷条（路线 E：黄白微信助手底栏等价复刻）
 
-    /// 黄白底栏六键在扩展沙盒内的等价实现：切换/关闭/撤销/←/→完全等价；
-    /// 截图无公开 API（扩展看不到宿主窗口），按《对接上下文》推荐换成
-    /// 「粘贴」（剪贴板键盘更实用）；系统听写不能主动调，不放。
+    /// 黄白底栏等价复刻（v1.8.9 按用户要求重排）：
+    /// 「切换」整键删掉（不切输入法），「撤销」顶到第一位；
+    /// 「←/→」放正中间；末尾新增「全选」（近似 = 全文复制到剪贴板）。
     /// 独立一行贴键盘最底部，不与「返回/空格/发送」底栏冲突。
     private func setupKBButtonBar() {
         let bar = KBKeyboardButtonBar(inputViewController: self)
         bar.buttonActions = KBKeyboardButtonBar.actions(fromNames:
-            ["nextKeyboard", "dismiss", "paste", "undo", "cursorLeft", "cursorRight"])
+            ["undo", "dismiss", "cursorLeft", "cursorRight", "paste", "selectAll"])
         bar.barHeight = 40
         bar.buttonSpacing = 8
         bar.edgeInset = 8
@@ -753,20 +753,8 @@ final class KeyboardViewController: UIInputViewController {
         collapse.addGestureRecognizer(holdCollapse)
         toolbar.addArrangedSubview(collapse)
 
-        // 地球键用 SF Symbols 的单色「globe」而不是 🌐 emoji：
-        // emoji 一定是彩色的，用户要求跟其它图标一个颜色（黑），像系统键盘那样。
-        let globe = toolButton("")
-        let globeCfg = toolIconConfig()
-        globe.setImage(UIImage(systemName: "globe", withConfiguration: globeCfg)?
-                        .withRenderingMode(.alwaysTemplate), for: .normal)
-        globe.tintColor = QPColor.ink
-        globe.addAction(UIAction { [weak self] _ in self?.advanceToNextInputMode() },
-                        for: .touchUpInside)
-        // 无 SF Symbols 时退回文字（极少见），同样是单色
-        if globe.image(for: .normal) == nil {
-            globe.setTitle("🌐", for: .normal)
-        }
-        toolbar.addArrangedSubview(globe)
+        // v1.8.9：地球键整键删掉（用户要求）——不切换输入法，
+        // 切换输入法用系统键盘切换入口。
 
         // HTML 原型 .kbTool.copyBtn：连续复制一级开关，蓝色=开启；与「同步」无关
         let copyBtn = toolButton("")
@@ -783,12 +771,17 @@ final class KeyboardViewController: UIInputViewController {
 
         // v1.8.8 剪贴板筛选：点按弹类型筛选菜单（全部/文本/链接/图片/文件），
         // 长按弹导出菜单（TXT / CSV / 图片 -> 发送到电脑）。
-        // 图标 = 三条递减横线，单色墨色，与整排图标统一；有筛选时变蓝提示。
+        // v1.8.9 改自绘漏斗图标：SF 旧名 line.3.decrease 在 iOS 15 已弃用
+        // （现名 line.3.horizontal.decrease），新系统上不渲染导致按钮「隐形」；
+        // 自绘与连续复制图标同一套画法，任何系统版本都不会消失。
         let filterBtn = toolButton("")
-        filterBtn.setImage(UIImage(systemName: "line.3.decrease",
-                                   withConfiguration: toolIconConfig())?
-                            .withRenderingMode(.alwaysTemplate), for: .normal)
+        filterBtn.setImage(filterIcon(QPColor.ink).withRenderingMode(.alwaysTemplate),
+                           for: .normal)
         filterBtn.tintColor = QPColor.ink
+        // 显式锁 38×38 并把抗压缩拉满，杜绝被工具条挤出宽度
+        filterBtn.widthAnchor.constraint(equalToConstant: QPTool.size).isActive = true
+        filterBtn.heightAnchor.constraint(equalToConstant: QPTool.size).isActive = true
+        filterBtn.setContentCompressionResistancePriority(.required, for: .horizontal)
         filterBtn.addAction(UIAction { [weak self] _ in
             guard let self = self else { return }
             self.openFilterMenu(anchor: filterBtn)
@@ -2476,6 +2469,29 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     // MARK: - v1.8.8 筛选 / 排序 / 导出（工具条漏斗 + 箭头按钮）
+
+    /// 自绘「漏斗」筛选图标，24pt 画布、1.9pt 圆头描边，与整排图标统一。
+    /// 不用 SF Symbol：旧名 line.3.decrease 已弃用，新系统渲染为空导致按钮隐形。
+    private func filterIcon(_ color: UIColor) -> UIImage {
+        let fmt = UIGraphicsImageRendererFormat()
+        fmt.scale = 3
+        let c = QPTool.iconCanvas
+        return UIGraphicsImageRenderer(size: CGSize(width: c, height: c), format: fmt).image { _ in
+            color.setStroke()
+            let funnel = UIBezierPath()
+            funnel.move(to: CGPoint(x: 3.5, y: 4.5))
+            funnel.addLine(to: CGPoint(x: 20.5, y: 4.5))
+            funnel.addLine(to: CGPoint(x: 13.8, y: 11.8))
+            funnel.addLine(to: CGPoint(x: 13.8, y: 18.6))
+            funnel.addLine(to: CGPoint(x: 10.2, y: 16.4))
+            funnel.addLine(to: CGPoint(x: 10.2, y: 11.8))
+            funnel.close()
+            funnel.lineWidth = 1.9
+            funnel.lineJoinStyle = .round
+            funnel.lineCapStyle = .round
+            funnel.stroke()
+        }
+    }
 
     /// 整条内容是否是链接：纯网址，或包含 http(s):// / www. 开头的片段
     private static func isLinkItem(_ it: SyncItem) -> Bool {

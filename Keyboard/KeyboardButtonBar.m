@@ -42,6 +42,7 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
             @"cut":          @(KBKeyboardActionCut),
             @"paste":        @(KBKeyboardActionPaste),
             @"nextKeyboard": @(KBKeyboardActionNextKeyboard),
+            @"selectAll":    @(KBKeyboardActionSelectAll),
         };
     });
     return map;
@@ -60,6 +61,7 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
 - (void)kb_undoWithProxy:(id<UITextDocumentProxy>)proxy;
 - (void)kb_copySelectionWithProxy:(id<UITextDocumentProxy>)proxy cut:(BOOL)cut;
 - (void)kb_pasteWithProxy:(id<UITextDocumentProxy>)proxy;
+- (void)kb_selectAllWithProxy:(id<UITextDocumentProxy>)proxy;
 @end
 
 @implementation KBKeyboardButtonBar
@@ -172,6 +174,7 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
         case KBKeyboardActionCut:          return @"剪切";
         case KBKeyboardActionPaste:        return @"粘贴";
         case KBKeyboardActionNextKeyboard: return @"切换";
+        case KBKeyboardActionSelectAll:    return @"全选";
         case KBKeyboardActionCount:        return @"";
     }
     return @"";
@@ -188,6 +191,7 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
         case KBKeyboardActionCut:          return YES;
         case KBKeyboardActionPaste:        return YES;
         case KBKeyboardActionNextKeyboard: return NO;
+        case KBKeyboardActionSelectAll:    return YES;
         case KBKeyboardActionCount:        return NO;
     }
     return NO;
@@ -320,6 +324,9 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
         case KBKeyboardActionNextKeyboard:
             [controller advanceToNextInputMode];
             break;
+        case KBKeyboardActionSelectAll:
+            [self kb_selectAllWithProxy:proxy];
+            break;
         case KBKeyboardActionCount:
             break;
     }
@@ -392,6 +399,45 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
     }
     [proxy insertText:text];
     [self recordInsertedText:text];
+}
+
+#pragma mark - 全选（近似）
+
+- (void)kb_selectAllWithProxy:(id<UITextDocumentProxy>)proxy {
+    if (![self kb_hasFullAccess]) {
+        return;
+    }
+    // 第一步：尝试标准编辑动作 selectAll:。键盘扩展与宿主分属两个进程，
+    // sendAction 走的是扩展进程自己的响应链，能不能落到宿主输入框随系统
+    // 版本而异——能落地就是「真全选」，落不了地也不报错，无害。
+    @try {
+        id app = [[UIApplication class] performSelector:NSSelectorFromString(@"sharedApplication")];
+        SEL send = NSSelectorFromString(@"sendAction:to:from:forEvent:");
+        if (app && [app respondsToSelector:send]) {
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:
+                                 [app methodSignatureForSelector:send]];
+            [inv setTarget:app];
+            [inv setSelector:send];
+            SEL selAll = @selector(selectAll:);
+            id nilTarget = nil, fromSelf = self, nilEvent = nil;
+            [inv setArgument:&selAll atIndex:2];
+            [inv setArgument:&nilTarget atIndex:3];
+            [inv setArgument:&fromSelf atIndex:4];
+            [inv setArgument:&nilEvent atIndex:5];
+            [inv invoke];
+        }
+    } @catch (NSException *ignored) {
+        // 私有转发失败不致命，走下面的公开兜底
+    }
+    // 第二步：公开 API 兜底。光标前后文拼起来 ≈ 输入框全文（部分宿主对
+    // 超长文本可能截断，但对聊天输入框基本完整）。写入系统剪贴板后，
+    // 效果等价于「全选 + 复制」，用户按「粘贴」即可把全文带到任何地方。
+    NSString *before = proxy.documentContextBeforeInput ?: @"";
+    NSString *after = proxy.documentContextAfterInput ?: @"";
+    NSString *all = [before stringByAppendingString:after];
+    if (all.length > 0) {
+        [[UIPasteboard generalPasteboard] setString:all];
+    }
 }
 
 @end

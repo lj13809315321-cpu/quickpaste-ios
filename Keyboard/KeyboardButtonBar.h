@@ -8,7 +8,7 @@
 //                        全部动作走 UIInputViewController / UITextDocumentProxy 公开 API。
 //
 //  因此可以直接放进 App Store 的 Keyboard Extension target，无需越狱、无需注入、无需私有 API。
-//  代价见下方「能力边界」：截图、真·撤销、全选/剪切在扩展进程里没有等价能力。
+//  代价见下方「能力边界」：截图、真·撤销、真·全选在扩展进程里没有等价能力。
 //
 //  能力边界（相对黄白 dylib 的默认四按钮）：
 //    关闭键盘 → dismissKeyboard                     完全等价
@@ -16,7 +16,11 @@
 //    光标左移 → adjustTextPositionByCharacterOffset 完全等价，另附右移
 //    截图     → 不可实现：扩展进程看不到宿主 App 的窗口层级，也不能截宿主屏幕
 //    复制/剪切/粘贴 → 需要 RequestsOpenAccess + 用户在「设置」打开「允许完全访问」；
-//                     copy/cut 只能作用于「当前已有选区」（selectedText），扩展无法发起全选。
+//                     copy/cut 只能作用于「当前已有选区」（selectedText）
+//    全选     → 扩展无法对宿主输入框发起真正的系统级全选（无公开 API）；
+//               本类的近似实现 = 先尝试 sendAction(selectAll:)，再把光标前
+//               后文拼成的「输入框全文」写入系统剪贴板，效果等价于
+//               「全选 + 复制」，随后可用「粘贴」把全文带到任何地方。
 //
 //  把本文件与 KeyboardButtonBar.m 拖进 Keyboard Extension target，
 //  接入示例见 KeyboardViewController.h/.m，配置键见 KeyboardExtension-Info.plist。
@@ -36,6 +40,7 @@ typedef NS_ENUM(NSInteger, KBKeyboardAction) {
     KBKeyboardActionCut,               // 剪切当前选区（需完全访问）
     KBKeyboardActionPaste,             // 粘贴剪贴板文本（需完全访问）
     KBKeyboardActionNextKeyboard,      // 切换到下一个输入法
+    KBKeyboardActionSelectAll,         // 全选（近似）：尝试系统全选 + 输入框全文复制到剪贴板
     KBKeyboardActionCount              // 哨兵，不是按钮
 };
 
