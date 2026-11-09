@@ -97,7 +97,10 @@ jobs:
           if-no-files-found: error
 
   ipa:
-    runs-on: macos-15
+    # 2026-11-10：GitHub 的 macOS arm64 托管 runner 容量不足，任务排队约 15 分钟
+    # 后被系统取消（"The job was not acquired by Runner of type hosted"）。
+    # 改用 Intel 镜像池，避开拥塞的 arm64 池；Xcode 与 SDK 版本保持一致。
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 
