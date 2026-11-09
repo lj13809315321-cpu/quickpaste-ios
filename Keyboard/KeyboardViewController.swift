@@ -60,9 +60,21 @@ final class KeyboardViewController: UIInputViewController {
     private let menuOverlay = UIView()
     private let menuScroll = UIScrollView()
     private let menuStack = UIStackView()
-    /// 长按条目专用菜单：圆角磨砂卡片 + 线性图标 + 红色删除（对齐用户两张截图）
+    /// 长按条目菜单 v1.8.5（按用户图二 1:1）：整个键盘变灰色磨砂，
+    /// 被按住的条目**原位浮起**成白卡片带阴影，下方只跟一张半透明灰的
+    /// 4 项小菜单。「发送到电脑 / 置顶 / 删除」改为浮起卡片上的圆形小按钮，
+    /// 这样菜单主体能贴住截图，同时一个功能都不砍。
     private let cardMenuOverlay = UIView()
-    private let cardMenuBox = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterialLight))
+    private let cardMenuDim = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterial))
+    private let cardMenuShade = UIView()
+    private let cardMenuLift = UIView()
+    private let cardMenuLiftText = UILabel()
+    private let cardMenuLiftSub = UILabel()
+    private let cardMenuLiftThumb = UIImageView()
+    private let cardMenuShell = UIView()
+    /// 被长按的那一条：浮起期间把原位卡片暂时隐去，才有「提起来」的感觉
+    private weak var cardMenuAnchorView: UIView?
+    private let cardMenuBox = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
     private let cardMenuScroll = UIScrollView()
     private let cardMenuStack = UIStackView()
     private let imageOverlay = UIView()
@@ -1443,7 +1455,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.4 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.5 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -1502,27 +1514,67 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.addArrangedSubview(menuRow("关闭菜单") { [weak self] in self?.closeMenu() })
     }
 
-    // MARK: - 长按条目菜单（对齐用户两张截图：圆角磨砂卡片 + 线性图标 + 红色删除）
+    // MARK: - 长按条目菜单 v1.8.5（图二：灰磨砂背景 + 浮起条目 + 4 项小菜单）
 
     /// 单独一层，不复用「快捷操作」大菜单：后者滚动容器只有高度上限，
     /// 且被后续添加的设置面板压在下面，长按看起来就像没反应。
     private func buildCardMenu() {
-        cardMenuOverlay.backgroundColor = UIColor.black.withAlphaComponent(0.12)
+        cardMenuOverlay.backgroundColor = .clear
         cardMenuOverlay.isHidden = true
         cardMenuOverlay.frame = view.bounds
         cardMenuOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        let cardOutsideTap = UITapGestureRecognizer(target: self,
-                                                   action: #selector(closeCardMenu))
-        cardOutsideTap.cancelsTouchesInView = false
-        cardOutsideTap.delegate = self
-        cardMenuOverlay.addGestureRecognizer(cardOutsideTap)
-        view.addSubview(cardMenuOverlay)
 
-        cardMenuBox.layer.cornerRadius = 26
+        // ① 整屏灰色磨砂：薄材质模糊 + 一层中性灰，后面内容仍隐约透出（图二）
+        cardMenuDim.frame = view.bounds
+        cardMenuDim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        cardMenuDim.isUserInteractionEnabled = false
+        cardMenuOverlay.addSubview(cardMenuDim)
+        cardMenuShade.backgroundColor = UIColor(red: 0.38, green: 0.40, blue: 0.45,
+                                                 alpha: 0.32)
+        cardMenuShade.frame = view.bounds
+        cardMenuShade.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        cardMenuShade.isUserInteractionEnabled = false
+        cardMenuOverlay.addSubview(cardMenuShade)
+
+        // ② 浮起的条目：纯白不透明、大圆角、投影，和变暗的灰底拉开层次
+        cardMenuLift.backgroundColor = .white
+        cardMenuLift.layer.cornerRadius = 18
+        cardMenuLift.layer.shadowColor = UIColor.black.cgColor
+        cardMenuLift.layer.shadowOpacity = 0.26
+        cardMenuLift.layer.shadowRadius = 18
+        cardMenuLift.layer.shadowOffset = CGSize(width: 0, height: 7)
+        cardMenuLiftText.font = .systemFont(ofSize: 17, weight: .regular)
+        cardMenuLiftText.textColor = UIColor.rgb(17, 17, 17)
+        cardMenuLiftText.numberOfLines = 3
+        cardMenuLiftText.lineBreakMode = .byTruncatingTail
+        cardMenuLift.addSubview(cardMenuLiftText)
+        cardMenuLiftSub.font = .systemFont(ofSize: 12)
+        cardMenuLiftSub.textColor = QPColor.sub
+        cardMenuLift.addSubview(cardMenuLiftSub)
+        cardMenuLiftThumb.contentMode = .scaleAspectFill
+        cardMenuLiftThumb.clipsToBounds = true
+        cardMenuLiftThumb.layer.cornerRadius = 8
+        cardMenuLiftThumb.backgroundColor = QPColor.sep
+        cardMenuLift.addSubview(cardMenuLiftThumb)
+        cardMenuOverlay.addSubview(cardMenuLift)
+
+        // ③ 菜单：外壳负责阴影，内部磨砂视图负责圆角；颜色与灰底融合，
+        //    不再是刺眼的一整块纯白（用户反馈「白色和背景显示很怪异」）
+        cardMenuShell.backgroundColor = .clear
+        cardMenuShell.layer.cornerRadius = 22
+        cardMenuShell.layer.shadowColor = UIColor.black.cgColor
+        cardMenuShell.layer.shadowOpacity = 0.18
+        cardMenuShell.layer.shadowRadius = 20
+        cardMenuShell.layer.shadowOffset = CGSize(width: 0, height: 8)
+        cardMenuOverlay.addSubview(cardMenuShell)
+
+        cardMenuBox.layer.cornerRadius = 22
         cardMenuBox.clipsToBounds = true
+        cardMenuBox.contentView.backgroundColor = UIColor(red: 0.88, green: 0.89,
+                                                          blue: 0.91, alpha: 0.30)
         cardMenuBox.layer.borderWidth = 0.5
-        cardMenuBox.layer.borderColor = UIColor.white.withAlphaComponent(0.55).cgColor
-        cardMenuOverlay.addSubview(cardMenuBox)
+        cardMenuBox.layer.borderColor = UIColor.white.withAlphaComponent(0.38).cgColor
+        cardMenuShell.addSubview(cardMenuBox)
 
         cardMenuScroll.showsVerticalScrollIndicator = false
         cardMenuScroll.alwaysBounceVertical = false
@@ -1533,42 +1585,82 @@ final class KeyboardViewController: UIInputViewController {
         cardMenuStack.distribution = .fillEqually
         cardMenuStack.spacing = 0
         cardMenuScroll.addSubview(cardMenuStack)
+
+        let cardOutsideTap = UITapGestureRecognizer(target: self,
+                                                   action: #selector(closeCardMenu))
+        cardOutsideTap.cancelsTouchesInView = false
+        cardOutsideTap.delegate = self
+        cardMenuOverlay.addGestureRecognizer(cardOutsideTap)
+        view.addSubview(cardMenuOverlay)
     }
 
-    @objc private func closeCardMenu() { cardMenuOverlay.isHidden = true }
+    @objc private func closeCardMenu() {
+        cardMenuAnchorView?.alpha = 1
+        cardMenuAnchorView = nil
+        cardMenuOverlay.isHidden = true
+        cardMenuLift.transform = .identity
+        cardMenuShell.alpha = 1
+    }
 
-    private func cardMenuRow(_ title: String, icon: String, destructive: Bool = false,
+    /// 菜单行：左侧线性图标用约束居中，行高由可用空间动态决定也不会错位
+    private func cardMenuRow(_ title: String, icon: String,
                              action: @escaping () -> Void) -> UIButton {
-        let color: UIColor = destructive ? QPColor.red : UIColor.rgb(24, 24, 27)
+        let color = UIColor.rgb(24, 24, 27)
         let b = UIButton(type: .custom)
         b.backgroundColor = .clear
         b.contentHorizontalAlignment = .leading
         b.setTitle(title, for: .normal)
         b.setTitleColor(color, for: .normal)
         b.titleLabel?.font = .systemFont(ofSize: 18, weight: .regular)
-        // 左侧线性图标：x=22、宽 24，与文字之间留 16pt
         b.contentEdgeInsets = UIEdgeInsets(top: 0, left: 62, bottom: 0, right: 12)
         let iv = UIImageView(image: UIImage(systemName: icon)?
             .withConfiguration(UIImage.SymbolConfiguration(pointSize: 21, weight: .regular)))
         iv.tintColor = color
         iv.contentMode = .scaleAspectFit
-        iv.frame = CGRect(x: 22, y: 11, width: 24, height: 22)
-        iv.autoresizingMask = [.flexibleRightMargin]
+        iv.translatesAutoresizingMaskIntoConstraints = false
         b.addSubview(iv)
+        NSLayoutConstraint.activate([
+            iv.leadingAnchor.constraint(equalTo: b.leadingAnchor, constant: 22),
+            iv.centerYAnchor.constraint(equalTo: b.centerYAnchor),
+            iv.widthAnchor.constraint(equalToConstant: 24),
+            iv.heightAnchor.constraint(equalToConstant: 24)
+        ])
         b.addAction(UIAction { _ in action() }, for: .touchUpInside)
         return b
     }
 
-    /// 两张截图的操作项合并：复制 / 编辑 / 分词 / 预览全文 / 发送到电脑 / 置顶 / 删除。
-    /// 图片条目自动隐藏「编辑、分词」；键盘高度有限时菜单内部可滚动。
+    /// 浮起卡片右上角的圆形小按钮：承载「发送到电脑 / 置顶 / 删除」，
+    /// 让下方主菜单可以严格保持图二的 4 项尺寸
+    private func cardLiftButton(_ icon: String, tint: UIColor,
+                                action: @escaping () -> Void) -> UIButton {
+        let b = UIButton(type: .custom)
+        b.backgroundColor = UIColor(red: 0.93, green: 0.94, blue: 0.96, alpha: 1)
+        b.layer.cornerRadius = 15
+        b.tintColor = tint
+        b.setImage(UIImage(systemName: icon)?
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)),
+                    for: .normal)
+        b.addAction(UIAction { [weak self] _ in
+            self?.closeCardMenu()
+            action()
+        }, for: .touchUpInside)
+        return b
+    }
+
+    /// 图二的 4 项主菜单：复制 / 编辑 / 分词 / 预览全文（图片条目少两项）。
+    /// 发送到电脑 / 置顶 / 删除挪到浮起卡片的圆形按钮上，功能一项不少，
+    /// 但菜单本体不会再变成压住整个键盘的 7 行大白块。
     private func openCardMenu(_ item: SyncItem, anchor: UIView) {
         closeMenu()
+        cardMenuAnchorView?.alpha = 1
+        anchor.alpha = 0
+        cardMenuAnchorView = anchor
         cardMenuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        cardMenuLift.subviews.filter { $0 is UIButton }.forEach { $0.removeFromSuperview() }
 
-        func add(_ title: String, _ icon: String, _ destructive: Bool = false,
-                 _ action: @escaping () -> Void) {
+        func add(_ title: String, _ icon: String, _ action: @escaping () -> Void) {
             cardMenuStack.addArrangedSubview(
-                cardMenuRow(title, icon: icon, destructive: destructive) { [weak self] in
+                cardMenuRow(title, icon: icon) { [weak self] in
                     self?.closeCardMenu()
                     action()
                 })
@@ -1590,7 +1682,10 @@ final class KeyboardViewController: UIInputViewController {
         add("预览全文", "magnifyingglass") { [weak self] in
             if item.isImage { self?.showImage(item) } else { self?.openPreview(item) }
         }
-        add("发送到电脑", "desktopcomputer") { [weak self] in
+
+        let pinKey = item.isLocal ? item.text : item.displayText
+        let pinned = prefs.pinned.contains(pinKey)
+        let sendBtn = cardLiftButton("desktopcomputer", tint: UIColor.rgb(24, 24, 27)) { [weak self] in
             guard let self = self else { return }
             if item.isImage, let d = item.imageData {
                 self.client.pushImage(d, mime: item.mime) { err in
@@ -1600,35 +1695,94 @@ final class KeyboardViewController: UIInputViewController {
                 }
             } else { self.sendTextToPc(item.text) }
         }
-        let pinKey = item.isLocal ? item.text : item.displayText
-        let pinned = prefs.pinned.contains(pinKey)
-        add(pinned ? "取消置顶" : "置顶", "pin") { [weak self] in
+        let pinBtn = cardLiftButton(pinned ? "pin.slash" : "pin",
+                                    tint: UIColor.rgb(24, 24, 27)) { [weak self] in
             guard let self = self else { return }
             self.prefs.togglePin(pinKey)
             self.refreshList()
             self.showToast(pinned ? "已取消置顶" : "已置顶")
         }
-        add("删除", "trash", true) { [weak self] in self?.deleteCard(item) }
+        let delBtn = cardLiftButton("trash", tint: QPColor.red) { [weak self] in
+            self?.deleteCard(item)
+        }
+        let liftButtons = [sendBtn, pinBtn, delBtn]
+        liftButtons.forEach { cardMenuLift.addSubview($0) }
 
-        // 贴近被长按的卡片：优先放在卡片下方，下方放不下就翻到上方。
+        let from = item.isLocal ? "本机复制" : (item.fromPhone ? "手机发来" : "电脑复制")
+        cardMenuLiftText.text = item.isImage ? ("图片 · " + from) : item.displayText
+        cardMenuLiftSub.text = from + (item.isImage ? " · 图片条目" : " · \(item.displayText.count) 字")
+        cardMenuLiftThumb.image = item.isImage ? thumbnail(item) : nil
+        cardMenuLiftThumb.isHidden = !item.isImage
+
+        // 高度按键盘实际高度动态分配：默认 300pt 时浮起卡片约 62pt、
+        // 菜单 4 行各约 48pt；调到 360pt 时接近截图的宽松行距，240pt 也不越界。
         let bounds = view.bounds
-        let rowH: CGFloat = 44
-        let contentH = CGFloat(cardMenuStack.arrangedSubviews.count) * rowH
-        let w = min(max(bounds.width * 0.62, 240), bounds.width - 24)
-        let h = min(contentH, bounds.height - 16)
+        let avail = max(180, bounds.height - 16)
+        let liftW = bounds.width - 28
+        let liftH = min(84, max(52, avail * 0.22))
+        let gap: CGFloat = 10
+        let pad: CGFloat = 10
+        let rows = CGFloat(cardMenuStack.arrangedSubviews.count)
+        let rowH = max(34, min(54, (avail - liftH - gap - pad * 2) / rows))
+        let contentH = rows * rowH
+        let menuH = contentH + pad * 2
+        let menuW = min(max(bounds.width * 0.62, 220), liftW)
+
+        // 浮起卡片尽量贴住被按住条目的原位，菜单紧跟其下；放不下就整组上移。
         let r = anchor.convert(anchor.bounds, to: view)
-        var y = r.maxY + 6
-        if y + h > bounds.height - 8 { y = r.minY - h - 6 }
-        if y < 8 { y = 8 }
-        if y + h > bounds.height - 8 { y = bounds.height - h - 8 }
+        var liftY = r.minY - 4
+        var menuY = liftY + liftH + gap
+        if menuY + menuH > bounds.height - 8 {
+            menuY = bounds.height - menuH - 8
+            liftY = menuY - gap - liftH
+        }
+        if liftY < 8 {
+            liftY = 8
+            menuY = liftY + liftH + gap
+        }
+        if menuY + menuH > bounds.height - 8 {
+            menuY = max(liftY + liftH + gap, bounds.height - menuH - 8)
+        }
+
+        cardMenuLift.frame = CGRect(x: 14, y: liftY, width: liftW, height: liftH)
+        let btnD: CGFloat = 30
+        let btnGap: CGFloat = 6
+        var bx = liftW - 12 - btnD
+        for b in liftButtons {
+            b.frame = CGRect(x: bx, y: (liftH - btnD) / 2, width: btnD, height: btnD)
+            bx -= btnD + btnGap
+        }
+        let textRight = bx + btnGap + 8
+        let textX: CGFloat = item.isImage ? 62 : 14
+        let textW = max(40, textRight - textX)
+        cardMenuLiftThumb.frame = CGRect(x: 12, y: (liftH - 40) / 2, width: 40, height: 40)
+        cardMenuLiftText.frame = CGRect(x: textX, y: 10, width: textW,
+                                        height: max(20, liftH - 10 - 22 - 6))
+        cardMenuLiftSub.frame = CGRect(x: textX, y: liftH - 20, width: textW, height: 14)
+
+        cardMenuShell.frame = CGRect(x: 14, y: menuY, width: menuW, height: menuH)
+        // 外壳本身透明，显式给 shadowPath 才能保证投影真的画出来
+        cardMenuShell.layer.shadowPath = UIBezierPath(roundedRect: cardMenuShell.bounds,
+                                                      cornerRadius: 22).cgPath
+        cardMenuBox.frame = cardMenuShell.bounds
+        cardMenuScroll.frame = CGRect(x: 0, y: pad, width: menuW, height: contentH)
+        cardMenuStack.frame = CGRect(x: 0, y: 0, width: menuW, height: contentH)
+        cardMenuScroll.contentSize = CGSize(width: menuW, height: contentH)
 
         cardMenuOverlay.frame = bounds
-        cardMenuBox.frame = CGRect(x: 14, y: y, width: w, height: h)
-        cardMenuScroll.frame = CGRect(x: 0, y: 0, width: w, height: h)
-        cardMenuStack.frame = CGRect(x: 0, y: 0, width: w, height: contentH)
-        cardMenuScroll.contentSize = CGSize(width: w, height: contentH)
+        cardMenuDim.frame = bounds
+        cardMenuShade.frame = bounds
         cardMenuOverlay.isHidden = false
         view.bringSubviewToFront(cardMenuOverlay)
+
+        cardMenuLift.alpha = 0.25
+        cardMenuLift.transform = CGAffineTransform(scaleX: 0.94, y: 0.94)
+        cardMenuShell.alpha = 0
+        UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseOut]) {
+            self.cardMenuLift.alpha = 1
+            self.cardMenuLift.transform = .identity
+            self.cardMenuShell.alpha = 1
+        }
     }
 
     /// 删除一条：本机历史进「最近删除」可恢复，电脑记录走 /api/delete。
