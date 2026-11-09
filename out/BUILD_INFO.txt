@@ -1,7 +1,7 @@
-QuickPaste v1.8.11 同步输入法 手机安装包
+QuickPaste v1.8.12 同步输入法 手机安装包
 形态：安卓 IME / iOS 键盘扩展（原生键盘，非 WebView 壳）
 苹果交付：未签名 IPA（手机端签名工具直接导入）
-构建时间 (UTC): 2026-11-09 23:04:51
-commit: a8cfe2caaea22a8c315bbf062e065b95ea6c4d6c
-APK: 74361 bytes
-IPA(未签名): 467868 bytes
+构建时间 (UTC): 2026-11-09 23:36:24
+commit: 54d303880e4cb502f2c147a3b9464ee6f44390c5
+APK: 74365 bytes
+IPA(未签名): 474355 bytes
