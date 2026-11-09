@@ -206,6 +206,14 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
         }
         UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
         button.tag = kKBBarTagBase + action;
+        // 与 QuickPaste 主工程 QPColor.ink 一致的自适应墨色（深色模式白色图标）
+        UIColor *ink = [UIColor colorWithDynamicProvider:^UIColor * (UITraitCollection *trait) {
+            return trait.userInterfaceStyle == UIUserInterfaceStyleDark
+                ? [UIColor colorWithRed:240.0 / 255.0 green:241.0 / 255.0 blue:245.0 / 255.0 alpha:1]
+                : [UIColor colorWithRed:17.0 / 255.0 green:17.0 / 255.0 blue:17.0 / 255.0 alpha:1];
+        }];
+        button.tintColor = ink;
+        [button setTitleColor:ink forState:UIControlStateNormal];
         [button setTitle:[KBKeyboardButtonBar kb_titleForAction:action]
                 forState:UIControlStateNormal];
         button.titleLabel.font = [UIFont systemFontOfSize:15];

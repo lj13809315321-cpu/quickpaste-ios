@@ -725,7 +725,7 @@ final class KeyboardViewController: UIInputViewController {
 
         let collapse = toolButton("")
         // HTML 原型 .kbTool.bare + i-kbhide：键盘轮廓 + 两排键点 + 下箭头，透明底
-        collapse.setImage(kbHideIcon(UIColor.rgb(17, 17, 17)).withRenderingMode(.alwaysOriginal),
+        collapse.setImage(kbHideIcon(QPColor.ink).withRenderingMode(.alwaysOriginal),
                           for: .normal)
         collapse.backgroundColor = .clear
         collapse.addAction(UIAction { [weak self] _ in self?.dismissKeyboard() },
@@ -742,7 +742,7 @@ final class KeyboardViewController: UIInputViewController {
         let globeCfg = toolIconConfig()
         globe.setImage(UIImage(systemName: "globe", withConfiguration: globeCfg)?
                         .withRenderingMode(.alwaysTemplate), for: .normal)
-        globe.tintColor = UIColor.rgb(17, 17, 17)
+        globe.tintColor = QPColor.ink
         globe.addAction(UIAction { [weak self] _ in self?.advanceToNextInputMode() },
                         for: .touchUpInside)
         // 无 SF Symbols 时退回文字（极少见），同样是单色
@@ -754,7 +754,7 @@ final class KeyboardViewController: UIInputViewController {
         // HTML 原型 .kbTool.copyBtn：连续复制一级开关，蓝色=开启；与「同步」无关
         let copyBtn = toolButton("")
         copyBtn.tag = 101
-        copyBtn.setImage(copyIcon(.black).withRenderingMode(.alwaysTemplate), for: .normal)
+        copyBtn.setImage(copyIcon(QPColor.ink).withRenderingMode(.alwaysTemplate), for: .normal)
         copyButton = copyBtn
         copyBtn.addAction(UIAction { [weak self] _ in self?.toggleContinuous() },
                           for: .touchUpInside)
@@ -789,7 +789,7 @@ final class KeyboardViewController: UIInputViewController {
         // 用户要求：删除键保留 76×38 横条，而且【要留底色】—— 让人一眼看出这是个按钮，
         // 其余工具键继续透明。底色用和功能键一致的浅灰，按下去会变深一点。
         deleteKey.backgroundColor = QPColor.keyBg
-        deleteKey.setTitleColor(UIColor.rgb(50, 53, 60), for: .normal)
+        deleteKey.setTitleColor(QPColor.ink, for: .normal)
         deleteKey.titleLabel?.font = .systemFont(ofSize: 19, weight: .medium)
         // 用户要求：删除键保留 76×38 横条，高度与其它工具键一致（38）
         deleteKey.widthAnchor.constraint(equalToConstant: 76).isActive = true
@@ -825,7 +825,7 @@ final class KeyboardViewController: UIInputViewController {
         let on = prefs.continuous
         // 整排图标都没有底色，所以「开着」用蓝色图标表示，与其它图标同一个位置、同一个大小
         b.backgroundColor = .clear
-        b.tintColor = on ? QPColor.blue : UIColor.rgb(17, 17, 17)
+        b.tintColor = on ? QPColor.blue : QPColor.ink
         b.layer.cornerRadius = QPTool.radius
         b.clipsToBounds = false
 
@@ -867,7 +867,7 @@ final class KeyboardViewController: UIInputViewController {
             b.setTitle(symbol, for: .normal)
             // 原型 .kbSym：28×32、#D4D6DE、圆角 8、字号 20
             b.titleLabel?.font = .systemFont(ofSize: 19, weight: .semibold)
-            b.setTitleColor(UIColor.rgb(17, 17, 17), for: .normal)
+            b.setTitleColor(QPColor.ink, for: .normal)
             b.backgroundColor = .clear
             b.layer.cornerRadius = QPTool.radius
             b.widthAnchor.constraint(equalToConstant: QPTool.size).isActive = true
@@ -880,7 +880,7 @@ final class KeyboardViewController: UIInputViewController {
         let more = QPHapticButton(type: .system)
         more.setTitle("⋯", for: .normal)
         more.titleLabel?.font = .systemFont(ofSize: 18, weight: .medium)
-        more.setTitleColor(UIColor.rgb(17, 17, 17), for: .normal)
+        more.setTitleColor(QPColor.ink, for: .normal)
         more.backgroundColor = .clear
         more.layer.cornerRadius = QPTool.radius
         more.widthAnchor.constraint(equalToConstant: QPTool.size).isActive = true
@@ -1425,7 +1425,10 @@ final class KeyboardViewController: UIInputViewController {
         newline.layer.cornerRadius = 9
         newline.widthAnchor.constraint(equalToConstant: 64).isActive = true
         newline.addAction(UIAction { [weak self] _ in
-            self?.insertText("\n")
+            // 「换行」≠「发送」：宿主 App 的「回车发送」只拦截恰好等于 \n 的
+            // 替换文本（粘贴多行文本不会触发发送是同一个原理）；前面垫一个
+            // 零宽空格让替换文本 != "\n"，宿主不发送、只插入真实换行。
+            self?.insertText("\u{200B}\n")
         }, for: .touchUpInside)
         bar.addArrangedSubview(newline)
 
@@ -1440,6 +1443,7 @@ final class KeyboardViewController: UIInputViewController {
         // ★ 发送 = 真的发送消息（等价按系统回车），不是「发到电脑」。
         //   之前这里调的是 sendInputTextToPc()，用户一按就把聊天内容推到电脑上去了。
         //   要发到电脑请长按（弹出「发送到电脑」菜单）或从 ⋯ 菜单里选。
+        //   与「换行」的区别见上方 newline 注释（零宽空格避开回车发送）。
         send.addAction(UIAction { [weak self] _ in
             self?.insertText("\n")
         }, for: .touchUpInside)
@@ -2304,7 +2308,7 @@ final class KeyboardViewController: UIInputViewController {
         let b = QPHapticButton(type: .system)
         b.setTitle(title, for: .normal)
         b.titleLabel?.font = .systemFont(ofSize: 17, weight: .medium)
-        b.setTitleColor(.black, for: .normal)
+        b.setTitleColor(QPColor.ink, for: .normal)
         // 用户要求：整排图标背景统一 —— 一律去掉底色，只留图标本身
         b.backgroundColor = .clear
         b.layer.cornerRadius = QPTool.radius
@@ -2507,6 +2511,11 @@ final class QPHapticButton: UIButton {
 
 enum QPColor {
     static let bg = UIColor.rgb(243, 244, 249)
+    /// 自适应“墨色”：浅色模式近黑、深色模式近白 —— 键盘根视图透明后
+    /// 图标/文字直接画在系统玻璃底上，深色模式下深色图标会看不见
+    static let ink = UIColor { tc in
+        tc.userInterfaceStyle == .dark ? UIColor.rgb(240, 241, 245) : UIColor.rgb(17, 17, 17)
+    }
     static let blue = UIColor.rgb(10, 124, 255)
     static let blueSoft = UIColor.rgb(232, 241, 255)
     static let green = UIColor.rgb(52, 199, 89)
