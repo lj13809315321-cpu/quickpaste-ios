@@ -93,6 +93,9 @@ final class KeyboardViewController: UIInputViewController {
     private var undoStack: [String] = []
     private var spaceOriginX: CGFloat = 0
     private var spaceLastSteps = 0
+    /// ✕ 键左滑逐字符退删的位移基准与已删步数（对齐空格滑光标的手感）
+    private var deleteOriginX: CGFloat = 0
+    private var deleteDeletedSteps = 0
     /// 空格滑光标的离散步进震动：选择反馈器专用于「一次一格」的场景，
     /// 系统会自动节流，快速滑动不会震成一团。
     private var cursorFeedback: UISelectionFeedbackGenerator?
@@ -806,10 +809,15 @@ final class KeyboardViewController: UIInputViewController {
         let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(restoreInput))
         swipeDown.direction = .down
         deleteKey.addGestureRecognizer(swipeDown)
-        // 用户要求（对齐搜狗输入法）：清除键往左滑也清空输入栏，与上滑清空等效；下滑恢复保留
-        let swipeLeft = UISwipeGestureRecognizer(target: self, action: #selector(clearInput))
-        swipeLeft.direction = .left
-        deleteKey.addGestureRecognizer(swipeLeft)
+        // 用户要求（对齐搜狗输入法）：按住 ✕ 往左滑，按滑动距离逐字符退删
+        //（每 10pt 删一个字，光标跟着回退）；上滑清空 / 下滑恢复 /
+        // 1 秒长按快捷菜单 / 单击删一个字全部保留。
+        let deleteSlide = UILongPressGestureRecognizer(target: self,
+                                                       action: #selector(handleDeleteSlide(_:)))
+        deleteSlide.minimumPressDuration = 0.15
+        deleteSlide.allowableMovement = .greatestFiniteMagnitude
+        deleteSlide.cancelsTouchesInView = false
+        deleteKey.addGestureRecognizer(deleteSlide)
         let holdDelete = UILongPressGestureRecognizer(target: self,
                                                       action: #selector(handleMenuPress(_:)))
         holdDelete.minimumPressDuration = 1.0
@@ -2247,6 +2255,32 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     // MARK: - 交互
+
+    /// ✕ 键左滑逐字符退删（搜狗同款）：按住后向左滑，每 10pt 删一个字符，
+    /// 光标跟着回退；往右回滑不恢复（已删字符无法恢复）。
+    /// 与「上滑清空 / 下滑恢复 / 1 秒长按菜单 / 单击删一个字」并存。
+    @objc private func handleDeleteSlide(_ g: UILongPressGestureRecognizer) {
+        let x = g.location(in: view).x
+        switch g.state {
+        case .began:
+            deleteOriginX = x
+            deleteDeletedSteps = 0
+        case .changed:
+            // 只统计向左的净位移；一次changed最多补删 16 个字符防失控
+            let steps = max(0, Int((deleteOriginX - x) / 10))
+            let delta = steps - deleteDeletedSteps
+            if delta > 0 {
+                for _ in 0..<min(delta, 16) { textDocumentProxy.deleteBackward() }
+                deleteDeletedSteps = steps
+                if prefs.cursorHaptic {
+                    let f = UISelectionFeedbackGenerator()
+                    for _ in 0..<min(delta, 4) { f.selectionChanged() }
+                }
+            }
+        default:
+            break
+        }
+    }
 
     @objc private func handleSpace(_ g: UILongPressGestureRecognizer) {
         let x = g.location(in: view).x
