@@ -97,10 +97,9 @@ jobs:
           if-no-files-found: error
 
   ipa:
-    # runner 池选择（两个池都遇到过「排队 15 分钟被取消」的容量故障，
-    # 哪个可用用哪个：失败时优先 rerun，再考虑切池）。
-    # 2026-11-10 00:30：macos-15-intel 连续两次 run 秒取消（池故障），暂回 macos-15。
-    runs-on: macos-15
+    # 2026-11-10 深夜三连失败的真因是 QPExport.swift 一行编译错误（CGRect.fill），
+    # 不是 runner 池——v1.8.13 同池构建成功。固定 Intel 池，避开 arm64 拥塞。
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 

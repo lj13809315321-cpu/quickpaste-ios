@@ -188,9 +188,9 @@ enum QPExport {
         let height = ceil(bodyRect.height) + titleH + 64
         let size = CGSize(width: width * scale, height: height * scale)
 
-        let img = UIGraphicsImageRenderer(size: size).image { _ in
+        let img = UIGraphicsImageRenderer(size: size).image { ctx in
             UIColor.white.setFill()
-            CGRect(origin: .zero, size: size).fill()
+            ctx.fill(CGRect(origin: .zero, size: size))
             let headStr = head(items.count)
             headStr.draw(at: CGPoint(x: 24 * scale, y: 24 * scale), withAttributes: titleAttr)
             (text as NSString).draw(
