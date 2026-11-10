@@ -4,6 +4,7 @@ import AVFoundation
 import AVKit
 import SwiftUI
 import Combine
+import Network
 
 // MARK: - PiP 小窗里画什么（自定义界面，没有任何播放控件）
 
@@ -170,11 +171,20 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     private var watchOnly = false
     /// 最近已经推到电脑的文本，避免同一条反复 POST
     private var pushedRecent: [String] = []
+    // v1.8.18 断网守卫：主 App 侧同样监听 Wi-Fi（推电脑前先看网络，没有 Wi-Fi 就不空跑请求）
+    private let netMonitor = NWPathMonitor()
+    private var netWiFiOK = true
 
     private override init() {
         super.init()
         // App 是共享通道的唯一写入方，读不到时用内存里的记录继续累积
         QPSharedHistory.memoryFallback = true
+        netMonitor.pathUpdateHandler = { [weak self] path in
+            let ok = path.status == .satisfied &&
+                (path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet))
+            DispatchQueue.main.async { self?.netWiFiOK = ok }
+        }
+        netMonitor.start(queue: DispatchQueue(label: "mozhi.app.netmonitor"))
     }
 
     // MARK: - 开启
@@ -525,6 +535,9 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         // v1.8.14「连接电脑」总开关（两端共用，权威状态在共享通道 syncOff）：
         // 主 App 设置页或键盘快捷菜单任一处断开，这里都不再自动推。
         guard !QPSharedHistory.syncOff() else { return }
+        // v1.8.18 断网守卫：开关开着且手机没有 Wi-Fi（断网 / 只剩蜂窝）时不推，
+        // 推了也连不上电脑，白白空跑请求。回 Wi-Fi 后新复制的内容自然恢复推送。
+        if QPSharedHistory.netGuardOn() && !netWiFiOK { return }
         guard !pushedRecent.contains(text) else { return }
         pushedRecent.append(text)
         if pushedRecent.count > 30 { pushedRecent.removeFirst(pushedRecent.count - 30) }

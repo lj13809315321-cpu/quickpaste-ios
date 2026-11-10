@@ -42,10 +42,18 @@ enum QPSharedHistory {
         /// 最后一次认定的值，只在剪贴板带来「更新的」值时才更新，普通复制冲掉
         /// 自定义类型也不会让开关回弹。
         var syncOffAt: Double? = nil
+        /// v1.8.18「断网自动暂停」开关（true = 手机没有 Wi-Fi 时自动停止同步轮询）。
+        /// 与 syncOff 同一套权威/时间戳机制：App 设置页与键盘设置页共用一个状态，
+        /// 谁改了另一端跟随。默认开（nil = 开）—— 断了网就不该再空转轮询浪费电。
+        var netGuard: Bool? = nil
+        /// 最后改 netGuard 的时间戳（秒），机制同 syncOffAt。
+        var netGuardAt: Double? = nil
 
         var isBlocked: Bool { blocked == true }
         var isWanted: Bool { want == true }
         var isSyncOff: Bool { syncOff == true }
+        /// nil 视为默认开启。
+        var isNetGuardOn: Bool { netGuard != false }
 
         /// 第 index 条的收录时刻（毫秒）。旧版本写的 / 剪贴板兜底通道没有时间戳 → nil
         func timeMS(at index: Int) -> Double? {
@@ -259,6 +267,53 @@ enum QPSharedHistory {
         var p = read()
         p.beatAt = Date().timeIntervalSince1970
         write(p, keeping: nil)
+    }
+
+    // MARK: 「断网自动暂停」开关（v1.8.18）—— 机制与 syncOff 相同
+
+    private static var _localNetGuard = true
+    private static var _localNetGuardAt: Double = 0
+    private static var _netInit = false
+    private static let udNetGuard = "qp.netGuard"
+    private static let udNetGuardAt = "qp.netGuardAt"
+
+    private static func ensureNetInit() {
+        if _netInit { return }
+        _netInit = true
+        if UserDefaults.standard.object(forKey: udNetGuard) != nil {
+            _localNetGuard = UserDefaults.standard.bool(forKey: udNetGuard)
+        }
+        _localNetGuardAt = UserDefaults.standard.double(forKey: udNetGuardAt)
+    }
+
+    /// 读「断网自动暂停」是否开启。优先认共享通道里更新的值；无任何记录时默认开。
+    static func netGuardOn() -> Bool {
+        ensureNetInit()
+        var p: Payload?
+        if let g = readGroup() { p = g }
+        else if let pb = readPasteboard() { p = pb }
+        if let p = p, let on = p.netGuard, let at = p.netGuardAt, at > _localNetGuardAt {
+            _localNetGuard = on
+            _localNetGuardAt = at
+            UserDefaults.standard.set(on, forKey: udNetGuard)
+            UserDefaults.standard.set(at, forKey: udNetGuardAt)
+        }
+        return _localNetGuard
+    }
+
+    /// 写「断网自动暂停」开关：共享通道 + 本进程立即生效，另一端跟随。
+    @discardableResult
+    static func setNetGuard(_ on: Bool) -> Bool {
+        ensureNetInit()
+        var p = read()
+        p.netGuard = on
+        p.netGuardAt = Date().timeIntervalSince1970
+        _localNetGuard = on
+        _localNetGuardAt = p.netGuardAt ?? 0
+        UserDefaults.standard.set(on, forKey: udNetGuard)
+        UserDefaults.standard.set(_localNetGuardAt, forKey: udNetGuardAt)
+        write(p, keeping: UIPasteboard.general.string)
+        return true
     }
 
     /// 清空共享记录。没有 App Group 时**不写系统剪贴板**：

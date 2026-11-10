@@ -249,7 +249,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("墨指 v1.8.17 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.18 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -335,6 +335,9 @@ struct SyncSettingsView: View {
     /// v1.8.14「连接电脑」总开关：两端共用共享通道字段（QPSharedHistory.syncOff），
     /// 键盘下次弹出时跟随这里的改动；键盘里改了，这里进页面时也会刷新。
     @State private var syncOn = !QPSharedHistory.syncOff()
+    /// v1.8.18「断网自动暂停」开关：断开 Wi-Fi（或只剩流量）时停止同步轮询/推送，
+    /// 回 Wi-Fi 自动恢复。两端共用（QPSharedHistory.netGuard）。
+    @State private var netGuard = QPSharedHistory.netGuardOn()
     @State private var draft = ""
     @State private var status = "未检测"
 
@@ -346,6 +349,12 @@ struct SyncSettingsView: View {
                         QPSharedHistory.setSyncOff(!on)
                     }
                 Text("一个开关管两端：关掉后主 App 不再自动推送（含画中画后台收录），键盘也不再轮询拉取、不再自动推送——键盘下次弹出即生效；键盘里改了，回到这页也会刷新。\n断开后手机照常使用键盘，手动「立即检测 / 立即同步」仍可临时连一次。")
+                    .font(.footnote).foregroundColor(.secondary)
+                Toggle("断开 Wi-Fi 自动暂停同步（两端共用）", isOn: $netGuard)
+                    .onChange(of: netGuard) { on in
+                        QPSharedHistory.setNetGuard(on)
+                    }
+                Text("开着时：手机断开 Wi-Fi（断网或只剩流量）就自动停止同步轮询与推送，不再反复「连接中/失败」闪来闪去，也不浪费流量和电量；回到 Wi-Fi 自动恢复。关掉则断网也照常尝试连接。键盘设置里是同一个开关。")
                     .font(.footnote).foregroundColor(.secondary)
             }
             Section("连接状态") {
@@ -377,6 +386,7 @@ struct SyncSettingsView: View {
         .onAppear {
             draft = savedURL.isEmpty ? "http://192.168.1.2:8787" : savedURL
             syncOn = !QPSharedHistory.syncOff()   // 键盘端改过开关 → 进页面刷新
+            netGuard = QPSharedHistory.netGuardOn() // v1.8.18：同上
         }
     }
 
@@ -589,7 +599,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("墨指 v1.8.17 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.18 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

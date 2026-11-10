@@ -1,6 +1,7 @@
 import UIKit
 import ImageIO
 import NaturalLanguage
+import Network
 
 /// 墨指 v1.8.17 真·系统键盘（iOS Keyboard Extension）。
 ///
@@ -23,6 +24,12 @@ final class KeyboardViewController: UIInputViewController {
     private var lastSync: Date?
     private var backend = ""
     private var pollTimer: Timer?
+    // MARK: v1.8.18 断网自动暂停
+    /// 监听手机网络：没有 Wi-Fi（断网或只剩蜂窝）时，开关开着就自动停止同步轮询，
+    /// 不再空转刷新；回到 Wi-Fi 自动恢复。开关在 App 设置页与键盘设置页都有。
+    private let netMonitor = NWPathMonitor()
+    private var netWiFiOK = true          // 当前是否有 Wi-Fi/有线局域网
+    private var netGuardPaused = false    // 因断网守卫暂停过轮询（恢复时要补拉一次）
     /// 主列表实际渲染的数据：本机复制历史 + 画中画抓取记录 + 电脑同步记录
     private var displayItems: [SyncItem] = []
 
@@ -139,6 +146,18 @@ final class KeyboardViewController: UIInputViewController {
         //（Apple 开发者论坛 thread 793686 的官方适配结论）。按钮/卡片自带底色不受影响。
         view.backgroundColor = .clear
 
+        // v1.8.18：监听网络。断开 Wi-Fi（断网 / 只剩蜂窝）且开关开着 → 停止同步轮询；
+        // 回到 Wi-Fi → 自动恢复并补拉一次。开关在 App 设置页与键盘设置页（共享通道）。
+        netMonitor.pathUpdateHandler = { [weak self] path in
+            let ok = path.status == .satisfied &&
+                (path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet))
+            DispatchQueue.main.async {
+                self?.netWiFiOK = ok
+                self?.applyNetGuard()
+            }
+        }
+        netMonitor.start(queue: DispatchQueue(label: "mozhi.netmonitor"))
+
         // 路线 E：底部快捷条先就位，root 的底部约束要抬到它之上
         setupKBButtonBar()
         heightConstraint = view.heightAnchor.constraint(equalToConstant: prefs.height + kbBarHeight)
@@ -201,6 +220,8 @@ final class KeyboardViewController: UIInputViewController {
         refreshList()
         pull(showConnecting: true)
         startPolling()
+        // v1.8.18：键盘弹出时按当前网络再调度一次（没 Wi-Fi 且开关开 → 停轮询并显示状态）
+        applyNetGuard()
         syncCaptureState()
         QPHapticButton.hapticEnabled = prefs.cursorHaptic
     }
@@ -396,6 +417,14 @@ final class KeyboardViewController: UIInputViewController {
             if showConnecting { refreshHead() }
             return
         }
+        // v1.8.18 断网守卫：开关开着且没有 Wi-Fi 时不再发请求（手动强刷除外）。
+        // 断开 Wi-Fi 后列表就静止了，不会反复「连接中/失败」闪来闪去。
+        if !force, QPSharedHistory.netGuardOn(), !netWiFiOK {
+            syncState = "off"
+            syncError = "无 Wi-Fi · 断网自动暂停中（可在设置里关闭此行为）"
+            if showConnecting { refreshHead() }
+            return
+        }
         // v1.8.16：正在拉取时就不再叠加新请求，避免断网/弱网下请求堆积、反复回调
         // 触发列表重建，导致输入法卡顿。手动强刷（force）时若正在拉取也跳过，
         // 回调里会自然刷新。
@@ -503,6 +532,8 @@ final class KeyboardViewController: UIInputViewController {
     private func startPolling() {
         stopPolling()
         guard syncOn() && prefs.syncAuto else { return }
+        // v1.8.18 断网守卫：开关开着且当前没有 Wi-Fi（断网 / 只剩蜂窝）就不启动轮询
+        if QPSharedHistory.netGuardOn() && !netWiFiOK { return }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             self?.pull(showConnecting: false)
         }
@@ -511,6 +542,32 @@ final class KeyboardViewController: UIInputViewController {
     private func stopPolling() {
         pollTimer?.invalidate()
         pollTimer = nil
+    }
+
+    /// v1.8.18 断网守卫：网络变化时（键盘出现 / 网络切换回调）统一调度轮询。
+    /// - 开关开 + 无 Wi-Fi：停轮询（连接总开关不受影响，回 Wi-Fi 自动续上）
+    /// - 开关开 + 有 Wi-Fi：之前因断网停过 → 重新拉起轮询并补拉一次
+    /// - 开关关：一切照旧（断网也轮询，只是请求会失败）
+    private func applyNetGuard() {
+        guard syncOn() else { return }
+        let guardOn = QPSharedHistory.netGuardOn()
+        if guardOn && !netWiFiOK {
+            if pollTimer != nil || !netGuardPaused {
+                stopPolling()
+                netGuardPaused = true
+                syncState = "off"
+                syncError = "无 Wi-Fi · 断网自动暂停中（可在设置里关闭此行为）"
+                refreshHead()
+            }
+            return
+        }
+        if guardOn && netWiFiOK && netGuardPaused {
+            netGuardPaused = false
+            syncState = "connecting"
+            refreshHead()
+            startPolling()
+            pull(showConnecting: true, force: true)
+        }
     }
 
     private func sendTextToPc(_ text: String) {
@@ -1516,7 +1573,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.17 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.18 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -2477,6 +2534,7 @@ final class KeyboardViewController: UIInputViewController {
         filterOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         let tap = UITapGestureRecognizer(target: self, action: #selector(closeFilterMenu))
         tap.cancelsTouchesInView = false
+        tap.delegate = self
         filterOverlay.addGestureRecognizer(tap)
         view.addSubview(filterOverlay)
         filterBox.layer.cornerRadius = 18
@@ -2494,6 +2552,7 @@ final class KeyboardViewController: UIInputViewController {
         exportOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         let tap = UITapGestureRecognizer(target: self, action: #selector(closeExportMenu))
         tap.cancelsTouchesInView = false
+        tap.delegate = self
         exportOverlay.addGestureRecognizer(tap)
         view.addSubview(exportOverlay)
         exportBox.layer.cornerRadius = 18
@@ -2510,12 +2569,17 @@ final class KeyboardViewController: UIInputViewController {
         pickOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         let ptap = UITapGestureRecognizer(target: self, action: #selector(closePick))
         ptap.cancelsTouchesInView = false
+        // ★ v1.8.18 修复「勾选条目选不上」：ptap 必须挂 delegate，
+        //   点在条目（UIButton）上时手势不接收 —— 否则手势与按钮抢 touch，
+        //   手势识别成功还会把浮层关掉，表现就是「怎么点都选不上」。
+        ptap.delegate = self
         pickOverlay.addGestureRecognizer(ptap)
         view.addSubview(pickOverlay)
         pickBox.layer.cornerRadius = 18
         pickBox.clipsToBounds = true
         pickOverlay.addSubview(pickBox)
         pickScroll.translatesAutoresizingMaskIntoConstraints = false
+        pickList.translatesAutoresizingMaskIntoConstraints = false
         pickList.axis = .vertical
         pickList.spacing = 0
         pickScroll.addSubview(pickList)
@@ -2525,6 +2589,24 @@ final class KeyboardViewController: UIInputViewController {
         pickBar.spacing = 6
         pickBar.translatesAutoresizingMaskIntoConstraints = false
         pickBox.contentView.addSubview(pickBar)
+        // ★ v1.8.18：布局改成与快捷菜单 menuScroll 同款的约束方式。
+        //   旧版 openPick 里手动设 frame 且 translatesAutoresizingMaskIntoConstraints=false，
+        //   自动布局 pass 会把手设的 frame 清掉/错位，按钮收不到点击。
+        NSLayoutConstraint.activate([
+            pickScroll.leadingAnchor.constraint(equalTo: pickBox.contentView.leadingAnchor),
+            pickScroll.trailingAnchor.constraint(equalTo: pickBox.contentView.trailingAnchor),
+            pickScroll.topAnchor.constraint(equalTo: pickBox.contentView.topAnchor),
+            pickScroll.bottomAnchor.constraint(equalTo: pickBar.topAnchor, constant: -8),
+            pickBar.leadingAnchor.constraint(equalTo: pickBox.contentView.leadingAnchor, constant: 8),
+            pickBar.trailingAnchor.constraint(equalTo: pickBox.contentView.trailingAnchor, constant: -8),
+            pickBar.bottomAnchor.constraint(equalTo: pickBox.contentView.bottomAnchor, constant: -8),
+            pickBar.heightAnchor.constraint(equalToConstant: 44),
+            pickList.leadingAnchor.constraint(equalTo: pickScroll.contentLayoutGuide.leadingAnchor),
+            pickList.trailingAnchor.constraint(equalTo: pickScroll.contentLayoutGuide.trailingAnchor),
+            pickList.topAnchor.constraint(equalTo: pickScroll.contentLayoutGuide.topAnchor),
+            pickList.bottomAnchor.constraint(equalTo: pickScroll.contentLayoutGuide.bottomAnchor),
+            pickList.widthAnchor.constraint(equalTo: pickScroll.frameLayoutGuide.widthAnchor),
+        ])
     }
 
     @objc private func closePick() { pickOverlay.isHidden = true }
@@ -2720,17 +2802,10 @@ final class KeyboardViewController: UIInputViewController {
             pickBar.addArrangedSubview(b)
         }
         updatePickBar()
-        // 浮层定位：占满键盘上方区域，列表可滚动
+        // 浮层定位：占满键盘上方区域；列表内部由约束自撑（v1.8.18 起），不再手设 frame
         let b = view.bounds
         pickOverlay.frame = b
         pickBox.frame = CGRect(x: 8, y: 8, width: b.width - 16, height: b.height - 16)
-        let bw = pickBox.bounds.width
-        let bh = pickBox.bounds.height
-        pickScroll.frame = CGRect(x: 0, y: 0, width: bw, height: bh - 56)
-        pickScroll.contentSize = CGSize(width: bw, height: CGFloat(items.count) * 44)
-        pickBar.frame = CGRect(x: 8, y: bh - 50, width: bw - 16, height: 44)
-        pickList.frame = CGRect(x: 0, y: 0, width: pickScroll.contentSize.width,
-                                height: pickScroll.contentSize.height)
         pickOverlay.isHidden = false
         view.bringSubviewToFront(pickOverlay)
     }
@@ -3049,11 +3124,16 @@ extension KeyboardViewController: UIGestureRecognizerDelegate {
         true
     }
 
-    /// 菜单遮罩的「点外部关闭」不要吃掉菜单按钮自己的点击
+    /// 菜单遮罩的「点外部关闭」不要吃掉菜单按钮自己的点击。
+    /// ★ v1.8.18：勾选导出/筛选/导出菜单的遮罩同病同治 ——
+    ///   点在按钮上时手势一律不接收，否则「选不上条目」。
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldReceive touch: UITouch) -> Bool {
         guard gestureRecognizer.view === cardMenuOverlay ||
-              gestureRecognizer.view === menuOverlay else { return true }
+              gestureRecognizer.view === menuOverlay ||
+              gestureRecognizer.view === pickOverlay ||
+              gestureRecognizer.view === filterOverlay ||
+              gestureRecognizer.view === exportOverlay else { return true }
         var v: UIView? = touch.view
         while let cur = v {
             if cur is UIButton { return false }
@@ -3071,6 +3151,8 @@ extension KeyboardViewController: KeyboardSettingsDelegate {
         let title: String
         if !syncOn() {
             title = "已断开连接"
+        } else if QPSharedHistory.netGuardOn() && !netWiFiOK {
+            title = "无 Wi-Fi · 同步已暂停"
         } else {
             switch syncState {
             case "online": title = "已连接"
