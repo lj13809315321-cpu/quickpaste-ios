@@ -420,14 +420,16 @@ final class KeyboardViewController: UIInputViewController {
     /// v1.8.14：工具条 ⧉ 按钮删除时，跳主 App 的整套 openURL 代码一起删了。
     /// v1.8.24 恢复跳转时误加在「快捷操作」浮层里 —— 那个浮层唯一的入口是
     /// 长按底行「发送」键，用户根本看不到；v1.8.25 按用户指认的红框位置
-    /// 改到**长按工具条「⋯」**：单击 ⋯ 仍是完整设置界面，长按 0.6 秒
-    /// 直接进主 App「连续复制」Tab。版面一点没动、没加任何按钮。
+    /// 改到长按工具条那个键；v1.8.27 按用户要求把两个手势互换、并换图标：
+    ///   ★ 轻点「连续复制」图标 = 直接进主 App「连续复制」Tab
+    ///   ★ 长按 0.6 秒         = 打开完整设置界面（菜单，里面有 Link 入口）
+    /// 版面一点没动、没加任何按钮，只把「⋯」文字换成自绘双矩形图标。
     /// ★ URL scheme 已在 v1.8.17 改名，必须用 mozhi://（旧 quickpaste:// 失效）。
 
-    /// 长按工具条「⋯」= 打开主 App 的连续复制页。
+    /// 长按工具条「连续复制」图标 = 打开设置界面（菜单）。
     @objc private func moreLongPressed(_ g: UILongPressGestureRecognizer) {
         guard g.state == .began else { return }
-        openMainAppContinuous()
+        settings.show(.root)
     }
 
     /// v1.8.26：iOS 18 起系统把键盘扩展里的 `UIApplication.openURL(_:)`
@@ -448,7 +450,7 @@ final class KeyboardViewController: UIInputViewController {
             guard let self = self, self.viewIfLoaded?.window != nil else { return }
             let detail = trace.isEmpty ? "无可用路径" : trace.joined(separator: "+")
             self.showToast(tried
-                ? "已试 \(detail)；若没跳转，点设置页「打开 墨指 主 App」或桌面图标"
+                ? "已试 \(detail)；若没跳转，长按本图标进设置页点「打开 墨指 主 App」或点桌面图标"
                 : "跳转被系统拒绝（\(detail)）；请检查「允许完全访问」")
         }
     }
@@ -836,7 +838,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     /// 状态头整块已删掉：连接提示只占工具条上一个 9pt 小圆点，
-    /// 省下的 68px 全给剪贴板列表。小圆点插在「⋯」和右边黑色 ✕ 之间。
+    /// 省下的 68px 全给剪贴板列表。小圆点插在「连续复制」图标和右边黑色 ✕ 之间。
     private func buildStatusDot() {
         let holder = UIView()
         holder.translatesAutoresizingMaskIntoConstraints = false
@@ -985,7 +987,7 @@ final class KeyboardViewController: UIInputViewController {
         symScroll.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         toolbar.addArrangedSubview(symScroll)
 
-        // 连接状态小圆点：位置就在「⋯」和最右边黑色 ✕ 的中间
+        // 连接状态小圆点：位置就在「连续复制」图标和最右边黑色 ✕ 的中间
         buildStatusDot()
 
         let deleteKey = toolButton("✕")
@@ -1098,21 +1100,26 @@ final class KeyboardViewController: UIInputViewController {
             symStack.addArrangedSubview(b)
         }
         let more = QPHapticButton(type: .system)
-        more.setTitle("⋯", for: .normal)
-        more.titleLabel?.font = .systemFont(ofSize: 18, weight: .medium)
-        more.setTitleColor(QPColor.ink, for: .normal)
+        // v1.8.27：按用户要求把难看的横排三点「⋯」换成「连续复制」图标
+        // （自绘两个重叠矩形，与主 App 连续复制 Tab 的 rectangle.on.rectangle
+        //  同一形状；copyIcon 与漏斗/常用语同一套 24pt 画布画法，不会隐形）。
+        more.setImage(copyIcon(QPColor.ink).withRenderingMode(.alwaysTemplate), for: .normal)
+        more.tintColor = QPColor.ink
+        more.imageView?.contentMode = .scaleAspectFit
         more.backgroundColor = .clear
         more.layer.cornerRadius = QPTool.radius
         more.widthAnchor.constraint(equalToConstant: QPTool.size).isActive = true
         more.heightAnchor.constraint(equalToConstant: QPTool.size).isActive = true
-        // 「⋯」点一下 = 完整设置界面；v1.8.25 起长按 0.6 秒 = 直接打开主 App
-        // 的「连续复制」页（用户截红框指名的那个键，版面一点没动、没加按钮）。
-        more.addAction(UIAction { [weak self] _ in self?.settings.show(.root) }, for: .touchUpInside)
+        more.setContentCompressionResistancePriority(.required, for: .horizontal)
+        // ★ v1.8.27 手势互换：轻点 = 直接跳主 App「连续复制」页；
+        //   长按 0.6 秒 = 打开完整设置界面（菜单，首页第一行仍是 SwiftUI Link）。
+        more.addAction(UIAction { [weak self] _ in self?.openMainAppContinuous() },
+                       for: .touchUpInside)
         let holdMore = UILongPressGestureRecognizer(target: self,
                                                     action: #selector(moreLongPressed(_:)))
         holdMore.minimumPressDuration = 0.6
         holdMore.allowableMovement = 10
-        holdMore.cancelsTouchesInView = true   // 长按识别后不再触发上面的单击
+        holdMore.cancelsTouchesInView = true   // 长按识别后不再触发上面的轻点
         more.addGestureRecognizer(holdMore)
         symStack.addArrangedSubview(more)
 
@@ -1721,7 +1728,7 @@ final class KeyboardViewController: UIInputViewController {
         send.widthAnchor.constraint(equalToConstant: 66).isActive = true
         // ★ 发送 = 真的发送消息（等价按系统回车），不是「发到电脑」。
         //   之前这里调的是 sendInputTextToPc()，用户一按就把聊天内容推到电脑上去了。
-        //   要发到电脑请长按（弹出「发送到电脑」菜单）或从 ⋯ 菜单里选。
+        //   要发到电脑请长按本键（弹出「发送到电脑」菜单）。
         //   与「换行」的区别见上方 newline 注释（零宽空格避开回车发送）。
         send.addAction(UIAction { [weak self] _ in
             self?.insertText("\n")
@@ -1794,12 +1801,12 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.26 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.27 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
         })
-        // v1.8.25：菜单里的「打开 墨指 主 App」已移到长按工具条「⋯」，
+        // v1.8.27：菜单里的「打开 墨指 主 App」已移到轻点工具条「连续复制」图标，
         // 这里不再堆菜单项（用户反馈工具条/菜单太挤、那一行根本看不到）。
         menuStack.addArrangedSubview(menuRow("⟳ 立即同步（\(items.count) 条）") { [weak self] in
             self?.pull(showConnecting: true, force: true); self?.closeMenu()
@@ -3667,7 +3674,7 @@ private extension UIColor {
 }
 
 /// 工具条上所有按钮共用同一套尺寸，避免「大小不一」：
-/// 收起键盘 / 地球 / 连续复制 / 符号 / ⋯ 全部 38×38、圆角 10、图标 24pt 画布；
+/// 收起键盘 / 地球 / 符号 / 连续复制键 全部 38×38、圆角 10、图标 24pt 画布；
 /// 删除键按用户要求保留 76×38 的横条（高度与其它键一致）。
 enum QPTool {
     static let size: CGFloat = 38

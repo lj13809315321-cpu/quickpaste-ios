@@ -28,7 +28,7 @@ enum AppTutorials {
                     sections: [
             ("首次启用", "1. 打开系统「设置」。\n2. 通用 → 键盘 → 键盘 → 添加新键盘。\n3. 选择 墨指，开启「允许完全访问」。"),
             ("切换与插入", "在任意 App 点输入框，长按地球键选 墨指。点记录或常用语即在光标处插入；顶部地球按钮可切下一个键盘。"),
-            ("发送到电脑", "键盘底行蓝色「发送」= 发送消息（等同回车）。要发到电脑请长按「发送」，或从 ⋯ 菜单选「发送输入框文字 / 剪贴板文字 / 图片到电脑」。"),
+            ("发送到电脑", "键盘底行蓝色「发送」= 发送消息（等同回车）。要发到电脑请长按「发送」键，在弹出的菜单里选「发送输入框文字 / 剪贴板文字 / 图片到电脑」。"),
             ("完全访问的用途", "键盘读取剪贴板、访问局域网同步服务与本机历史都需要它。密码框会强制使用系统键盘，属系统限制。")
         ]),
         AppTutorial(id: "history", title: "剪贴板历史",
@@ -88,7 +88,7 @@ struct AppRootView: View {
             }.tag(2)
             SettingsView().tabItem { Label("设置", systemImage: "gearshape") }.tag(3)
         }
-        // v1.8.25：入口改为「长按工具条 ⋯」→ mozhi://tab/pip，只落到
+        // v1.8.27：入口改为「轻点工具条连续复制图标」→ mozhi://tab/pip，只落到
         // 连续复制 Tab；旧 mozhi://pip/start 仍是「自动开画中画」的链路。
         // ★ 不能用 absoluteString.contains("pip") 判定：新 URL 也含 pip，
         //   会把只想看一眼页面的用户强行拉起系统画中画。
@@ -582,7 +582,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("墨指 v1.8.26 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.27 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -753,7 +753,7 @@ struct KbdSettingsView: View {
             // 局域网同步」入口 —— 设置主表里已经各有一份，点开「键盘设置」又看到
             // 一模一样的四个入口就是用户说的「版面重复」。
             Section("键盘开关位置") {
-                Text("所有键盘本地开关都在【键盘内部】：切到 墨指 键盘 → 点工具条「⋯」→ 设置 → 键盘设置。")
+                Text("所有键盘本地开关都在【键盘内部】：切到 墨指 键盘 → 长按工具条「连续复制」图标 → 设置 → 键盘设置。")
                     .font(.subheadline)
                 Text("包含：悬浮窗关闭按钮、点击直接切换、显示新内容提示、显示清空按钮、空格滑动移光标、发送后自动收起、连续复制、复制后移到最前、键盘增高、列数、工具条对齐。")
                     .font(.footnote).foregroundColor(.secondary)
@@ -837,7 +837,7 @@ struct SymSettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 .onChange(of: showCount) { _ in syncToKeyboard() }
-                Text("最少 2 个、最多 5 个；空间不足时后面的自动收进「⋯」。这一项以前只是文字说明，现在能真正设置了。")
+                Text("最少 2 个、最多 5 个；空间不足时后面的可在符号区左右滑动查看。这一项以前只是文字说明，现在能真正设置了。")
                     .font(.footnote).foregroundColor(.secondary)
             }
             Section("工具条按钮对齐") {
@@ -855,7 +855,7 @@ struct SymSettingsView: View {
                 Button("立即同步到键盘") {
                     syncToKeyboard()
                 }
-                Text("这里和键盘「⋯ → 快捷符号」是同一份设置：任一端改了，另一端下次出现时跟随。改完键盘下次弹出即生效；如果键盘正开着，点一下上面的「立即同步到键盘」。")
+                Text("这里和键盘「长按连续复制图标 → 快捷符号」是同一份设置：任一端改了，另一端下次出现时跟随。改完键盘下次弹出即生效；如果键盘正开着，点一下上面的「立即同步到键盘」。")
                     .font(.footnote).foregroundColor(.secondary)
             }
         }
@@ -906,7 +906,7 @@ struct ContinuousView: View {
                     Text("1. 打开主 App「连续复制」页，点「开启连续复制」（后台小窗自动出现）")
                     Text("2. 切到任意 App 继续复制，记录持续增加，键盘里也能看到")
                 }
-                Text("键盘侧开关在「⋯ → 设置 → 连续复制」的「键盘可见时自动抓取」。")
+                Text("键盘侧开关在「长按连续复制图标 → 设置 → 连续复制」的「键盘可见时自动抓取」。")
                     .font(.footnote).foregroundColor(.secondary)
             }
             Section("存储位置") {
@@ -977,7 +977,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("墨指 v1.8.26 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.27 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }
