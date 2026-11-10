@@ -68,6 +68,12 @@ enum QPSharedHistory {
         /// iOS 18+ 系统可能拦掉键盘扩展的所有跳转，主 App 手动打开时读到它
         /// 就自动切到连续复制页并清除 —— 跳不成也能一键直达，且不开画中画。
         var pendingTabPip: Double? = nil
+        /// v1.8.29：键盘轻点「连续复制」图标时写的一次性「开/关切换」指令。
+        /// 轻点那条跳转是按 bundle id 把 App 拉到前台，URL 不一定送到主 App；
+        /// App 从后台被激活时根视图 onAppear 也不会再触发 —— 所以不能靠
+        /// onOpenURL 带动作，只能由共享通道带一条指令，主 App 一进前台就消费。
+        /// 90 秒内有效、读到即清除；主 App 按自身 running 状态决定开还是关。
+        var pendingPiPToggle: Double? = nil
         /// v1.8.22 快捷符号设置（主 App 与键盘共用一份）：符号列表 / 工具条显示几个 / 对齐。
         /// 放在这里而不是各自 UserDefaults，才能实现「App 里改了键盘立即生效」。
         var sharedSymbols: [String]? = nil
@@ -473,6 +479,26 @@ enum QPSharedHistory {
         guard let at = p.pendingTabPip,
               Date().timeIntervalSince1970 - at < 600 else { return false }
         p.pendingTabPip = nil
+        write(p, keeping: UIPasteboard.general.string)
+        return true
+    }
+
+    // MARK: v1.8.29「按一下开、再按一下关」的一次性指令
+
+    /// 键盘轻点工具条「连续复制」图标时调用，与 pendingTabPip 一起带过去。
+    static func markPendingPiPToggle() {
+        var p = read()
+        p.pendingPiPToggle = Date().timeIntervalSince1970
+        write(p, keeping: UIPasteboard.general.string)
+    }
+
+    /// 主 App 在 onOpenURL / onAppear / scenePhase 变 active 时调用。
+    /// 90 秒内的指令才生效，读到即消费，保证只执行一次、不会反复开关。
+    static func consumePendingPiPToggle() -> Bool {
+        var p = read()
+        guard let at = p.pendingPiPToggle,
+              Date().timeIntervalSince1970 - at < 90 else { return false }
+        p.pendingPiPToggle = nil
         write(p, keeping: UIPasteboard.general.string)
         return true
     }

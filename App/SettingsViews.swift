@@ -57,7 +57,7 @@ enum AppTutorials {
                     summary: "打开主 App「连续复制」页点开启，或用键盘设置里的「键盘可见时自动抓取」开关。",
                     sections: [
             ("先选保存位置", "键盘设置 → 连续复制，可选择「剪贴板历史」或「常用语」。"),
-            ("开启连续复制", "1. 确认键盘已开启完全访问。\n2. 轻点键盘工具条「连续复制」图标：直接跳到本页并自动开启；也可在本页手动点「开启连续复制」（后台小窗自动出现）。\n3. 切回其他 App 继续复制，记录会持续增加。"),
+            ("开启连续复制", "1. 确认键盘已开启完全访问。\n2. 轻点键盘工具条「连续复制」图标：跳到本页并自动开启，再轻点一次则关闭；也可在本页手动点「开启连续复制」/「结束连续复制」。\n3. 切回其他 App 继续复制，记录会持续增加。"),
             ("iOS 限制", "iOS 不允许第三方键盘显示系统级悬浮窗或后台常驻服务，抓取发生在每次呼出键盘时，不是后台静默监控。")
         ]),
         AppTutorial(id: "calc", title: "键盘计算器",
@@ -74,6 +74,9 @@ enum AppTutorials {
 
 struct AppRootView: View {
     @State private var tab = 0
+    /// v1.8.29：图一那条跳转是「把已在后台的 App 激活」，
+    /// 此时 onAppear 不触发，只有 scenePhase 会变 active —— 必须监听它。
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         TabView(selection: $tab) {
@@ -88,12 +91,16 @@ struct AppRootView: View {
             }.tag(2)
             SettingsView().tabItem { Label("设置", systemImage: "gearshape") }.tag(3)
         }
-        // ★ v1.8.28：v1.8.27 的跳转链路（键盘四路径 + 工具条轻点 + 设置页
-        //   SwiftUI Link）已由用户真机验证「能跳转」，这一版**一行都不动**：
+        // ★ v1.8.29：v1.8.27 的跳转链路（键盘四路径 + 工具条轻点 + 设置页
+        //   SwiftUI Link）已由用户真机验证「能跳转」，**一行都不动**：
         //   键盘仍发 mozhi://tab/pip?from=keyboard-more，Link 仍发
-        //   mozhi://tab/pip?from=keyboard-link，旧代码一套不搬回来。
-        //   本版只改「跳过去之后做什么」：从「只切到连续复制 Tab」改成
-        //   「切到该 Tab 并直接开启连续复制（画中画 + 后台收录）」。
+        //   mozhi://tab/pip?from=keyboard-link。
+        // ★ 图一真因：轻点能跳，但按 bundle id 拉起 App 时 URL 不投递，
+        //   且 App 从后台被激活时根视图 onAppear 不会触发 —— v1.8.28 挂在
+        //   onOpenURL / onAppear 的 start() 一次都没跑到，所以「没自动开」。
+        //   图二 SwiftUI Link 由系统亲自投递 URL、App 完整前台，所以能开。
+        //   本版改由共享通道带一次性「开/关指令」，主 App 在
+        //   onOpenURL / onAppear / scenePhase active 三处任一处消费。
         //   旧 mozhi://pip/start 分支原样保留，仅作老链接兼容，不作为入口。
         // ★ 不能用 absoluteString.contains("pip") 判定路径，按 host 分流。
         .onOpenURL { url in
@@ -105,33 +112,51 @@ struct AppRootView: View {
                     PiPManager.shared.start()
                 }
             } else if host == "tab", url.path.contains("pip") {
-                // v1.8.28：轻点工具条「连续复制」图标 / 设置页 SwiftUI Link
-                // 都是用户明确要连续复制的动作，落到本页就直接开启。
-                // 不写共享通道、不改 URL、不启用旧链路：start() 自带
-                // guard !running, !starting，连续复制已在跑时不会重启。
                 tab = 2
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
-                    PiPManager.shared.start()
+                if !self.applyPendingPiPToggle(),
+                   !url.absoluteString.contains("from=keyboard-more") {
+                    // 设置页 SwiftUI Link：系统确实把 URL 送到了，
+                    // 保持 v1.8.28 已验证成功的「进去就开」行为。
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                        PiPManager.shared.start()
+                    }
                 }
             }
         }
         .onAppear {
-            // v1.8.26：iOS 18+ 可能拦掉键盘扩展的全部跳转方式。只要键盘发起过
-            // 跳转，用户手动点桌面图标进来，这里一样直接落到「连续复制」Tab；
-            // v1.8.28：既然点过图标就是要用连续复制，兜底也顺手直接开启。
-            // 标记一次性消费，不会变成「以后每次打开 App 都自动开」。
-            let pending = QPSharedHistory.consumePendingTabPip()
-            if pending { tab = 2 }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                if pending {
-                    // 跳被拦时的兜底，或冷启动首次 start() 尚未拿到窗口时的重试
-                    PiPManager.shared.start()
-                } else {
-                    // 上一次手动开过 PiP 的恢复路径，行为与 v1.8.27 一致
+            let didToggle = self.applyPendingPiPToggle()
+            // v1.8.26 兜底：跳被拦时手动点桌面图标也直达连续复制页。
+            if QPSharedHistory.consumePendingTabPip() { tab = 2 }
+            if !didToggle {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                     PiPManager.shared.startIfWanted()
                 }
             }
         }
+        .onChange(of: scenePhase) { phase in
+            // ★ 图一那条路真正会走到的入口：App 已在后台、被键盘拉回前台时
+            //   onAppear 不触发，只有这里会变 active。
+            if phase == .active { _ = self.applyPendingPiPToggle() }
+        }
+    }
+
+    /// 消费键盘写的一次性开关指令：当前在跑就关，没在跑就开。
+    /// 0.9s 等窗口就绪，1.8s 幂等补偿（冷启动首次可能拿不到 keyWindow）；
+    /// 两次都按「期望状态」判断，不会把刚开的又关掉。
+    private func applyPendingPiPToggle() -> Bool {
+        guard QPSharedHistory.consumePendingPiPToggle() else { return false }
+        tab = 2
+        let shouldRun = !PiPManager.shared.running
+        for delay in [0.9, 1.8] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                if shouldRun {
+                    if !PiPManager.shared.running { PiPManager.shared.start() }
+                } else {
+                    if PiPManager.shared.running { PiPManager.shared.stop() }
+                }
+            }
+        }
+        return true
     }
 }
 
@@ -598,7 +623,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("墨指 v1.8.28 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.29 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -993,7 +1018,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("墨指 v1.8.28 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.29 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

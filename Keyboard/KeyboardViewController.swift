@@ -421,7 +421,7 @@ final class KeyboardViewController: UIInputViewController {
     /// v1.8.24 恢复跳转时误加在「快捷操作」浮层里 —— 那个浮层唯一的入口是
     /// 长按底行「发送」键，用户根本看不到；v1.8.25 按用户指认的红框位置
     /// 改到长按工具条那个键；v1.8.27 按用户要求把两个手势互换、并换图标：
-    ///   ★ 轻点「连续复制」图标 = 直接进主 App「连续复制」Tab
+    ///   ★ 轻点「连续复制」图标 = 进主 App 连续复制页，按一下开、再按一下关
     ///   ★ 长按 0.6 秒         = 打开完整设置界面（菜单，里面有 Link 入口）
     /// 版面一点没动、没加任何按钮，只把「⋯」文字换成自绘双矩形图标。
     /// ★ URL scheme 已在 v1.8.17 改名，必须用 mozhi://（旧 quickpaste:// 失效）。
@@ -443,6 +443,11 @@ final class KeyboardViewController: UIInputViewController {
         guard let url = URL(string: "mozhi://tab/pip?from=keyboard-more") else { return }
         // 兜底：哪怕系统把下面四条全拦了，用户手动点桌面图标进 App 也直达连续复制页
         QPSharedHistory.markPendingTabPip()
+        // v1.8.29：上面这条跳转按 bundle id 拉起 App 时不携带 URL，
+        // App 从后台激活也不触发 onAppear。改由共享通道带一条开关指令，
+        // 主 App 一进前台就消费：没在跑就开、正在跑就关。
+        // ★ 下面四路径 / URL / 手势 / 图标一个字都不改。
+        QPSharedHistory.markPendingPiPToggle()
         var trace: [String] = []
         let tried = openURLFromKeyboard(url, trace: &trace)
         // 键盘还挂在窗口上 = 没跳走；真被主 App 盖住后本扩展会挂起，这段通常不执行。
@@ -1801,13 +1806,14 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.28 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.29 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
         })
         // v1.8.27：菜单里的「打开 墨指 主 App」已移到轻点工具条「连续复制」图标，
         // v1.8.28：轻点该图标现在会直接开启连续复制；跳转实现保持 v1.8.27 原样。
+        // v1.8.29：改成共享通道一次性开关指令，再按一下即关闭。
         // 这里不再堆菜单项（用户反馈工具条/菜单太挤、那一行根本看不到）。
         menuStack.addArrangedSubview(menuRow("⟳ 立即同步（\(items.count) 条）") { [weak self] in
             self?.pull(showConnecting: true, force: true); self?.closeMenu()

@@ -194,7 +194,7 @@ public final class ImeSettings {
 
     private void renderRoot() {
         body.addView(bigTitle("设置"));
-        body.addView(foot("墨指 v1.8.28 · 真·系统输入法 · 按 HTML 最新版效果原生实现，无网页、无演示动画"));
+        body.addView(foot("墨指 v1.8.29 · 真·系统输入法 · 按 HTML 最新版效果原生实现，无网页、无演示动画"));
 
         body.addView(groupTitle("使用"));
         LinearLayout use = card();
@@ -537,7 +537,7 @@ public final class ImeSettings {
         sendCard.addView(actionRow("🗑 清空电脑上的全部同步记录", Color.parseColor("#FF3B30"),
                 new Runnable() { @Override public void run() { host.onClearAll(); } }));
         body.addView(sendCard);
-        body.addView(foot("电脑端需启动 墨指 同步服务（v1.8.28），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"));
+        body.addView(foot("电脑端需启动 墨指 同步服务（v1.8.29），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"));
     }
 
     private void renderTutorialList() {
@@ -634,7 +634,7 @@ public final class ImeSettings {
 
     private void renderAbout() {
         LinearLayout c = card();
-        c.addView(info("墨指 v1.8.28 · 真·系统输入法"));
+        c.addView(info("墨指 v1.8.29 · 真·系统输入法"));
         c.addView(info("安卓：系统输入法 InputMethodService（BIND_INPUT_METHOD）"));
         c.addView(info("iOS：键盘扩展 .appex（com.apple.keyboard-service）"));
         c.addView(info("界面按 最新版原型原生实现，无 WebView、无演示动画。"));
