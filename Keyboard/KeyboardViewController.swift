@@ -1801,12 +1801,13 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.27 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.28 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
         })
         // v1.8.27：菜单里的「打开 墨指 主 App」已移到轻点工具条「连续复制」图标，
+        // v1.8.28：轻点该图标现在会直接开启连续复制；跳转实现保持 v1.8.27 原样。
         // 这里不再堆菜单项（用户反馈工具条/菜单太挤、那一行根本看不到）。
         menuStack.addArrangedSubview(menuRow("⟳ 立即同步（\(items.count) 条）") { [weak self] in
             self?.pull(showConnecting: true, force: true); self?.closeMenu()

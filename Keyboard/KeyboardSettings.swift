@@ -277,7 +277,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         // 处理的 Link 仍可打开主 App；轻点工具条「连续复制」图标仍保留作另一条路径。
         body.addArrangedSubview(groupTitle("打开主 App"))
         body.addArrangedSubview(card([openMainAppLinkRow()]))
-        body.addArrangedSubview(foot("点这一行直接进主 App「连续复制」页。也可轻点工具条「连续复制」图标直接尝试跳转（长按该图标就是本设置页）；若系统都没放行，手动点桌面「墨指」图标同样会自动落到这一页。"))
+        body.addArrangedSubview(foot("点这一行直接进主 App「连续复制」页并自动开启。也可轻点工具条「连续复制」图标直接尝试跳转并开启（长按该图标就是本设置页）；若系统都没放行，手动点桌面「墨指」图标同样会自动落到这一页并开启。"))
 
         body.addArrangedSubview(groupTitle("使用"))
         body.addArrangedSubview(card([
@@ -329,7 +329,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             navRow("重新播放引导页") { [weak self] in self?.push(.onboarding) },
             navRow("关于本版本") { [weak self] in self?.push(.about) }
         ]))
-        body.addArrangedSubview(foot("墨指 v1.8.27 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
+        body.addArrangedSubview(foot("墨指 v1.8.28 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
     }
 
     // MARK: - 键盘设置（开关）
@@ -639,7 +639,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
                 self?.delegate?.settingsClearAll()
             }
         ]))
-        body.addArrangedSubview(foot("电脑端需启动 墨指 同步服务（v1.8.27），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
+        body.addArrangedSubview(foot("电脑端需启动 墨指 同步服务（v1.8.28），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
     }
 
     // MARK: - 教程
