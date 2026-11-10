@@ -123,6 +123,12 @@ enum QPSharedHistory {
     /// iOS 26.4+ 系统不再给键盘宿主包名，这份设定是确定性的兜底。
     private static let defaultReturnFile = "mozhi-default-return.json"
     private static let defaultReturnPBType = "app.mulberry6323.mozhi.defaultreturn"
+    /// v1.8.33：独立于跳转指令的「就地停止」一次性指令。
+    /// ★ 必须与 mozhi-pip-command.json 完全隔离：主 App 前台消费逻辑只读前者，
+    ///   读不到这条就不会触发切页 / 开关 / 回跳；本条只在主 App 后台 0.4s
+    ///   tick() 里消费，让画中画真正停下来。
+    private static let pipStopFile = "mozhi-pip-stop.json"
+    private static let pipStopPBType = "app.mulberry6323.mozhi.pipstop"
 
     /// 没有 App Group 时是否允许用系统剪贴板兜底。
     /// 关闭后完全不动用户剪贴板（画中画抓到的东西键盘读不到，但绝不污染剪贴板）。
@@ -571,6 +577,68 @@ enum QPSharedHistory {
             UIPasteboard.general.setData(expired, forPasteboardType: pipCmdPBType)
         }
         return cmd
+    }
+
+    // MARK: v1.8.33 独立一次性「就地停止」指令
+
+    struct PipStopCommand: Codable {
+        var at: Double = 0
+    }
+
+    /// 键盘轻点图标且「确实在抓」时调用。双写双读，绝不碰 Payload，
+    /// setData 只替换自定义类型、不新增 item、不动用户剪贴板正文。
+    static func markPipStopCommand() {
+        let cmd = PipStopCommand(at: Date().timeIntervalSince1970)
+        guard let data = try? JSONEncoder().encode(cmd) else { return }
+        if let url = groupURL() {
+            try? data.write(to: url.appendingPathComponent(pipStopFile), options: .atomic)
+        }
+        if pasteboardFallbackEnabled {
+            UIPasteboard.general.setData(data, forPasteboardType: pipStopPBType)
+        }
+    }
+
+    /// 主 App 的 tick() 每 0.4 秒调用一次：15 秒内的指令生效，读到即清。
+    /// 即时动作用短有效期，避免极端情况下的残留指令在下次开启时误触发。
+    /// ★ 不卡顿：App Group 可用时无指令只读一个几十字节小文件（不存在就直接返回），
+    ///   完全不访问剪贴板；只有 App Group 不可用才走剪贴板兜底。
+    ///   不新增定时器、不新增轮询，复用连续复制本来就在跑的那个 tick()。
+    static func consumePipStopCommand() -> PipStopCommand? {
+        let now = Date().timeIntervalSince1970
+        let expiredData = (try? JSONEncoder().encode(PipStopCommand(at: 0))) ?? Data()
+
+        func valid(_ data: Data?) -> PipStopCommand? {
+            guard let data = data,
+                  let c = try? JSONDecoder().decode(PipStopCommand.self, from: data),
+                  c.at > 0, now - c.at < 15 else { return nil }
+            return c
+        }
+
+        if let f = groupURL()?.appendingPathComponent(pipStopFile) {
+            guard let cmd = valid(try? Data(contentsOf: f)) else { return nil }
+            try? expiredData.write(to: f, options: .atomic)
+            if pasteboardFallbackEnabled {
+                UIPasteboard.general.setData(expiredData, forPasteboardType: pipStopPBType)
+            }
+            return cmd
+        }
+        guard pasteboardFallbackEnabled,
+              let cmd = valid(UIPasteboard.general.data(forPasteboardType: pipStopPBType))
+        else { return nil }
+        UIPasteboard.general.setData(expiredData, forPasteboardType: pipStopPBType)
+        return cmd
+    }
+
+    /// 降级回跳转关闭链路前清掉这条指令，避免主 App 一进前台被 tick()
+    /// 二次消费，与前台 toggle 指令叠加成「关了又开」。
+    static func clearPipStopCommand() {
+        let expired = (try? JSONEncoder().encode(PipStopCommand(at: 0))) ?? Data()
+        if let url = groupURL() {
+            try? expired.write(to: url.appendingPathComponent(pipStopFile), options: .atomic)
+        }
+        if pasteboardFallbackEnabled {
+            UIPasteboard.general.setData(expired, forPasteboardType: pipStopPBType)
+        }
     }
 
     // MARK: v1.8.31「最近一次宿主 App 包名」缓存

@@ -485,6 +485,15 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     }
 
     private func tick() {
+        // ★ v1.8.33：键盘里点一下「就地关闭」写下的独立停止指令。
+        //   tick() 只在连续复制跑着时才转，读到即清，天然一次性、天然幂等；
+        //   不新增定时器、不新增轮询。★ 不看 applicationState：画中画运行时
+        //   主 App 的前后台状态在系统版本间不确定，挡住会白白降级成跳转。
+        //   与前台 toggle 指令的隔离由「独立文件 + 降级前 clear」保证。
+        if QPSharedHistory.consumePipStopCommand() != nil {
+            stopInPlaceFromKeyboard()
+            return
+        }
         // changeCount 读取不会弹授权框；只有内容真的变了才去读正文
         let pb = UIPasteboard.general
         let change = pb.changeCount
@@ -496,6 +505,24 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         if Date().timeIntervalSince(lastBeat) > 5 {
             lastBeat = Date()
             QPSharedHistory.beat()
+        }
+    }
+
+    /// v1.8.33：后台真执行 stop()，不是只把共享标记写成 false 的「假关闭」。
+    /// 正常路径：stopPictureInPicture() → didStop 回调 → finish() 写回
+    /// setPip(false) / 清「下次自动开」/ 停定时器与音频保活 / 移除承载视图。
+    /// ★ 后台是否派发 didStop 回调没有文档保证，所以 0.6 秒后若还 running
+    ///   就再补一次 stop 并强制 finish()，保证键盘判活一定变假、图标一定恢复本色。
+    private func stopInPlaceFromKeyboard() {
+        if running || starting { stop() } else { finish() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self = self else { return }
+            if self.running || self.starting {
+                if let c = self.pipController, c.isPictureInPictureActive {
+                    c.stopPictureInPicture()
+                }
+                self.finish()
+            }
         }
     }
 

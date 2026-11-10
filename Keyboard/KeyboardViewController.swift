@@ -85,7 +85,10 @@ final class KeyboardViewController: UIInputViewController {
     private var pipBlocked = false
     /// 连接状态小圆点：绿 = 已连上电脑，红 = 没连上
     private weak var statusDot: UIView?
-    private weak var copyButton: UIButton?
+    /// v1.8.33：工具条「连续复制」图标（refreshSymbols() 里那个 more 按钮）的弱引用。
+    /// v1.8.14 删掉工具条按钮后 copyButton 再没被赋值，旧的颜色刷新全是空转；
+    /// 这里存的是真正画出来的那个按钮，只改 tintColor。
+    private weak var continuousIconButton: UIButton?
 
     private let root = UIStackView()
     private let toolbar = UIStackView()
@@ -452,6 +455,45 @@ final class KeyboardViewController: UIInputViewController {
     @objc private func moreLongPressed(_ g: UILongPressGestureRecognizer) {
         guard g.state == .began else { return }
         settings.show(.root)
+    }
+
+    /// v1.8.33：轻点图标的统一入口。
+    ///   正在抓（共享通道判活为真）→ 键盘里就地关掉，不跳主 App、不跳回；
+    ///   没在抓 → 仍走 v1.8.27 那条已真机验证的开启链路，
+    ///            openMainAppContinuous() 函数体一个字都没改。
+    private func handleContinuousTap() {
+        if QPSharedHistory.read().isAlive {
+            stopContinuousInPlace()
+        } else {
+            // 开启前清掉可能残留的就地停止指令（上次降级 / 主 App 曾被挂起），
+            // 否则刚开起来就会被主 App 下一圈 tick() 又关掉。
+            QPSharedHistory.clearPipStopCommand()
+            openMainAppContinuous()
+        }
+    }
+
+    /// 就地关闭：写一条独立的一次性停止指令，主 App 在后台已有的 0.4s tick()
+    /// 里真执行 stop()（绝不只是把标记写成 false 的「假关闭」）。
+    /// 指令走独立文件 / 独立剪贴板类型，与 mozhi-pip-command.json 完全隔离，
+    /// 所以主 App 前台消费逻辑读不到它，不会触发切页、开关或回跳。
+    /// ★ 1.5 秒确认共享判活变假；后台定时器若被系统挂起，先清掉这条指令
+    ///   再自动降级回现有跳转关闭链路，保证一定能关掉、绝不「点了没反应」。
+    private func stopContinuousInPlace() {
+        showToast("正在关闭连续复制…")
+        QPSharedHistory.markPipStopCommand()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self = self else { return }
+            if QPSharedHistory.read().isAlive {
+                QPSharedHistory.clearPipStopCommand()
+                self.showToast("后台未响应，已改用跳转关闭")
+                self.openMainAppContinuous()
+            } else {
+                self.pipLive = false
+                self.pipBlocked = false
+                self.refreshCopyButton()
+                self.showToast("已关闭连续复制（未跳转）")
+            }
+        }
     }
 
     /// v1.8.26：iOS 18 起系统把键盘扩展里的 `UIApplication.openURL(_:)`
@@ -1069,39 +1111,14 @@ final class KeyboardViewController: UIInputViewController {
         root.addArrangedSubview(toolbar)
     }
 
+    /// v1.8.33：开＝蓝色（QPColor.blue），关＝本色（QPColor.ink）。
+    /// 颜色只由 pipLive 决定 —— 表示「主 App 的画中画确实在抓」；
+    /// 心跳 25 秒超时会恢复本色，不虚报。图标是 alwaysTemplate，
+    /// 改 tintColor 即可，不重画图标、不换资源、不复活 v1.8.14 删掉的小圆点。
+    /// 已有 7 处调用点（viewDidLoad / viewWillAppear / checkClipboard 等）全部生效。
     private func refreshCopyButton() {
-        guard let b = copyButton else { return }
-        // 蓝色 = 用户开着连续复制（立即生效，不等 App 那边）
-        let on = prefs.continuous
-        // 整排图标都没有底色，所以「开着」用蓝色图标表示，与其它图标同一个位置、同一个大小
-        b.backgroundColor = .clear
-        b.tintColor = on ? QPColor.blue : QPColor.ink
-        b.layer.cornerRadius = QPTool.radius
-        b.clipsToBounds = false
-
-        // ★ 右上角小点，用来回答「到底在不在抓」：
-        //   绿 = 主 App 的画中画小窗活着，收起键盘也会继续抓
-        //   橙 = 只是键盘自己在抓（键盘一收就停）
-        //   不显示 = 没开连续复制
-        b.viewWithTag(903)?.removeFromSuperview()
-        guard on else { return }
-        let dot = UIView()
-        dot.tag = 903
-        dot.isUserInteractionEnabled = false
-        dot.backgroundColor = pipLive
-            ? (pipBlocked ? UIColor.rgb(255, 159, 10) : QPColor.green)
-            : UIColor.rgb(255, 159, 10)
-        dot.layer.cornerRadius = 4.5
-        dot.layer.borderWidth = 1.5
-        dot.layer.borderColor = QPColor.bg.cgColor
-        dot.translatesAutoresizingMaskIntoConstraints = false
-        b.addSubview(dot)
-        NSLayoutConstraint.activate([
-            dot.widthAnchor.constraint(equalToConstant: 9),
-            dot.heightAnchor.constraint(equalToConstant: 9),
-            dot.trailingAnchor.constraint(equalTo: b.trailingAnchor, constant: 1),
-            dot.topAnchor.constraint(equalTo: b.topAnchor, constant: -1)
-        ])
+        guard let b = continuousIconButton else { return }
+        b.tintColor = pipLive ? QPColor.blue : QPColor.ink
     }
 
     private func refreshSymbols() {
@@ -1152,7 +1169,7 @@ final class KeyboardViewController: UIInputViewController {
         more.setContentCompressionResistancePriority(.required, for: .horizontal)
         // ★ v1.8.27 手势互换：轻点 = 直接跳主 App「连续复制」页；
         //   长按 0.6 秒 = 打开完整设置界面（菜单，首页第一行仍是 SwiftUI Link）。
-        more.addAction(UIAction { [weak self] _ in self?.openMainAppContinuous() },
+        more.addAction(UIAction { [weak self] _ in self?.handleContinuousTap() },
                        for: .touchUpInside)
         let holdMore = UILongPressGestureRecognizer(target: self,
                                                     action: #selector(moreLongPressed(_:)))
@@ -1161,6 +1178,10 @@ final class KeyboardViewController: UIInputViewController {
         holdMore.cancelsTouchesInView = true   // 长按识别后不再触发上面的轻点
         more.addGestureRecognizer(holdMore)
         symStack.addArrangedSubview(more)
+        // ★ v1.8.33：图标已挂进工具条，存弱引用并按当前状态刷一次颜色。
+        //   形状 / 尺寸 / 位置 / 轻点·长按手势 / 版面一个字都不动。
+        continuousIconButton = more
+        refreshCopyButton()
 
         if prefs.align != "right" { symStack.addArrangedSubview(trailSpacer) }
         if prefs.align == "center" {
@@ -1840,7 +1861,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.32 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.33 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
