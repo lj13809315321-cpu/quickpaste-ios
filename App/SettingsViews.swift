@@ -488,7 +488,7 @@ struct CategoryView: View {
                         .font(.footnote).foregroundColor(.secondary)
                 }
 
-                Section("常用语（\(filtered.count)）") {
+                Section {
                     ForEach(filtered, id: \.self) { text in
                         Button {
                             UIPasteboard.general.string = text
@@ -509,6 +509,8 @@ struct CategoryView: View {
                         commit(entries.filter { !rm.contains($0) })
                         flash("已删除并同步到键盘")
                     }
+                } header: {
+                    Text("常用语（\(filtered.count)）")
                 } footer: {
                     Text("点一条即复制到系统剪贴板；在 墨指 键盘工具条点「常用语」图标，可直接点条目上屏。")
                 }
