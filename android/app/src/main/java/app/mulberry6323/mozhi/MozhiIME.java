@@ -1,4 +1,4 @@
-package app.mulberry6323.quickpaste;
+package app.mulberry6323.mozhi;
 
 import android.content.ClipData;
 import android.content.ClipDescription;
@@ -58,14 +58,14 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * QuickPaste v1.6 真·系统输入法。
+ * 墨指 v1.8.17 真·系统输入法。
  *
  * 界面 1:1 对齐 quickpaste-ios-prototype.html 的键盘页：
  *   连接状态头(.syncHead) / 工具条(.kbToolbar) / 剪贴板卡片(.kbCard + .srcIcon)
  *   / 图片缩略图(.kbThumb) / 清空行(.kbClear) / 底行按键(.kbKeys) / 浮层菜单(.kbPick)
  * 数据源不再是演示用本地数组，而是电脑端 sync/server.js 的局域网同步服务。
  */
-public class QuickPasteIME extends InputMethodService {
+public class MozhiIME extends InputMethodService {
 
     private static final int BG = Color.parseColor("#F3F4F9");
     private static final int CARD = Color.WHITE;
@@ -1857,7 +1857,7 @@ public class QuickPasteIME extends InputMethodService {
         try {
             if (Build.VERSION.SDK_INT < 25) throw new IllegalStateException("系统版本过低");
             Uri uri = writeShareImage(it);
-            ClipDescription desc = new ClipDescription("QuickPaste 图片",
+            ClipDescription desc = new ClipDescription("墨指 图片",
                     new String[]{imageMime(it)});
             InputContentInfo info = new InputContentInfo(uri, desc, null);
             InputConnection ic = getCurrentInputConnection();
@@ -1874,7 +1874,7 @@ public class QuickPasteIME extends InputMethodService {
         // ClipData.newBitmap 在 compileSdk 34 已被移除，改用 content:// URI。
         try {
             Uri uri = writeShareImage(it);
-            ClipDescription desc = new ClipDescription("QuickPaste 图片",
+            ClipDescription desc = new ClipDescription("墨指 图片",
                     new String[]{imageMime(it)});
             cm.setPrimaryClip(new ClipData(desc, new ClipData.Item(uri)));
             toast("已复制到剪贴板，长按输入框粘贴");
@@ -1885,7 +1885,7 @@ public class QuickPasteIME extends InputMethodService {
 
     private void copyTextToClipboard(String text) {
         try {
-            cm.setPrimaryClip(ClipData.newPlainText("QuickPaste", text));
+            cm.setPrimaryClip(ClipData.newPlainText("墨指", text));
             toast("已复制到手机剪贴板");
         } catch (Exception e) {
             toast("复制失败");
@@ -1944,7 +1944,7 @@ public class QuickPasteIME extends InputMethodService {
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
             startActivity(i);
         } catch (Exception e) {
-            toast("请从桌面打开 QuickPaste 同步键盘");
+            toast("请从桌面打开 墨指 同步键盘");
         }
     }
 

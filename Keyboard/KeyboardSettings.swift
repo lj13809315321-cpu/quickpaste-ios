@@ -255,7 +255,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             navRow("重新播放引导页") { [weak self] in self?.push(.onboarding) },
             navRow("关于本版本") { [weak self] in self?.push(.about) }
         ]))
-        body.addArrangedSubview(foot("QuickPaste v1.8.7 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
+        body.addArrangedSubview(foot("墨指 v1.8.17 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
     }
 
     // MARK: - 键盘设置（开关）
@@ -264,7 +264,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         body.addArrangedSubview(card([
             navRow("使用教程") { [weak self] in self?.push(.tutorials) },
             actionRow("打开系统设置（请手动进入）") { [weak self] in
-                self?.delegate?.settingsToast("设置 → 通用 → 键盘 → QuickPaste → 允许完全访问")
+                self?.delegate?.settingsToast("设置 → 通用 → 键盘 → 墨指 → 允许完全访问")
             }
         ]))
         body.addArrangedSubview(foot("本键盘是系统键盘扩展，iOS 不允许直接跳转系统设置；请按上面路径手动进入。「允许完全访问」是联网同步与读取剪贴板的前提。"))
@@ -333,7 +333,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         body.addArrangedSubview(groupTitle("如何启用键盘"))
         body.addArrangedSubview(card(
             ["打开「设置」应用", "进入「通用」→「键盘」→「键盘」", "点击「添加新键盘…」",
-             "选择「QuickPaste」", "点击「QuickPaste」并开启「允许完全访问」"]
+             "选择「墨指」", "点击「墨指」并开启「允许完全访问」"]
                 .enumerated().map { numberedRow($0.offset + 1, $0.element) }
         ))
 
@@ -343,7 +343,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
                "点「允许」即可；也可在系统设置里把「从其他 App 粘贴」设为「允许」。"),
             qa("键盘里看不到同步记录？",
                "确认已开启「允许完全访问」、电脑服务已启动、手机与电脑在同一 WiFi，且地址正确。"),
-            qa("密码框里没有 QuickPaste 键盘？",
+            qa("密码框里没有 墨指 键盘？",
                "iOS 在密码框等敏感输入会强制使用系统键盘，这是系统限制。")
         ]))
     }
@@ -424,9 +424,9 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
 
         body.addArrangedSubview(groupTitle("系统画中画（跨 App 连续复制）"))
         body.addArrangedSubview(card([
-            numberedRow(1, "打开 QuickPaste 主 App → 连续复制页 → 点「开启连续复制」（自动开小窗）"),
-            numberedRow(2, "跳不动就回主屏点 QuickPaste 图标，进去照样会自动开"),
-            numberedRow(3, "★ 设置 → QuickPaste → 从其他 App 粘贴 → 允许（不设成允许，后台只能读到空内容）"),
+            numberedRow(1, "打开 墨指 主 App → 连续复制页 → 点「开启连续复制」（自动开小窗）"),
+            numberedRow(2, "跳不动就回主屏点 墨指 图标，进去照样会自动开"),
+            numberedRow(3, "★ 设置 → 墨指 → 从其他 App 粘贴 → 允许（不设成允许，后台只能读到空内容）"),
             numberedRow(4, "小窗出现 = 正在后台监控；拖到屏幕边缘会缩成图标，点小窗上的 ✕ 结束")
         ]))
         body.addArrangedSubview(foot("还需为键盘开启「允许完全访问」、系统「自动开启画中画」。小窗关掉、App 被划掉就停止后台收录。"))
@@ -434,7 +434,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         body.addArrangedSubview(groupTitle("补充说明"))
         body.addArrangedSubview(card([
             qa("相同内容会重复保存吗？", "不会。相同文字会去重处理，不会不断新增相同记录。"),
-            qa("为什么一开始只收录一条？", "iOS 16 起，后台读剪贴板必须先在 设置 → QuickPaste → 从其他 App 粘贴 里选「允许」。没设成允许时，App 在前台能读到、切后台就只能读到空内容，于是永远停在「已收录 1 条」。"),
+            qa("为什么一开始只收录一条？", "iOS 16 起，后台读剪贴板必须先在 设置 → 墨指 → 从其他 App 粘贴 里选「允许」。没设成允许时，App 在前台能读到、切后台就只能读到空内容，于是永远停在「已收录 1 条」。"),
             qa("多久会清理一次？", "按设置里的「历史保留时间」执行，置顶的记录不会被自动清理。"),
             qa("能像悬浮窗那样一直监控吗？", "能。打开主 App 的「连续复制」页开启系统画中画（PiP），小窗由 iOS 渲染，自带 ✕、可拖到屏幕边缘缩小贴边。键盘扩展本身不能在别处常驻，所以这一步必须由主 App 启动。")
         ]))
@@ -525,7 +525,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
                 self?.delegate?.settingsClearAll()
             }
         ]))
-        body.addArrangedSubview(foot("电脑端需启动 QuickPaste 同步服务（v1.6），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
+        body.addArrangedSubview(foot("电脑端需启动 墨指 同步服务（v1.6），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
     }
 
     // MARK: - 教程
@@ -555,7 +555,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         let list = prefs.items(for: "clip")
         body.addArrangedSubview(foot("本机剪贴板历史（键盘内保存，最多 100 条）。点一条插入到当前输入框。"))
         if list.isEmpty {
-            body.addArrangedSubview(card([info("还没有记录。在别的 App 复制文字后，回到 QuickPaste 键盘即可收录。")]))
+            body.addArrangedSubview(card([info("还没有记录。在别的 App 复制文字后，回到 墨指 键盘即可收录。")]))
         } else {
             body.addArrangedSubview(card(list.map { text in
                 actionRow(String(text.prefix(40))) { [weak self] in
@@ -594,13 +594,13 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
     }
 
     private func renderOnboarding() {
-        body.addArrangedSubview(bigTitle("启用 QuickPaste"))
+        body.addArrangedSubview(bigTitle("启用 墨指"))
         body.addArrangedSubview(card([
             numberedRow(1, "安装后用爱思助手 / 手机端签名工具完成 7 天签名"),
-            numberedRow(2, "设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → QuickPaste"),
-            numberedRow(3, "点开 QuickPaste → 开启「允许完全访问」"),
+            numberedRow(2, "设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 墨指"),
+            numberedRow(3, "点开 墨指 → 开启「允许完全访问」"),
             numberedRow(4, "打开主 App，填电脑地址 http://192.168.1.2:8787 并保存"),
-            numberedRow(5, "在任意 App 输入框按地球仪切到 QuickPaste 即可使用")
+            numberedRow(5, "在任意 App 输入框按地球仪切到 墨指 即可使用")
         ]))
         body.addArrangedSubview(foot("键盘里：点卡片直接上屏；💻 = 电脑复制，📱 = 手机发的；图片显示缩略图；底行蓝色「发送」把输入框文字发回电脑。"))
         body.addArrangedSubview(card([
@@ -610,7 +610,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
 
     private func renderAbout() {
         body.addArrangedSubview(card([
-            info("QuickPaste v1.8.7 · 真·系统输入法"),
+            info("墨指 v1.8.17 · 真·系统输入法"),
             info("iOS：键盘扩展 .appex（com.apple.keyboard-service）"),
             info("安卓：系统输入法 InputMethodService"),
             info("界面按 quickpaste-ios-prototype.html v1.6 原型原生实现，无 WebView、无演示动画。"),
@@ -726,7 +726,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         box.backgroundColor = QPColor.blueSoft
         box.layer.cornerRadius = 10
         let l = UILabel()
-        l.text = "QuickPaste v1.8.7 · 真·系统输入法\n按 HTML 最新版效果原生实现，无网页、无演示动画"
+        l.text = "墨指 v1.8.17 · 真·系统输入法\n按 HTML 最新版效果原生实现，无网页、无演示动画"
         l.font = .systemFont(ofSize: 12, weight: .medium)
         l.textColor = QPColor.blue
         l.numberOfLines = 0
@@ -1104,15 +1104,15 @@ private enum Tutorial {
     }
 
     static let data: [String: Item] = [
-        "keyboard": Item(title: "启用键盘与发送", summary: "系统设置 → 通用 → 键盘，添加 QuickPaste，并开启完全访问。", sections: [
-            ("首次启用", "1. 打开 iPhone / iPad 的系统「设置」。\n2. 进入「通用」→「键盘」→「键盘」→「添加新键盘」。\n3. 选择 QuickPaste，再进入 QuickPaste 键盘设置，开启「允许完全访问」。\n也可在「键盘设置」页查看完整步骤。"),
-            ("切换与插入", "在聊天、笔记等 App 中点输入框，长按系统地球键选择 QuickPaste。点一条剪贴板记录或常用语，即可在光标处插入；连续点多条会依次插入。键盘顶部的地球按钮可切到下一个键盘。"),
-            ("发送后保持展开", "关闭自动收起时，点「发送」只向输入框提交回车，QuickPaste 不会主动收起键盘，你可以继续选内容。「发送」实际触发发消息还是换行，由当前 App 决定。如果对方 App 主动结束输入，第三方键盘无法强制保持展开，请再次点输入框。"),
+        "keyboard": Item(title: "启用键盘与发送", summary: "系统设置 → 通用 → 键盘，添加 墨指，并开启完全访问。", sections: [
+            ("首次启用", "1. 打开 iPhone / iPad 的系统「设置」。\n2. 进入「通用」→「键盘」→「键盘」→「添加新键盘」。\n3. 选择 墨指，再进入 墨指 键盘设置，开启「允许完全访问」。\n也可在「键盘设置」页查看完整步骤。"),
+            ("切换与插入", "在聊天、笔记等 App 中点输入框，长按系统地球键选择 墨指。点一条剪贴板记录或常用语，即可在光标处插入；连续点多条会依次插入。键盘顶部的地球按钮可切到下一个键盘。"),
+            ("发送后保持展开", "关闭自动收起时，点「发送」只向输入框提交回车，墨指 不会主动收起键盘，你可以继续选内容。「发送」实际触发发消息还是换行，由当前 App 决定。如果对方 App 主动结束输入，第三方键盘无法强制保持展开，请再次点输入框。"),
             ("完全访问的用途", "用于键盘读取剪贴板、访问局域网同步服务与本机历史/常用语。密码框、部分电话输入框或不允许第三方键盘的 App 可能自动使用系统键盘。"),
             ("发送后自动收起键盘", "默认关闭，可连续发送；开启后，点击「发送」会收起键盘。「输入」计算结果或分词不会收起。")
         ]),
-        "history": Item(title: "剪贴板历史", summary: "复制文字后，打开 QuickPaste；点记录即可复用。", sections: [
-            ("保存文字", "在其他 App 中复制文字后，切换到 QuickPaste 键盘即可看到。键盘弹着时会实时抓取多段复制；开启主 App 的系统画中画后，切到任意 App 复制也会被后台收录。图片和文件不属于文字历史。"),
+        "history": Item(title: "剪贴板历史", summary: "复制文字后，打开 墨指；点记录即可复用。", sections: [
+            ("保存文字", "在其他 App 中复制文字后，切换到 墨指 键盘即可看到。键盘弹着时会实时抓取多段复制；开启主 App 的系统画中画后，切到任意 App 复制也会被后台收录。图片和文件不属于文字历史。"),
             ("搜索与复制", "在键盘的「剪贴板」页上下滚动查找记录。点一条记录直接插入当前输入框；长按记录可复制到系统剪贴板、发送到电脑、放大图片或删除。"),
             ("整理历史", "置顶内容优先显示，也不受历史保留天数的自动清理影响。删除的记录可在设置 →「最近删除」中恢复。"),
             ("显示范围", "本机历史最多保存 100 条；键盘同步列表一次最多显示 30 条电脑记录，可上下滚动。"),
@@ -1121,7 +1121,7 @@ private enum Tutorial {
         "category": Item(title: "常用语与分类", summary: "把常用回复放进分类，在键盘里点一下就输入。", sections: [
             ("新建分类", "在键盘的「常用语」页管理常用回复；本版本用「置顶」代替分类分组，长按条目可置顶。"),
             ("添加常用语", "在「常用语」页长按菜单可编辑；也可在设置页的「连续复制 → 存储位置」里选择把抓取到的文字存到常用语。"),
-            ("在键盘中使用", "切换到 QuickPaste 键盘，点顶部的「常用语」Tab；点一条即可在光标处插入，连续点多条会依次插入。"),
+            ("在键盘中使用", "切换到 墨指 键盘，点顶部的「常用语」Tab；点一条即可在光标处插入，连续点多条会依次插入。"),
             ("整理与排序", "长按常用语可置顶或删除。置顶内容优先显示，方便把高频回复放在最前面。")
         ]),
         "split": Item(title: "拆分选词", summary: "长按历史卡片拆分文字，按点击顺序拼成新句子。", sections: [
@@ -1132,7 +1132,7 @@ private enum Tutorial {
         ]),
         "continuous": Item(title: "连续复制与系统画中画", summary: "键盘弹着时实时抓取；开画中画可跨 App 后台监控。", sections: [
             ("键盘里连续复制", "键盘弹着时每 0.5 秒读一次系统剪贴板，复制第 2、3、N 段都会自动进列表，不用收起再弹出。"),
-            ("开启系统画中画", "1. 确认键盘已开启完全访问。\n2. 打开 QuickPaste 主 App → 连续复制页 → 点「开启连续复制」，自动开小窗。\n3. ★ 设置 → QuickPaste → 从其他 App 粘贴 → 允许，否则后台读不到内容。\n4. 出现系统 PiP 小窗后，切到微信、Safari 等任意 App 继续复制。"),
+            ("开启系统画中画", "1. 确认键盘已开启完全访问。\n2. 打开 墨指 主 App → 连续复制页 → 点「开启连续复制」，自动开小窗。\n3. ★ 设置 → 墨指 → 从其他 App 粘贴 → 允许，否则后台读不到内容。\n4. 出现系统 PiP 小窗后，切到微信、Safari 等任意 App 继续复制。"),
             ("小窗怎么用", "PiP 小窗由 iOS 渲染，自带 ✕ 关闭；拖到屏幕左边框会自动缩小贴边（只露一个小箭头），点箭头可展开。小窗里大字的「已收录 N 条」才是真正抓到的条数，主 App「连续复制」页的计数同步更新。"),
             ("重复内容与使用范围", "相同文字会去重。画中画收录的文字会写进共享历史，回到键盘自动出现在剪贴板列表里；系统粘贴授权弹窗需点「允许」。")
         ]),

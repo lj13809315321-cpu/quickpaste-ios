@@ -1,4 +1,4 @@
-# QuickPaste v1.8.14 真·同步输入法：一次编译产出「安卓 APK + iOS IPA」。
+# 墨指 Mozhi v1.8.17 真·同步输入法：一次编译产出「安卓 APK + iOS IPA」。
 #
 # 与之前的 WebView 壳完全不同：
 #   安卓 = InputMethodService（BIND_INPUT_METHOD / android.view.im）
@@ -79,10 +79,10 @@ jobs:
           def has(s):
               return (s.encode() in axml) or (s.encode('utf-16le') in axml)
           print('[诊断] zip 条目数 =', len(names))
-          print('[诊断] AXML QuickPasteIME =', has('QuickPasteIME'))
+          print('[诊断] AXML MozhiIME =', has('MozhiIME'))
           print('[诊断] AXML BIND_INPUT_METHOD =', has('BIND_INPUT_METHOD'))
           print('[诊断] AXML android.view.im =', has('android.view.im'))
-          for key in (b'SyncClient', b'/api/items', b'/api/image', b'commitText', b'QuickPasteIME'):
+          for key in (b'SyncClient', b'/api/items', b'/api/image', b'commitText', b'MozhiIME'):
               print('[诊断] dex %-14s = %s' % (key.decode(), key in dex))
           print('[诊断] dex 含 WebView 类型 =', b'Landroid/webkit/WebView;' in dex)
           print('[诊断] dex 字节数 =', len(dex))
@@ -120,14 +120,14 @@ jobs:
         run: xcodegen generate
 
       - name: 列出工程方案
-        run: xcodebuild -list -project QuickPaste.xcodeproj
+        run: xcodebuild -list -project Mozhi.xcodeproj
 
       - name: 编译（build 不归档，避开 iOS 18.5 禁止 archive 阶段 ad-hoc 的限制）
         run: |
           set -euo pipefail
           xcodebuild \
-            -project QuickPaste.xcodeproj \
-            -scheme QuickPaste \
+            -project Mozhi.xcodeproj \
+            -scheme Mozhi \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
@@ -142,17 +142,17 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/fix_info_plists.py
-          APP="$PWD/build/Build/Products/Release-iphoneos/QuickPaste.app"
+          APP="$PWD/build/Build/Products/Release-iphoneos/Mozhi.app"
           echo "=== 主 app ==="
           plutil -p "$APP/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundlePackageType|NSAppTransportSecurity|NSLocalNetwork' || true
           echo "=== 键盘扩展 ==="
-          plutil -p "$APP/PlugIns/QuickPasteKeyboard.appex/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundlePackageType|NSExtension|NSAppTransportSecurity' || true
+          plutil -p "$APP/PlugIns/MozhiKeyboard.appex/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundlePackageType|NSExtension|NSAppTransportSecurity' || true
 
       - name: 中间步骤：生成代码签名槽位（预签名包不交付）
         run: |
           set -euo pipefail
-          APP="$PWD/build/Build/Products/Release-iphoneos/QuickPaste.app"
-          EXT="$APP/PlugIns/QuickPasteKeyboard.appex"
+          APP="$PWD/build/Build/Products/Release-iphoneos/Mozhi.app"
+          EXT="$APP/PlugIns/MozhiKeyboard.appex"
           codesign --force --timestamp=none -s - "$EXT"
           codesign --force --timestamp=none -s - "$APP"
           codesign -vvv "$APP"
@@ -161,28 +161,28 @@ jobs:
       - name: 打包并校验 IPA 内真的有键盘扩展
         run: |
           set -euo pipefail
-          APP="$PWD/build/Build/Products/Release-iphoneos/QuickPaste.app"
+          APP="$PWD/build/Build/Products/Release-iphoneos/Mozhi.app"
           mkdir -p dist
           rm -rf Payload dist/QuickPaste-Sync-iOS.ipa
           mkdir -p Payload
           cp -R "$APP" Payload/
           zip -qr dist/QuickPaste-Sync-iOS.ipa Payload
           echo "=== IPA 内容（关键条目）==="
-          unzip -l dist/QuickPaste-Sync-iOS.ipa | grep -E 'Info.plist|QuickPasteKeyboard|PkgInfo|QuickPaste$' | head -20
+          unzip -l dist/QuickPaste-Sync-iOS.ipa | grep -E 'Info.plist|MozhiKeyboard|PkgInfo|Mozhi$' | head -20
           python3 - <<'PY'
           import plistlib, zipfile
           z = zipfile.ZipFile('dist/QuickPaste-Sync-iOS.ipa')
           names = z.namelist()
-          app_plist = 'Payload/QuickPaste.app/Info.plist'
-          ext_plist = 'Payload/QuickPaste.app/PlugIns/QuickPasteKeyboard.appex/Info.plist'
-          ext_bin   = 'Payload/QuickPaste.app/PlugIns/QuickPasteKeyboard.appex/QuickPasteKeyboard'
+          app_plist = 'Payload/Mozhi.app/Info.plist'
+          ext_plist = 'Payload/Mozhi.app/PlugIns/MozhiKeyboard.appex/Info.plist'
+          ext_bin   = 'Payload/Mozhi.app/PlugIns/MozhiKeyboard.appex/MozhiKeyboard'
           for p in (app_plist, ext_plist, ext_bin):
               assert p in names, 'IPA 缺文件: ' + p
           a = plistlib.loads(z.read(app_plist))
           e = plistlib.loads(z.read(ext_plist))
-          assert a.get('CFBundleIdentifier') == 'app.mulberry6323.twilight7904'
+          assert a.get('CFBundleIdentifier') == 'app.mulberry6323.mozhi'
           assert a.get('CFBundlePackageType') == 'APPL'
-          assert e.get('CFBundleIdentifier') == 'app.mulberry6323.twilight7904.keyboard'
+          assert e.get('CFBundleIdentifier') == 'app.mulberry6323.mozhi.keyboard'
           assert e.get('CFBundlePackageType') == 'XPC!'
           ns = e.get('NSExtension') or {}
           attrs = ns.get('NSExtensionAttributes') or {}
@@ -191,12 +191,12 @@ jobs:
           assert (e.get('NSAppTransportSecurity') or {}).get('NSAllowsArbitraryLoads') is True
           macho = z.read(ext_bin)[:4]
           assert macho == b'\xcf\xfa\xed\xfe', '键盘扩展不是 arm64 Mach-O'
-          appbin = z.read('Payload/QuickPaste.app/QuickPaste')[:4]
+          appbin = z.read('Payload/Mozhi.app/Mozhi')[:4]
           assert appbin == b'\xcf\xfa\xed\xfe', '主程序不是 arm64 Mach-O'
           assert a.get('UIBackgroundModes') == ['audio'], '主 App 缺画中画后台模式'
           schemes = [s for t in (a.get('CFBundleURLTypes') or [])
                      for s in (t.get('CFBundleURLSchemes') or [])]
-          assert 'quickpaste' in schemes, '主 App 缺 quickpaste URL scheme'
+          assert 'mozhi' in schemes, '主 App 缺 quickpaste URL scheme'
           print('[OK] PiP 后台模式 / URL scheme 齐全（视频通话 PiP 不需要视频资源）')
           print('[OK] 主 App + 键盘扩展(.appex) 均在 IPA 内')
           print('[OK] 扩展点 =', ns.get('NSExtensionPointIdentifier'))
@@ -257,7 +257,7 @@ jobs:
           git rm -f --ignore-unmatch out/QuickPaste-Sync-iOS.ipa || true
           rm -f out/QuickPaste-Sync-iOS.ipa
           {
-            echo "QuickPaste v1.8.14 同步输入法 手机安装包"
+            echo "墨指 v1.8.17 同步输入法 手机安装包"
             echo "形态：安卓 IME / iOS 键盘扩展（原生键盘，非 WebView 壳）"
             echo "苹果交付：未签名 IPA（手机端签名工具直接导入）"
             echo "构建时间 (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
@@ -265,8 +265,8 @@ jobs:
             echo "APK: $(stat -c%s "$APK") bytes"
             echo "IPA(未签名): $(stat -c%s "$UIPA") bytes"
           } > out/BUILD_INFO.txt
-          git config user.name "quickpaste-bot"
-          git config user.email "quickpaste-bot@users.noreply.github.com"
+          git config user.name "mozhi-bot"
+          git config user.email "mozhi-bot@users.noreply.github.com"
           git add -f out/QuickPaste-Sync-Android.apk out/QuickPaste-Sync-iOS-unsigned.ipa out/BUILD_INFO.txt
           git commit -m "chore: 自动回传同步输入法 APK + IPA [skip ci]" || echo "无变更，跳过提交"
           git pull --rebase origin main || true

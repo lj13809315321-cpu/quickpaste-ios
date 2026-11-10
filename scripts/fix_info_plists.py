@@ -20,9 +20,9 @@ import plistlib
 import sys
 from pathlib import Path
 
-APP_ID = "app.mulberry6323.twilight7904"
+APP_ID = "app.mulberry6323.mozhi"
 KEYBOARD_ID = APP_ID + ".keyboard"
-KEYBOARD_MODULE = "QuickPasteKeyboard"
+KEYBOARD_MODULE = "MozhiKeyboard"
 
 BUILD_META_KEYS = (
     "MinimumOSVersion", "DTPlatformName", "DTPlatformVersion",
@@ -32,7 +32,7 @@ BUILD_META_KEYS = (
 )
 
 ATS = {"NSAllowsArbitraryLoads": True, "NSAllowsLocalNetworking": True}
-LOCAL_DESC = "QuickPaste 需要访问局域网，以连接同一 WiFi 下电脑上的剪贴板同步服务。"
+LOCAL_DESC = "墨指 需要访问局域网，以连接同一 WiFi 下电脑上的剪贴板同步服务。"
 ORIENTATIONS = [
     "UIInterfaceOrientationPortrait",
     "UIInterfaceOrientationLandscapeLeft",
@@ -41,15 +41,15 @@ ORIENTATIONS = [
 
 MAIN_APP_PLIST = {
     "CFBundleDevelopmentRegion": "zh_CN",
-    "CFBundleDisplayName": "QuickPaste",
+    "CFBundleDisplayName": "墨指",
     "CFBundleIdentifier": APP_ID,
-    "CFBundleExecutable": "QuickPaste",
+    "CFBundleExecutable": "Mozhi",
     "CFBundleInfoDictionaryVersion": "6.0",
-    "CFBundleName": "QuickPaste",
+    "CFBundleName": "Mozhi",
     "CFBundlePackageType": "APPL",
     "CFBundleSignature": "????",
-    "CFBundleShortVersionString": "1.8.16",
-    "CFBundleVersion": "34",
+    "CFBundleShortVersionString": "1.8.17",
+    "CFBundleVersion": "35",
     "LSRequiresIPhoneOS": True,
     "MinimumOSVersion": "16.0",
     "NSAppTransportSecurity": dict(ATS),
@@ -62,23 +62,24 @@ MAIN_APP_PLIST = {
     # 键盘里点「连续复制」跳主 App：quickpaste://pip/start
     "CFBundleURLTypes": [{
         "CFBundleURLName": APP_ID,
-        "CFBundleURLSchemes": ["quickpaste"],
+        "CFBundleURLSchemes": ["mozhi"],
     }],
+    "CFBundleIconName": "AppIcon",
     "UIRequiredDeviceCapabilities": ["arm64"],
     "UISupportedInterfaceOrientations": ORIENTATIONS,
 }
 
 KEYBOARD_PLIST = {
     "CFBundleDevelopmentRegion": "zh_CN",
-    "CFBundleDisplayName": "QuickPaste",
+    "CFBundleDisplayName": "墨指",
     "CFBundleIdentifier": KEYBOARD_ID,
-    "CFBundleExecutable": "QuickPasteKeyboard",
+    "CFBundleExecutable": "MozhiKeyboard",
     "CFBundleInfoDictionaryVersion": "6.0",
-    "CFBundleName": "QuickPaste",
+    "CFBundleName": "Mozhi",
     "CFBundlePackageType": "XPC!",
     "CFBundleSignature": "????",
-    "CFBundleShortVersionString": "1.8.16",
-    "CFBundleVersion": "34",
+    "CFBundleShortVersionString": "1.8.17",
+    "CFBundleVersion": "35",
     "MinimumOSVersion": "16.0",
     # 键盘扩展里跑 URLSession，这一份 ATS 例外同样不能少
     "NSAppTransportSecurity": dict(ATS),
@@ -126,8 +127,8 @@ def verify(name, data, want_id, want_type):
 
 
 def main():
-    app = Path("build/Build/Products/Release-iphoneos/QuickPaste.app")
-    ext = app / "PlugIns" / "QuickPasteKeyboard.appex"
+    app = Path("build/Build/Products/Release-iphoneos/Mozhi.app")
+    ext = app / "PlugIns" / "MozhiKeyboard.appex"
     app_plist = app / "Info.plist"
     ext_plist = ext / "Info.plist"
 

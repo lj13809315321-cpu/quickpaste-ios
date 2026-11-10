@@ -5,15 +5,15 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>zh_CN</string>
     <key>CFBundleDisplayName</key>
-    <string>QuickPaste</string>
+    <string>墨指</string>
     <key>CFBundleExecutable</key>
-    <string>QuickPasteKeyboard</string>
+    <string>MozhiKeyboard</string>
     <key>CFBundleIdentifier</key>
-    <string>app.mulberry6323.twilight7904.keyboard</string>
+    <string>app.mulberry6323.mozhi.keyboard</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>QuickPaste</string>
+    <string>Mozhi</string>
     <key>CFBundlePackageType</key>
     <string>XPC!</string>
     <key>CFBundleShortVersionString</key>
@@ -31,7 +31,7 @@
         <true/>
     </dict>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>QuickPaste 键盘需要访问局域网，以连接同一 WiFi 下电脑上的剪贴板同步服务。</string>
+    <string>墨指 键盘需要访问局域网，以连接同一 WiFi 下电脑上的剪贴板同步服务。</string>
     <key>NSExtension</key>
     <dict>
         <key>NSExtensionAttributes</key>

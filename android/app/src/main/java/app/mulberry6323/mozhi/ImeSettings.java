@@ -1,4 +1,4 @@
-package app.mulberry6323.quickpaste;
+package app.mulberry6323.mozhi;
 
 import android.content.Context;
 import android.graphics.Color;
@@ -69,7 +69,7 @@ public final class ImeSettings {
     private EditText pairField;
     private EditText symbolField;
 
-    // ImeSettings 由 QuickPasteIME 构造，ctx 就是 IME Service 本身
+    // ImeSettings 由 MozhiIME 构造，ctx 就是 IME Service 本身
     public ImeSettings(Context ctx, Host host) {
         this.ctx = ctx;
         this.host = host;
@@ -194,7 +194,7 @@ public final class ImeSettings {
 
     private void renderRoot() {
         body.addView(bigTitle("设置"));
-        body.addView(foot("QuickPaste v1.8.15 · 真·系统输入法 · 按 HTML 最新版效果原生实现，无网页、无演示动画"));
+        body.addView(foot("墨指 v1.8.17 · 真·系统输入法 · 按 HTML 最新版效果原生实现，无网页、无演示动画"));
 
         body.addView(groupTitle("使用"));
         LinearLayout use = card();
@@ -264,7 +264,7 @@ public final class ImeSettings {
         top.addView(navRow("使用教程", "", "tutorials"));
         top.addView(actionRow("打开系统设置（请手动进入）", BLUE, new Runnable() {
             @Override public void run() {
-                host.onToast("设置 → 系统 → 语言和输入法 → 启用 QuickPaste 同步键盘");
+                host.onToast("设置 → 系统 → 语言和输入法 → 启用 墨指 同步键盘");
             }
         }));
         body.addView(top);
@@ -349,14 +349,14 @@ public final class ImeSettings {
         body.addView(groupTitle("如何启用键盘"));
         LinearLayout steps = card();
         String[] ss = {"打开「设置」应用", "进入「系统 / 其他设置」→「语言和输入法」",
-                "启用「QuickPaste 同步键盘」", "在输入框点键盘切换图标选择它"};
+                "启用「墨指 同步键盘」", "在输入框点键盘切换图标选择它"};
         for (int i = 0; i < ss.length; i++) steps.addView(numberedRow(i + 1, ss[i]));
         body.addView(steps);
 
         body.addView(groupTitle("使用说明"));
         LinearLayout qa = card();
         qa.addView(qaRow("键盘里看不到同步记录？", "确认电脑服务已启动、同一 WiFi、地址正确，点工具条 ⟳ 立即同步。"));
-        qa.addView(qaRow("密码框里没有 QuickPaste？", "部分 App 的密码框会强制系统键盘，属系统限制。"));
+        qa.addView(qaRow("密码框里没有 墨指？", "部分 App 的密码框会强制系统键盘，属系统限制。"));
         body.addView(qa);
     }
 
@@ -440,7 +440,7 @@ public final class ImeSettings {
 
         body.addView(groupTitle("如何开启"));
         LinearLayout l = card();
-        l.addView(numberedRow(1, "在任意 App 中切换到 QuickPaste 同步键盘"));
+        l.addView(numberedRow(1, "在任意 App 中切换到 墨指 同步键盘"));
         l.addView(numberedRow(2, "点工具条方块按钮 ⧉，变蓝即开启自动同步"));
         l.addView(numberedRow(3, "切回其他 App 继续复制，回到键盘即可看到记录"));
         body.addView(l);
@@ -537,7 +537,7 @@ public final class ImeSettings {
         sendCard.addView(actionRow("🗑 清空电脑上的全部同步记录", Color.parseColor("#FF3B30"),
                 new Runnable() { @Override public void run() { host.onClearAll(); } }));
         body.addView(sendCard);
-        body.addView(foot("电脑端需启动 QuickPaste 同步服务（v1.6），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"));
+        body.addView(foot("电脑端需启动 墨指 同步服务（v1.6），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"));
     }
 
     private void renderTutorialList() {
@@ -572,7 +572,7 @@ public final class ImeSettings {
         body.addView(foot("本机剪贴板历史（最多 100 条）。点一条插入到当前输入框。"));
         LinearLayout c = card();
         if (list.isEmpty()) {
-            c.addView(info("还没有记录。在别的 App 复制文字后，回到 QuickPaste 键盘即可收录。"));
+            c.addView(info("还没有记录。在别的 App 复制文字后，回到 墨指 键盘即可收录。"));
         } else {
             for (final String text : list) {
                 c.addView(actionRow(text.length() > 40 ? text.substring(0, 40) : text,
@@ -616,11 +616,11 @@ public final class ImeSettings {
     }
 
     private void renderOnboarding() {
-        body.addView(bigTitle("启用 QuickPaste"));
+        body.addView(bigTitle("启用 墨指"));
         LinearLayout c = card();
         c.addView(numberedRow(1, "安装 APK（debug 签名，可直接安装）"));
-        c.addView(numberedRow(2, "系统设置 → 语言和输入法 → 启用「QuickPaste 同步键盘」"));
-        c.addView(numberedRow(3, "在输入框点键盘切换图标，选择 QuickPaste"));
+        c.addView(numberedRow(2, "系统设置 → 语言和输入法 → 启用「墨指 同步键盘」"));
+        c.addView(numberedRow(3, "在输入框点键盘切换图标，选择 墨指"));
         c.addView(numberedRow(4, "在主 App 填电脑地址 http://192.168.1.2:8787 并保存"));
         c.addView(numberedRow(5, "点键盘工具条「⋯」进入设置，检查同步状态"));
         body.addView(c);
@@ -634,7 +634,7 @@ public final class ImeSettings {
 
     private void renderAbout() {
         LinearLayout c = card();
-        c.addView(info("QuickPaste v1.8.15 · 真·系统输入法"));
+        c.addView(info("墨指 v1.8.17 · 真·系统输入法"));
         c.addView(info("安卓：系统输入法 InputMethodService（BIND_INPUT_METHOD）"));
         c.addView(info("iOS：键盘扩展 .appex（com.apple.keyboard-service）"));
         c.addView(info("界面按 quickpaste-ios-prototype.html v1.6 原型原生实现，无 WebView、无演示动画。"));

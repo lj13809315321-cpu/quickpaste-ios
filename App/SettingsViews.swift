@@ -22,17 +22,17 @@ struct AppTutorial: Identifiable {
 enum AppTutorials {
     static let all: [AppTutorial] = [
         AppTutorial(id: "keyboard", title: "启用键盘与发送",
-                    summary: "系统设置 → 通用 → 键盘，添加 QuickPaste，并开启完全访问。",
+                    summary: "系统设置 → 通用 → 键盘，添加 墨指，并开启完全访问。",
                     sections: [
-            ("首次启用", "1. 打开系统「设置」。\n2. 通用 → 键盘 → 键盘 → 添加新键盘。\n3. 选择 QuickPaste，开启「允许完全访问」。"),
-            ("切换与插入", "在任意 App 点输入框，长按地球键选 QuickPaste。点记录或常用语即在光标处插入；顶部地球按钮可切下一个键盘。"),
+            ("首次启用", "1. 打开系统「设置」。\n2. 通用 → 键盘 → 键盘 → 添加新键盘。\n3. 选择 墨指，开启「允许完全访问」。"),
+            ("切换与插入", "在任意 App 点输入框，长按地球键选 墨指。点记录或常用语即在光标处插入；顶部地球按钮可切下一个键盘。"),
             ("发送到电脑", "键盘底行蓝色「发送」= 发送消息（等同回车）。要发到电脑请长按「发送」，或从 ⋯ 菜单选「发送输入框文字 / 剪贴板文字 / 图片到电脑」。"),
             ("完全访问的用途", "键盘读取剪贴板、访问局域网同步服务与本机历史都需要它。密码框会强制使用系统键盘，属系统限制。")
         ]),
         AppTutorial(id: "history", title: "剪贴板历史",
-                    summary: "复制文字后，打开 QuickPaste；点记录即可复用。",
+                    summary: "复制文字后，打开 墨指；点记录即可复用。",
                     sections: [
-            ("保存文字", "在其他 App 复制文字后，切到 QuickPaste 键盘查看。开启「连续复制」后，每次呼出键盘会把系统剪贴板新文字收入历史。"),
+            ("保存文字", "在其他 App 复制文字后，切到 墨指 键盘查看。开启「连续复制」后，每次呼出键盘会把系统剪贴板新文字收入历史。"),
             ("搜索与复制", "在键盘「剪贴板」页上下滚动查找。点记录直接插入输入框；长按可复制到剪贴板、发送到电脑、放大图片或删除。"),
             ("整理历史", "置顶内容优先显示且不受历史保留天数清理影响。删除的记录可在「最近删除」恢复。"),
             ("电脑同步记录", "电脑 Ctrl+C 的文字和截图约 1 秒后出现在键盘列表，💻 = 电脑复制，📱 = 手机发的，图片显示缩略图。")
@@ -141,7 +141,7 @@ struct HistoryView: View {
                             Image(systemName: "doc.on.clipboard").font(.largeTitle)
                                 .foregroundColor(.secondary)
                             Text("还没有记录")
-                            Text("在别的 App 复制文字后，切到 QuickPaste 键盘即可看到同步内容与本机历史。")
+                            Text("在别的 App 复制文字后，切到 墨指 键盘即可看到同步内容与本机历史。")
                                 .font(.footnote).foregroundColor(.secondary)
                                 .multilineTextAlignment(.center)
                         }
@@ -225,7 +225,7 @@ struct CategoryView: View {
                     }
                 }
                 Section {
-                    Text("点一条即复制到系统剪贴板。在 QuickPaste 键盘的「常用语」Tab 里可直接点条目上屏。")
+                    Text("点一条即复制到系统剪贴板。在 墨指 键盘的「常用语」Tab 里可直接点条目上屏。")
                         .font(.footnote).foregroundColor(.secondary)
                 }
             }
@@ -249,7 +249,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("QuickPaste v1.8.7 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.17 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -274,7 +274,7 @@ struct SettingsView: View {
                         savedURL = u
                         draft = u
                         UIPasteboard.general.string = u
-                        hint = "已保存并复制地址。切到 QuickPaste 键盘会自动采用；也可在键盘设置里点「用剪贴板里的电脑地址」。"
+                        hint = "已保存并复制地址。切到 墨指 键盘会自动采用；也可在键盘设置里点「用剪贴板里的电脑地址」。"
                     } label: {
                         Label("保存并复制地址到剪贴板", systemImage: "doc.on.clipboard")
                     }
@@ -282,12 +282,12 @@ struct SettingsView: View {
                         Text("当前地址：\(savedURL)").font(.footnote).foregroundColor(.secondary)
                     }
                     if !hint.isEmpty { Text(hint).font(.footnote).foregroundColor(.blue) }
-                    Text("电脑需启动 QuickPaste 同步服务，且手机与电脑连同一 WiFi。IP 变化后重新填一次即可。")
+                    Text("电脑需启动 墨指 同步服务，且手机与电脑连同一 WiFi。IP 变化后重新填一次即可。")
                         .font(.footnote).foregroundColor(.secondary)
                 }
 
                 Section("2. 启用键盘") {
-                    Text("设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → QuickPaste\n然后点开 QuickPaste → 开启「允许完全访问」")
+                    Text("设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 墨指\n然后点开 墨指 → 开启「允许完全访问」")
                         .font(.subheadline)
                     Button {
                         if let url = URL(string: UIApplication.openSettingsURLString) {
@@ -297,7 +297,7 @@ struct SettingsView: View {
                 }
 
                 Section("3. 立即测试") {
-                    TextField("在这里输入，切到 QuickPaste 键盘试功能", text: $testText)
+                    TextField("在这里输入，切到 墨指 键盘试功能", text: $testText)
                     Text("键盘里点卡片直接上屏；💻=电脑复制，📱=手机发的；图片显示缩略图；蓝色「发送」把输入框文字发回电脑。")
                         .font(.footnote).foregroundColor(.secondary)
                 }
@@ -360,7 +360,7 @@ struct SyncSettingsView: View {
                     savedURL = draft
                     UIPasteboard.general.string = draft
                 }
-                Text("保存后切到 QuickPaste 键盘，在「设置 → 局域网同步」里点「用剪贴板里的电脑地址」即可采用。")
+                Text("保存后切到 墨指 键盘，在「设置 → 局域网同步」里点「用剪贴板里的电脑地址」即可采用。")
                     .font(.footnote).foregroundColor(.secondary)
             }
             Section("配对码（电脑端设了才填）") {
@@ -405,7 +405,7 @@ struct KbdSettingsView: View {
                 NavigationLink("局域网同步（CopyQ）") { SyncSettingsView() }
             }
             Section("键盘开关位置") {
-                Text("所有键盘开关都在【键盘内部】：切到 QuickPaste 键盘 → 点工具条「⋯」→ 设置 → 键盘设置。")
+                Text("所有键盘开关都在【键盘内部】：切到 墨指 键盘 → 点工具条「⋯」→ 设置 → 键盘设置。")
                     .font(.subheadline)
                 Text("包含：悬浮窗关闭按钮、点击直接切换、显示新内容提示、显示清空按钮、空格滑动移光标、发送后自动收起、连续复制、键盘增高、列数、工具条对齐。")
                     .font(.footnote).foregroundColor(.secondary)
@@ -418,14 +418,14 @@ struct KbdSettingsView: View {
                         UIApplication.shared.open(url)
                     }
                 } label: { Label("打开本 App 的系统设置", systemImage: "gear") }
-                Text("进入 设置 → 通用 → 键盘 → QuickPaste → 允许完全访问；并把「从其他 App 粘贴」设为允许。")
+                Text("进入 设置 → 通用 → 键盘 → 墨指 → 允许完全访问；并把「从其他 App 粘贴」设为允许。")
                     .font(.footnote).foregroundColor(.secondary)
             }
             Section("如何启用键盘") {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(["打开「设置」应用", "进入「通用」→「键盘」→「键盘」",
-                                  "点击「添加新键盘…」", "选择「QuickPaste」",
-                                  "点击「QuickPaste」并开启「允许完全访问」"].enumerated()), id: \.offset) { i, s in
+                                  "点击「添加新键盘…」", "选择「墨指」",
+                                  "点击「墨指」并开启「允许完全访问」"].enumerated()), id: \.offset) { i, s in
                         HStack(alignment: .top) {
                             Text("\(i + 1).").fontWeight(.semibold)
                             Text(s)
@@ -510,7 +510,7 @@ struct ContinuousView: View {
     var body: some View {
         Form {
             Section {
-                Text("连续复制会在你复制新内容时自动保存。iOS 不允许第三方键盘后台常驻监控或显示系统级悬浮窗，QuickPaste 的实现是：每次呼出键盘时把系统剪贴板里的新文字收入历史。")
+                Text("连续复制会在你复制新内容时自动保存。iOS 不允许第三方键盘后台常驻监控或显示系统级悬浮窗，墨指 的实现是：每次呼出键盘时把系统剪贴板里的新文字收入历史。")
                     .font(.subheadline)
             }
             Section("如何开启") {
@@ -565,13 +565,13 @@ struct TutorialDetailView: View {
 struct OnboardingView: View {
     var body: some View {
         List {
-            Section("启用 QuickPaste") {
+            Section("启用 墨指") {
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(Array(["安装后用爱思助手 / 手机端签名工具完成 7 天签名",
-                                  "设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → QuickPaste",
-                                  "点开 QuickPaste → 开启「允许完全访问」",
+                                  "设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 墨指",
+                                  "点开 墨指 → 开启「允许完全访问」",
                                   "打开主 App，填电脑地址 http://192.168.1.2:8787 并保存",
-                                  "在任意 App 输入框按地球仪切到 QuickPaste 即可使用"].enumerated()), id: \.offset) { i, s in
+                                  "在任意 App 输入框按地球仪切到 墨指 即可使用"].enumerated()), id: \.offset) { i, s in
                         HStack(alignment: .top) { Text("\(i + 1).").fontWeight(.semibold); Text(s) }
                     }
                 }
@@ -589,7 +589,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("QuickPaste v1.8.7 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.17 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

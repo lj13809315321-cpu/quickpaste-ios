@@ -19,7 +19,7 @@ enum QPExport {
     private static func head(_ count: Int) -> String {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return "QuickPaste 连续复制导出（\(f.string(from: Date()))，共 \(count) 条）"
+        return "墨指 连续复制导出（\(f.string(from: Date()))，共 \(count) 条）"
     }
 
     // MARK: 文本类
@@ -79,19 +79,19 @@ enum QPExport {
     }
 
     static func txtFile(_ items: [String]) -> URL? {
-        writeTemp(Data(txtText(items).utf8), name: "QuickPaste-连续复制-\(stamp).txt")
+        writeTemp(Data(txtText(items).utf8), name: "墨指-连续复制-\(stamp).txt")
     }
 
     static func csvFile(_ items: [String]) -> URL? {
-        writeTemp(Data(csvText(items).utf8), name: "QuickPaste-连续复制-\(stamp).csv")
+        writeTemp(Data(csvText(items).utf8), name: "墨指-连续复制-\(stamp).csv")
     }
 
     static func htmlFile(_ items: [String]) -> URL? {
-        writeTemp(Data(htmlText(items).utf8), name: "QuickPaste-连续复制-\(stamp).html")
+        writeTemp(Data(htmlText(items).utf8), name: "墨指-连续复制-\(stamp).html")
     }
 
     static func wordFile(_ items: [String]) -> URL? {
-        writeTemp(Data(wordText(items).utf8), name: "QuickPaste-连续复制-\(stamp).doc")
+        writeTemp(Data(wordText(items).utf8), name: "墨指-连续复制-\(stamp).doc")
     }
 
     // MARK: PDF（A4 分页，与键盘侧同一规则：每页按行排，页高有下界）
@@ -99,7 +99,7 @@ enum QPExport {
     static func pdfFile(_ items: [String]) -> URL? {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd HH:mm"
-        let title = "QuickPaste 连续复制导出（\(fmt.string(from: Date()))，共 \(items.count) 条）"
+        let title = "墨指 连续复制导出（\(fmt.string(from: Date()))，共 \(items.count) 条）"
 
         let pageRect = CGRect(x: 0, y: 0, width: 595.2, height: 841.8)   // A4 72dpi
         let margin: CGFloat = 40
@@ -147,7 +147,7 @@ enum QPExport {
             }
             _ = page
         }
-        return writeTemp(data, name: "QuickPaste-连续复制-\(stamp).pdf")
+        return writeTemp(data, name: "墨指-连续复制-\(stamp).pdf")
     }
 
     private static func measure(_ s: String, font: UIFont, width: CGFloat) -> CGFloat {
@@ -199,7 +199,7 @@ enum QPExport {
                 options: [.usesLineFragmentOrigin], attributes: bodyAttr, context: nil)
         }
         guard let png = img.pngData() else { return nil }
-        return writeTemp(png, name: "QuickPaste-连续复制-\(stamp).png")
+        return writeTemp(png, name: "墨指-连续复制-\(stamp).png")
     }
 
     // MARK: Excel（.xlsx，手写 stored-ZIP + Office Open XML，无第三方依赖）
@@ -340,6 +340,6 @@ enum QPExport {
 
     static func xlsxFile(_ items: [String]) -> URL? {
         guard let d = xlsxData(items) else { return nil }
-        return writeTemp(d, name: "QuickPaste-连续复制-\(stamp).xlsx")
+        return writeTemp(d, name: "墨指-连续复制-\(stamp).xlsx")
     }
 }

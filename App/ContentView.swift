@@ -4,7 +4,7 @@ import UIKit
 /// 主 App：v1.6 同步输入法的启用引导 + 电脑地址设置。
 ///
 /// 注意：这里不是网页、不是演示页。真正的界面是系统键盘扩展
-/// QuickPasteKeyboard.appex（见 Keyboard/KeyboardViewController.swift）。
+/// MozhiKeyboard.appex（见 Keyboard/KeyboardViewController.swift）。
 /// 本 App 只做：填电脑地址、把地址放进剪贴板供键盘读取、引导启用键盘与完全访问。
 ///
 /// 为什么用剪贴板传地址：键盘扩展与主 App 默认不共享 UserDefaults，
@@ -67,13 +67,13 @@ struct ContentView: View {
                 } header: {
                     Text("连续复制")
                 } footer: {
-                    Text("iOS 要求 App 在后台读剪贴板必须获得允许：设置 → QuickPaste → "
+                    Text("iOS 要求 App 在后台读剪贴板必须获得允许：设置 → 墨指 → "
                          + "从其他 App 粘贴 → 允许。不设成允许的话，后台只能读到空内容。")
                 }
 
                 Section("这是什么") {
-                    Text("QuickPaste 是一个真正的系统输入法，不是网页演示。\n"
-                       + "在任何 App 的输入框切到「QuickPaste」键盘，就能直接看到并粘贴电脑上复制的文字、截图，"
+                    Text("墨指 是一个真正的系统输入法，不是网页演示。\n"
+                       + "在任何 App 的输入框切到「墨指」键盘，就能直接看到并粘贴电脑上复制的文字、截图，"
                        + "也能把手机上输入的内容发回电脑。")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
@@ -89,7 +89,7 @@ struct ContentView: View {
                         savedURL = u
                         draft = u
                         UIPasteboard.general.string = u
-                        hint = "已保存并复制地址。切到 QuickPaste 键盘时会自动读取；也可在键盘里长按 ⧉ →「用剪贴板里的电脑地址」。"
+                        hint = "已保存并复制地址。切到 墨指 键盘时会自动读取；也可在键盘里长按 ⧉ →「用剪贴板里的电脑地址」。"
                     } label: {
                         Label("保存并复制地址到剪贴板", systemImage: "doc.on.clipboard")
                     }
@@ -101,7 +101,7 @@ struct ContentView: View {
                     if !hint.isEmpty {
                         Text(hint).font(.footnote).foregroundColor(.blue)
                     }
-                    Text("电脑上要启动 QuickPaste 同步服务，且 iPhone 与电脑连同一 WiFi。"
+                    Text("电脑上要启动 墨指 同步服务，且 iPhone 与电脑连同一 WiFi。"
                        + "IP 由路由器分配，重连 WiFi 后可能变化；在电脑上打开 "
                        + "http://127.0.0.1:8787/api/status 可看 lanIPs。")
                         .font(.footnote)
@@ -109,8 +109,8 @@ struct ContentView: View {
                 }
 
                 Section("2. 启用键盘") {
-                    Text("设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → QuickPaste\n"
-                       + "然后点开 QuickPaste → 打开「允许完全访问」")
+                    Text("设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 墨指\n"
+                       + "然后点开 墨指 → 打开「允许完全访问」")
                         .font(.subheadline)
                     Button {
                         if let url = URL(string: UIApplication.openSettingsURLString) {
@@ -126,7 +126,7 @@ struct ContentView: View {
                 }
 
                 Section("3. 立即测试") {
-                    TextField("在这里输入，切到 QuickPaste 键盘试功能", text: $testText)
+                    TextField("在这里输入，切到 墨指 键盘试功能", text: $testText)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled(true)
                     Text("键盘里：点卡片直接上屏；💻 = 电脑复制，📱 = 手机发的；图片显示缩略图，点开可复制；"
@@ -151,7 +151,7 @@ struct ContentView: View {
                         .foregroundColor(.secondary)
                 }
             }
-            .navigationTitle("QuickPaste 同步键盘")
+            .navigationTitle("墨指 同步键盘")
         }
         .onAppear {
             draft = savedURL.isEmpty ? Self.defaultURL : savedURL

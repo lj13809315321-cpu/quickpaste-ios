@@ -2,13 +2,13 @@ import UIKit
 import ImageIO
 import NaturalLanguage
 
-/// QuickPaste v1.6 真·系统键盘（iOS Keyboard Extension）。
+/// 墨指 v1.8.17 真·系统键盘（iOS Keyboard Extension）。
 ///
 /// 界面 1:1 对齐 quickpaste-ios-prototype.html 的 renderKeyboard() / syncHead：
 ///   连接状态头 / 工具条 / 剪贴板卡片 + 💻📱 来源图标 / 图片缩略图 /
 ///   清空行 / 底行按键 / 浮层菜单。
 /// 数据源是电脑端 sync/server.js 的局域网同步服务，不是演示用的本地数组。
-/// 前提是用户在 设置 → 通用 → 键盘 → QuickPaste → 打开「允许完全访问」。
+/// 前提是用户在 设置 → 通用 → 键盘 → 墨指 → 打开「允许完全访问」。
 final class KeyboardViewController: UIInputViewController {
 
     private var prefs = KeyboardPrefs()
@@ -949,7 +949,7 @@ final class KeyboardViewController: UIInputViewController {
 
         guard !displayItems.isEmpty else {
             let msg = !hasFullAccess
-                ? "无法读取剪贴板\n请到 设置 → 通用 → 键盘 → QuickPaste\n开启「允许完全访问」"
+                ? "无法读取剪贴板\n请到 设置 → 通用 → 键盘 → 墨指\n开启「允许完全访问」"
                 : "暂无剪贴板内容\n在任意 App 复制文字后切回键盘，或连接电脑同步"
             listStack.addArrangedSubview(emptyLabel(msg))
             let b = QPHapticButton(type: .system)
@@ -1516,7 +1516,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.16 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.17 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -2805,7 +2805,7 @@ final class KeyboardViewController: UIInputViewController {
         fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
         let stamp = DateFormatter()
         stamp.dateFormat = "yyyyMMdd-HHmmss"
-        let head = "QuickPaste 剪贴板导出（\(fmt.string(from: Date()))，共 \(texts.count) 条）"
+        let head = "墨指 剪贴板导出（\(fmt.string(from: Date()))，共 \(texts.count) 条）"
 
         func send(_ data: Data, name: String, mime: String) {
             client.pushFile(data, name: name, mime: mime) { err in
@@ -2824,7 +2824,7 @@ final class KeyboardViewController: UIInputViewController {
             }
             let body = head + "\n\n" + lines.joined(separator: "\n\n————\n\n")
             send(body.data(using: .utf8) ?? Data(),
-                 name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).txt",
+                 name: "墨指-剪贴板-\(stamp.string(from: Date())).txt",
                  mime: "text/plain")
         case "csv":
             var rows = ["序号,时间,来源,类型,内容"]
@@ -2838,27 +2838,27 @@ final class KeyboardViewController: UIInputViewController {
             }
             var data = Data([0xEF, 0xBB, 0xBF])   // BOM：Excel 打开中文不乱码
             data.append(rows.joined(separator: "\r\n").data(using: .utf8) ?? Data())
-            send(data, name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).csv",
+            send(data, name: "墨指-剪贴板-\(stamp.string(from: Date())).csv",
                  mime: "text/csv")
         case "word":
             // .doc（HTML 包装，Word/WPS 直接打开，带 Office 命名空间）
             send(exportHTML(texts, head: head, fmt: fmt).data(using: .utf8) ?? Data(),
-                 name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).doc",
+                 name: "墨指-剪贴板-\(stamp.string(from: Date())).doc",
                  mime: "application/msword")
         case "html":
             send(exportHTML(texts, head: head, fmt: fmt).data(using: .utf8) ?? Data(),
-                 name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).html",
+                 name: "墨指-剪贴板-\(stamp.string(from: Date())).html",
                  mime: "text/html")
         case "pdf":
             send(exportPDFData(texts, head: head, fmt: fmt),
-                 name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).pdf",
+                 name: "墨指-剪贴板-\(stamp.string(from: Date())).pdf",
                  mime: "application/pdf")
         case "image":
             let text = texts.map { $0.text }.joined(separator: "\n\n")
             guard !text.isEmpty else { showToast("没有可渲染的文字内容"); return }
-            let png = renderTextImage(text, title: "QuickPaste 剪贴板导出 · \(fmt.string(from: Date()))")
+            let png = renderTextImage(text, title: "墨指 剪贴板导出 · \(fmt.string(from: Date()))")
             guard let data = png.pngData() else { showToast("图片生成失败"); return }
-            send(data, name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).png",
+            send(data, name: "墨指-剪贴板-\(stamp.string(from: Date())).png",
                  mime: "image/png")
             // 列表里的图片条目：原图一并推送（最多 5 张）
             for it in images.prefix(5) {
@@ -2874,7 +2874,7 @@ final class KeyboardViewController: UIInputViewController {
             guard let data = QPExport.xlsxData(texts.map { $0.text }) else {
                 showToast("Excel 生成失败"); return
             }
-            send(data, name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).xlsx",
+            send(data, name: "墨指-剪贴板-\(stamp.string(from: Date())).xlsx",
                  mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         default:
             break
@@ -2906,7 +2906,7 @@ final class KeyboardViewController: UIInputViewController {
              + "xmlns:w=\"urn:schemas-microsoft-com:office:word\">"
              + "<head><meta charset=\"utf-8\"><title>\(htmlEscape(head))</title></head>"
              + "<body><h2 style=\"font-size:15pt;\">\(htmlEscape(head))</h2>\(rows)"
-             + "<p style=\"color:#999;font-size:9pt;\">由 QuickPaste 输入法导出</p></body></html>"
+             + "<p style=\"color:#999;font-size:9pt;\">由 墨指 输入法导出</p></body></html>"
     }
 
     /// 多页 A4 PDF：条目标题 + 正文，逐段换页；超长正文按 900 字分段防截断
@@ -2914,7 +2914,7 @@ final class KeyboardViewController: UIInputViewController {
         let pageRect = CGRect(x: 0, y: 0, width: 595.2, height: 841.8) // A4 72dpi
         let format = UIGraphicsPDFRendererFormat()
         format.documentInfo = [kCGPDFContextTitle as String: head,
-                               kCGPDFContextCreator as String: "QuickPaste"]
+                               kCGPDFContextCreator as String: "墨指"]
         let renderer = UIGraphicsPDFRenderer(bounds: pageRect, format: format)
         return renderer.pdfData { ctx in
             var y: CGFloat = 50

@@ -1,4 +1,4 @@
-package app.mulberry6323.quickpaste;
+package app.mulberry6323.mozhi;
 
 import android.content.Context;
 
@@ -29,18 +29,18 @@ public final class QpExport {
     public static File write(Context ctx, List<String> texts, String format) throws Exception {
         File dir = exportDir(ctx);
         if ("csv".equals(format)) {
-            File f = new File(dir, "quickpaste_clipboard.csv");
+            File f = new File(dir, "mozhi_clipboard.csv");
             writeCsv(f, texts);
             return f;
         } else if ("xlsx".equals(format)) {
-            File f = new File(dir, "quickpaste_clipboard.xlsx");
+            File f = new File(dir, "mozhi_clipboard.xlsx");
             byte[] data = xlsxData(texts);
             FileOutputStream os = new FileOutputStream(f);
             os.write(data);
             os.close();
             return f;
         } else {
-            File f = new File(dir, "quickpaste_clipboard.txt");
+            File f = new File(dir, "mozhi_clipboard.txt");
             StringBuilder sb = new StringBuilder();
             for (String t : texts) sb.append(t == null ? "" : t).append("\n");
             FileOutputStream os = new FileOutputStream(f);
@@ -97,7 +97,7 @@ public final class QpExport {
                 "<cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\" " +
                 "xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:dcterms=\"http://purl.org/dc/terms/\" " +
                 "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">" +
-                "<dc:title>QuickPaste 剪贴板</dc:title><dc:creator>QuickPaste</dc:creator>" +
+                "<dc:title>墨指 剪贴板</dc:title><dc:creator>墨指</dc:creator>" +
                 "</cp:coreProperties>");
 
         put(zos, "xl/workbook.xml",

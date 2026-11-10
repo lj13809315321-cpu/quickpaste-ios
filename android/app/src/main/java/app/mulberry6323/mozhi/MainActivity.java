@@ -1,4 +1,4 @@
-package app.mulberry6323.quickpaste;
+package app.mulberry6323.mozhi;
 
 import android.app.Activity;
 import android.content.Context;
@@ -63,7 +63,7 @@ public class MainActivity extends Activity {
         setContentView(scroll);
 
         TextView title = new TextView(this);
-        title.setText("QuickPaste 同步键盘");
+        title.setText("墨指 同步键盘");
         title.setTextSize(26);
         title.setTextColor(TEXT);
         title.setTypeface(Typeface.DEFAULT_BOLD);
@@ -149,8 +149,8 @@ public class MainActivity extends Activity {
                 if (imm != null) imm.showInputMethodPicker();
             }
         }));
-        page.addView(label("勾选「QuickPaste 同步键盘」，在任意输入框长按 → 选择输入法即可切换。"));
-        page.addView(field("立即测试（切到 QuickPaste 键盘后使用）"));
+        page.addView(label("勾选「墨指 同步键盘」，在任意输入框长按 → 选择输入法即可切换。"));
+        page.addView(field("立即测试（切到 墨指 键盘后使用）"));
         EditText testInput = new EditText(this);
         testInput.setHint("点这里输入，键盘里的同步条目点一下就会插到这里");
         testInput.setMinLines(2);
@@ -219,8 +219,8 @@ public class MainActivity extends Activity {
         // ---- 说明 ----
         page.addView(cardBegin("怎么用"));
         page.addView(label(
-                "· 电脑端 QuickPaste 同步服务保持开启，手机与电脑连同一 WiFi\n"
-                        + "· 在任意 App 的输入框切到 QuickPaste 同步键盘\n"
+                "· 电脑端 墨指 同步服务保持开启，手机与电脑连同一 WiFi\n"
+                        + "· 在任意 App 的输入框切到 墨指 同步键盘\n"
                         + "· 电脑复制的文字/截图会出现在键盘卡片里，点一下直接上屏\n"
                         + "· 💻 = 电脑复制，📱 = 手机发的；图片卡片显示缩略图\n"
                         + "· 底行蓝色「发送」把当前输入框文字发回电脑，电脑 Ctrl+V 可粘贴\n"
@@ -303,7 +303,7 @@ public class MainActivity extends Activity {
             statusLabel.setText("状态：已启用，但还不是当前输入法（点下面按钮切换）");
             statusLabel.setTextColor(BLUE);
         } else {
-            statusLabel.setText("状态：尚未启用，请先到系统设置里勾选「QuickPaste 同步键盘」");
+            statusLabel.setText("状态：尚未启用，请先到系统设置里勾选「墨指 同步键盘」");
             statusLabel.setTextColor(BLUE);
         }
     }

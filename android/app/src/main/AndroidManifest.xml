@@ -8,6 +8,8 @@
 
     <application
         android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:usesCleartextTraffic="true"
         android:supportsRtl="true">
@@ -26,7 +28,7 @@
 
         <!-- 真正的系统输入法：BIND_INPUT_METHOD + android.view.im 元数据 -->
         <service
-            android:name=".QuickPasteIME"
+            android:name=".MozhiIME"
             android:exported="true"
             android:label="@string/ime_name"
             android:permission="android.permission.BIND_INPUT_METHOD">

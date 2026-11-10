@@ -5,15 +5,15 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>zh_CN</string>
     <key>CFBundleDisplayName</key>
-    <string>QuickPaste</string>
+    <string>墨指</string>
     <key>CFBundleExecutable</key>
-    <string>QuickPaste</string>
+    <string>Mozhi</string>
     <key>CFBundleIdentifier</key>
-    <string>app.mulberry6323.twilight7904</string>
+    <string>app.mulberry6323.mozhi</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>QuickPaste</string>
+    <string>Mozhi</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -32,7 +32,7 @@
         <true/>
     </dict>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>QuickPaste 需要访问局域网，以连接同一 WiFi 下电脑上的剪贴板同步服务。</string>
+    <string>墨指 需要访问局域网，以连接同一 WiFi 下电脑上的剪贴板同步服务。</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>用于选择要同步到电脑的图片。</string>
     <key>UILaunchScreen</key>
@@ -45,10 +45,10 @@
     <array>
         <dict>
             <key>CFBundleURLName</key>
-            <string>app.mulberry6323.twilight7904</string>
+            <string>app.mulberry6323.mozhi</string>
             <key>CFBundleURLSchemes</key>
             <array>
-                <string>quickpaste</string>
+                <string>mozhi</string>
             </array>
         </dict>
     </array>

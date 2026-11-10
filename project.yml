@@ -1,10 +1,10 @@
-# QuickPaste v1.6 真·同步输入法（iOS）
+# 墨指 Mozhi v1.8.17 真·同步输入法（iOS）
 # 双 target：主 App（引导/地址设置/系统画中画 PiP）+ 键盘扩展（真正的系统键盘 UI）。
 # 不硬编码 App Groups entitlement —— 手机端签名工具按自己的描述文件来；
 # 共享通道在 Shared/QPSharedHistory.swift 里运行时自动选择。
-# 用法：macOS 上 `xcodegen generate` 生成 QuickPaste.xcodeproj
+# 用法：macOS 上 `xcodegen generate` 生成 Mozhi.xcodeproj
 
-name: QuickPaste
+name: Mozhi
 
 options:
   deploymentTarget:
@@ -19,7 +19,7 @@ settings:
     GENERATE_INFOPLIST_FILE: NO
 
 targets:
-  QuickPaste:
+  Mozhi:
     type: application
     platform: iOS
     sources:
@@ -29,13 +29,15 @@ targets:
       path: App/Info.plist
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.mulberry6323.twilight7904
+        PRODUCT_BUNDLE_IDENTIFIER: app.mulberry6323.mozhi
         GENERATE_INFOPLIST_FILE: NO
+        # v1.8.17：接入墨指图标（App/Assets.xcassets/AppIcon）
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
-      - target: QuickPasteKeyboard
+      - target: MozhiKeyboard
         embed: true
 
-  QuickPasteKeyboard:
+  MozhiKeyboard:
     type: app-extension
     platform: iOS
     sources:
@@ -45,18 +47,19 @@ targets:
       path: Keyboard/Info.plist
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.mulberry6323.twilight7904.keyboard
-        PRODUCT_MODULE_NAME: QuickPasteKeyboard
+        PRODUCT_BUNDLE_IDENTIFIER: app.mulberry6323.mozhi.keyboard
+        # v1.8.17：Swift 模块名改为 MozhiKeyboard（影响 NSExtensionPrincipalClass）
+        PRODUCT_MODULE_NAME: MozhiKeyboard
         GENERATE_INFOPLIST_FILE: NO
         # 路线 E：桥接 ObjC 参考实现 KeyboardButtonBar（黄白风格底栏按钮）。
         # 该文件只需 import 需要的 ObjC 头文件，路径相对工程根目录。
-        SWIFT_OBJC_BRIDGING_HEADER: Keyboard/QuickPasteKeyboard-Bridging-Header.h
+        SWIFT_OBJC_BRIDGING_HEADER: Keyboard/MozhiKeyboard-Bridging-Header.h
 
 schemes:
-  QuickPaste:
+  Mozhi:
     build:
       targets:
-        QuickPaste: all
-        QuickPasteKeyboard: all
+        Mozhi: all
+        MozhiKeyboard: all
     archive:
       config: Release

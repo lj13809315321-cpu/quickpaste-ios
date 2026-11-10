@@ -1,5 +1,5 @@
 //
-//  QuickPasteKeyboard-Bridging-Header.h
+//  MozhiKeyboard-Bridging-Header.h
 //  把 ObjC 参考实现（路线 E：黄白风格底栏按钮）暴露给 Swift 工程。
 //
 //  说明：

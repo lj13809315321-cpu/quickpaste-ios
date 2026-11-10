@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct QuickPasteApp: App {
+struct MozhiApp: App {
     var body: some Scene {
         WindowGroup {
             AppRootView()

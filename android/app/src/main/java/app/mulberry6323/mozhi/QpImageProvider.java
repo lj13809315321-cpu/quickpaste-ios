@@ -1,4 +1,4 @@
-package app.mulberry6323.quickpaste;
+package app.mulberry6323.mozhi;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;

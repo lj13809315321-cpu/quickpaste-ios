@@ -9,7 +9,7 @@ import UIKit
 ///
 /// 两级通道，按签名环境自动选择，不需要额外 entitlement：
 ///   1. App Group 共享容器 —— 若手机端签名工具给主 App 和键盘扩展都开了
-///      group.app.mulberry6323.twilight7904，读写共享 JSON，最干净。
+///      group.app.mulberry6323.mozhi，读写共享 JSON，最干净。
 ///   2. 系统剪贴板里的一个自定义类型 —— 零 entitlement 的兜底。
 ///      ⚠️ 关键约束：只能**合并进已有的那一个 item**，不能追加成第二个 item。
 ///      剪贴板一旦变成多 item，`UIPasteboard.string` 就读不到正文了，
@@ -64,9 +64,9 @@ enum QPSharedHistory {
         }
     }
 
-    static let groupID = "group.app.mulberry6323.twilight7904"
+    static let groupID = "group.app.mulberry6323.mozhi"
     private static let pbType = "app.mulberry6323.qp.capture"
-    private static let fileName = "qp-shared-history.json"
+    private static let fileName = "mozhi-shared-history.json"
     private static let maxItems = 30
 
     /// 没有 App Group 时是否允许用系统剪贴板兜底。

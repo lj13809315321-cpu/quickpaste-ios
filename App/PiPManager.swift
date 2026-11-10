@@ -125,7 +125,7 @@ final class QPPiPViewController: AVPictureInPictureVideoCallViewController {
             : .white
         countLabel.text = blocked ? "需要允许粘贴" : "已收录 \(count) 条"
         subLabel.text = blocked
-            ? "系统设置 → QuickPaste → 从其他 App 粘贴 → 允许"
+            ? "系统设置 → 墨指 → 从其他 App 粘贴 → 允许"
             : "Continuous copying…"
         if scaledSize > 0 { applyFonts(scaledSize) }
     }
@@ -140,7 +140,7 @@ final class QPPiPViewController: AVPictureInPictureVideoCallViewController {
 ///   · 主 App 想留在后台，必须有合法的后台模式。这里用系统画中画 + 音频
 ///     让 App 保持存活；
 ///   · ★ 即使 App 活着，iOS 16 起也不许它随便读剪贴板：必须由用户把
-///     「设置 → QuickPaste → 从其他 App 粘贴」设成【允许】。否则后台每次读
+///     「设置 → 墨指 → 从其他 App 粘贴」设成【允许】。否则后台每次读
 ///     都拿到 nil（前台会弹一次授权框，后台连框都不弹，直接给 nil）。
 ///     上一版就是只抓到第 1 条（那时 App 还在前台），之后永远是 nil，
 ///     于是小窗永远显示「已收录 1 条」。
@@ -489,7 +489,7 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         guard pb.hasStrings else { return }
         guard let raw = pb.string else {
             // ★ 有关键字却读不到正文 = 被系统拦了。
-            // 后台/前台都可能发生，只有「设置 → QuickPaste → 从其他 App 粘贴 → 允许」能解。
+            // 后台/前台都可能发生，只有「设置 → 墨指 → 从其他 App 粘贴 → 允许」能解。
             markBlocked()
             return
         }
@@ -548,7 +548,7 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         DispatchQueue.main.async {
             self.blocked = true
             self.contentVC?.update(blocked: true, count: Self.mergedItems().count)
-            self.message = "系统不让后台读剪贴板：设置 → QuickPaste → 从其他 App 粘贴 → 允许"
+            self.message = "系统不让后台读剪贴板：设置 → 墨指 → 从其他 App 粘贴 → 允许"
         }
     }
 
@@ -831,7 +831,7 @@ struct PiPControlView: View {
                 }
 
                 Section("收不到内容时按顺序检查") {
-                    checkRow("1", "设置 → QuickPaste → 从其他 App 粘贴 → 允许")
+                    checkRow("1", "设置 → 墨指 → 从其他 App 粘贴 → 允许")
                     checkRow("2", "设置 → 通用 → 画中画 → 打开「自动开启画中画」")
                     checkRow("3", "小窗要一直在屏幕上；App 被划掉、小窗被点 ✕ 就停止监听了")
                 }

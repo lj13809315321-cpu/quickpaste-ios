@@ -210,7 +210,7 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
         }
         UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
         button.tag = kKBBarTagBase + action;
-        // 与 QuickPaste 主工程 QPColor.ink 一致的自适应墨色（深色模式白色图标）
+        // 与 墨指 主工程 QPColor.ink 一致的自适应墨色（深色模式白色图标）
         UIColor *ink = [UIColor colorWithDynamicProvider:^UIColor * (UITraitCollection *trait) {
             return trait.userInterfaceStyle == UIUserInterfaceStyleDark
                 ? [UIColor colorWithRed:240.0 / 255.0 green:241.0 / 255.0 blue:245.0 / 255.0 alpha:1]
@@ -273,7 +273,7 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
 }
 
 - (void)kb_buttonTapped:(UIButton *)sender {
-    // 与 QuickPaste 主工程「按键震动」开关共用 qp.cursorHaptic（默认开）
+    // 与 墨指 主工程「按键震动」开关共用 qp.cursorHaptic（默认开）
     NSNumber *hapticPref = [[NSUserDefaults standardUserDefaults] objectForKey:@"qp.cursorHaptic"];
     if (hapticPref == nil || hapticPref.boolValue) {
         static UIImpactFeedbackGenerator *gen = nil;

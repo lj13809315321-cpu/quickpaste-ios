@@ -3,15 +3,15 @@ plugins {
 }
 
 android {
-    namespace 'app.mulberry6323.quickpaste'
+    namespace 'app.mulberry6323.mozhi'
     compileSdk 34
 
     defaultConfig {
-        applicationId 'app.mulberry6323.quickpaste'
+        applicationId 'app.mulberry6323.mozhi'
         minSdk 24
         targetSdk 34
-        versionCode 34
-        versionName '1.8.16-inputmethod'
+        versionCode 35
+        versionName '1.8.17-inputmethod'
     }
 
     // debug 构建使用 Android 自动生成的 debug keystore 签名，
