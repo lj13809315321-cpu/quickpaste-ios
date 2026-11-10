@@ -211,7 +211,8 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             navRow("局域网同步（CopyQ）", value: s.title) { [weak self] in self?.push(.sync) },
             navRow("键盘设置") { [weak self] in self?.push(.kbd) },
             navRow("快捷符号") { [weak self] in self?.push(.symbols) },
-            navRow("连续复制") { [weak self] in self?.push(.continuous) },
+            // v1.8.22：删掉「连续复制」入口 —— 整页都是画中画说明，
+            // 和主 App 的连续复制 Tab 重复；真有用的开关已搬进「键盘设置」。
             navRow("使用教程") { [weak self] in self?.push(.tutorials) }
         ]))
 
@@ -255,7 +256,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             navRow("重新播放引导页") { [weak self] in self?.push(.onboarding) },
             navRow("关于本版本") { [weak self] in self?.push(.about) }
         ]))
-        body.addArrangedSubview(foot("墨指 v1.8.21 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
+        body.addArrangedSubview(foot("墨指 v1.8.22 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
     }
 
     // MARK: - 键盘设置（开关）
@@ -269,12 +270,8 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         ]))
         body.addArrangedSubview(foot("本键盘是系统键盘扩展，iOS 不允许直接跳转系统设置；请按上面路径手动进入。「允许完全访问」是联网同步与读取剪贴板的前提。"))
 
-        body.addArrangedSubview(groupTitle("子设置"))
-        body.addArrangedSubview(card([
-            navRow("快捷符号") { [weak self] in self?.push(.symbols) },
-            navRow("连续复制") { [weak self] in self?.push(.continuous) },
-            navRow("局域网同步（CopyQ）") { [weak self] in self?.push(.sync) }
-        ]))
+        // v1.8.22：删掉这里重复的「快捷符号 / 连续复制 / 局域网同步」三个入口。
+        // 设置首页已经各有一份，点进「键盘设置」又看到一层同样的入口就是版面重复。
 
         body.addArrangedSubview(groupTitle("键盘开关"))
         body.addArrangedSubview(card([
@@ -299,7 +296,21 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             switchRow("发送后自动收起键盘", sub: "默认关闭，可连续发送",
                       isOn: prefs.autoCollapse) { [weak self] v in self?.prefs.autoCollapse = v },
             switchRow("键盘可见时自动抓取", sub: "键盘弹着的时候，连续复制第 2、3、N 段都会实时进列表，无需收起再弹出",
-                      isOn: prefs.continuous) { [weak self] v in self?.prefs.continuous = v }
+                      isOn: prefs.continuous) { [weak self] v in self?.prefs.continuous = v },
+            // v1.8.22：两端共用开关。点一条旧记录上屏后把它排到列表最前，
+            // 主 App 设置 → 局域网同步里是同一个开关。
+            switchRow("复制后移到最前",
+                      sub: "点一条旧记录使用后自动排到列表最前；系统里复制新内容一直都会置顶。两端共用这个开关",
+                      isOn: QPSharedHistory.moveUsedToTopOn()) { [weak self] v in
+                QPSharedHistory.setMoveUsedToTop(v)
+                self?.delegate?.settingsDidChange()
+            },
+            // 原「连续复制」子页里唯一真正有用的设置，搬到开关区，页面本身不再保留入口
+            cycleRow("存储位置", values: ["剪贴板历史", "常用语"],
+                     selected: prefs.storage == "常用语" ? 1 : 0) { [weak self] i in
+                self?.prefs.storage = i == 0 ? "剪贴板历史" : "常用语"
+                self?.render()
+            }
         ]))
 
         body.addArrangedSubview(groupTitle("✕ 键删除手势"))
@@ -324,6 +335,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             cycleRow("工具条按钮对齐", values: ["居左", "居中", "居右"],
                      selected: ["left", "center", "right"].firstIndex(of: prefs.align) ?? 0) { [weak self] i in
                 self?.prefs.align = ["left", "center", "right"][i]
+                self?.syncSymbolsToApp()
                 self?.delegate?.settingsDidChange()
                 self?.render()
             }
@@ -350,6 +362,13 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
 
     // MARK: - 快捷符号设置
 
+    /// v1.8.22：键盘里改了符号 / 数量 / 对齐，回写共享通道，主 App 跟随。
+    /// 记下写入时间戳，免得下次 refreshSymbols 又拿同一份值覆盖键盘。
+    private func syncSymbolsToApp() {
+        prefs.symbolsAt = QPSharedHistory.setSharedSymbols(
+            prefs.symbols, count: prefs.symbolCount, align: prefs.align)
+    }
+
     private func renderSymbols() {
         body.addArrangedSubview(foot("工具条中间显示常用符号，点一下插入光标处。排在前面的优先显示，放不下的收进「⋯」面板。"))
 
@@ -358,6 +377,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             cycleRow("对齐方式", values: ["居左", "居中", "居右"],
                      selected: ["left", "center", "right"].firstIndex(of: prefs.align) ?? 0) { [weak self] i in
                 self?.prefs.align = ["left", "center", "right"][i]
+                self?.syncSymbolsToApp()
                 self?.delegate?.settingsDidChange()
                 self?.render()
             },
@@ -379,6 +399,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             cycleRow("显示数量", values: ["2 个", "3 个", "4 个", "5 个"],
                      selected: max(0, min(3, prefs.symbolCount - 2))) { [weak self] i in
                 self?.prefs.symbolCount = i + 2
+                self?.syncSymbolsToApp()
                 self?.delegate?.settingsDidChange()
                 self?.render()
             },
@@ -396,9 +417,10 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
 
         body.addArrangedSubview(card([
             actionRow("恢复默认符号") { [weak self] in
-                self?.prefs.symbols = ["。", "，", "？", "！", "："]
+                self?.prefs.symbols = ["。", "，", "？", "！", "：", "；", "、", "…", "～", "「", "」", "（", "）", "·", "—"]
                 self?.prefs.symbolCount = 4
                 self?.prefs.align = "left"
+                self?.syncSymbolsToApp()
                 self?.delegate?.settingsDidChange()
                 self?.delegate?.settingsToast("已恢复默认符号")
                 self?.render()
@@ -537,7 +559,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
                 self?.delegate?.settingsClearAll()
             }
         ]))
-        body.addArrangedSubview(foot("电脑端需启动 墨指 同步服务（v1.8.21），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
+        body.addArrangedSubview(foot("电脑端需启动 墨指 同步服务（v1.8.22），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
     }
 
     // MARK: - 教程
@@ -660,6 +682,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         guard from >= 0, from < arr.count, to >= 0, to < arr.count else { return }
         arr.swapAt(from, to)
         prefs.symbols = arr
+        syncSymbolsToApp()
         delegate?.settingsDidChange()
         render()
     }
@@ -669,6 +692,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         guard arr.count > 1, at >= 0, at < arr.count else { return }
         arr.remove(at: at)
         prefs.symbols = arr
+        syncSymbolsToApp()
         delegate?.settingsDidChange()
         render()
     }
@@ -1072,6 +1096,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             var arr = self.prefs.symbols
             arr.append(String(s.prefix(4)))
             self.prefs.symbols = arr
+            self.syncSymbolsToApp()
             self.delegate?.settingsDidChange()
             self.delegate?.settingsToast("已添加 " + s)
             self.render()

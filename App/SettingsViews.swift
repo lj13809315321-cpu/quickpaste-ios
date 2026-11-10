@@ -1,5 +1,7 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
+import CoreFoundation
 
 /// 主 App 的 v1.6 设置与内容页（按 quickpaste-ios-prototype.html 的 PAGES 注册表）。
 ///
@@ -91,7 +93,7 @@ struct AppRootView: View {
         // 真正的开启在这里做：进来就自动开，用户少点一次。
         .onOpenURL { url in
             guard url.host == "pip" || url.absoluteString.contains("pip") else { return }
-            tab = 2   // v1.8.21：删掉连接页后，连续复制从 tag 3 变 tag 2
+            tab = 2   // v1.8.22：删掉连接页后，连续复制从 tag 3 变 tag 2
             QPSharedHistory.setWant(true)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
                 PiPManager.shared.start()
@@ -107,27 +109,48 @@ struct AppRootView: View {
     }
 }
 
-// MARK: - 剪贴板历史（v1.8.21：与「连续复制」页 / 键盘共用同一份数据）
+// MARK: - 剪贴板历史（v1.8.21 接真实数据源 / v1.8.22 补齐选择·全选·导出）
 
 struct HistoryView: View {
-    /// v1.8.21 修复「历史页永远空白」：
-    /// 旧版读 `qp.app.history`（主 App 一个孤立的本地键），全工程只有「记一条
-    /// （仅主 App 预览用）」会往里写，键盘和连续复制都不写它 → 页面没有作用。
-    /// 现在改读 PiPManager.mergedItems()：主 App 本地收录（qp.app.pipHistory）
-    /// ∪ 跨进程共享通道（QPSharedHistory），按时间倒序、去重、过滤删除墓碑，
-    /// 与「连续复制」Tab 显示的是同一份记录。
+    /// v1.8.21 修复「历史页永远空白」：旧版读 `qp.app.history` 这个孤立本地键，
+    /// 全工程只有「记一条（仅主 App 预览用）」会写，键盘和连续复制都不写它。
+    /// 现在与「连续复制」Tab 一样读 PiPManager.mergedItems()：
+    /// 主 App 本地收录 ∪ 跨进程共享通道，按时间倒序、去重、过滤删除墓碑。
     @State private var entries: [(text: String, ts: Double)] = PiPManager.mergedItems()
     @State private var draft = ""
     @State private var search = ""
-    @State private var flash = ""
+    @State private var flashMsg = ""
+    /// v1.8.22：把「连续复制」页的筛选 / 选择 / 全选 / 导出整套搬过来（同一份功能）
+    @State private var filterKind = 0
+    @State private var editMode = false
+    @State private var selection = Set<String>()
+    @State private var sharePayload: [Any]?
+    @State private var confirmDelete = false
     @Environment(\.scenePhase) private var scenePhase
 
-    private var filtered: [(text: String, ts: Double)] {
+    private static func isLink(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.hasPrefix("http://") || t.hasPrefix("https://") || t.hasPrefix("www.")
+    }
+
+    private var searched: [(text: String, ts: Double)] {
         search.isEmpty ? entries
                        : entries.filter { $0.text.localizedCaseInsensitiveContains(search) }
     }
+    private var filtered: [(text: String, ts: Double)] {
+        switch filterKind {
+        case 1: return searched.filter { !Self.isLink($0.text) }
+        case 2: return searched.filter { Self.isLink($0.text) }
+        default: return searched
+        }
+    }
+    private var filterName: String { ["全部", "文本", "链接"][filterKind] }
 
     private func reload() { entries = PiPManager.mergedItems() }
+    private func notice(_ s: String) {
+        flashMsg = s
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { flashMsg = "" }
+    }
 
     var body: some View {
         NavigationStack {
@@ -139,20 +162,72 @@ struct HistoryView: View {
                         Button("添加") {
                             let t = draft.trimmingCharacters(in: .whitespacesAndNewlines)
                             guard !t.isEmpty else { return }
-                            // 真添加：本地 + 共享通道各写一份，键盘下次弹出即可读到
                             PiPManager.appendLocal(t)
                             _ = QPSharedHistory.append(t)
                             draft = ""
                             reload()
-                            flash = "已添加，键盘与连续复制页同步可见"
+                            notice("已添加，键盘与连续复制页同步可见")
                         }
                         .buttonStyle(.borderless)
                     }
-                    if !flash.isEmpty {
-                        Text(flash).font(.footnote).foregroundColor(.blue)
+                    if !flashMsg.isEmpty {
+                        Text(flashMsg).font(.footnote).foregroundColor(.blue)
                     }
                 } footer: {
-                    Text("这一页显示的是与「连续复制」页完全同一份记录：主 App 后台收录的、键盘里复制的、画中画抓到的，都在这里。点条目复制到剪贴板，左滑删除。")
+                    Text("这一页显示的是与「连续复制」页完全同一份记录：主 App 后台收录的、键盘里复制的、画中画抓到的，都在这里。")
+                }
+
+                // ── v1.8.22 与「连续复制」页同款：筛选 / 导出 / 选择 ──
+                Section {
+                    HStack(spacing: 16) {
+                        Menu {
+                            Picker("筛选", selection: $filterKind) {
+                                Text("全部").tag(0)
+                                Text("文本").tag(1)
+                                Text("链接").tag(2)
+                            }
+                        } label: {
+                            Label(filterName, systemImage: "line.3.horizontal.decrease.circle")
+                        }
+                        Menu {
+                            exportButton("导出为 TXT", texts: { QPExport.txtFile($0) })
+                            exportButton("导出为 CSV", texts: { QPExport.csvFile($0) })
+                            exportButton("导出为 Excel(.xlsx)", texts: { QPExport.xlsxFile($0) })
+                            exportButton("导出为 Word(.doc)", texts: { QPExport.wordFile($0) })
+                            exportButton("导出为 PDF", texts: { QPExport.pdfFile($0) })
+                            exportButton("导出为 HTML", texts: { QPExport.htmlFile($0) })
+                            exportButton("导出为图片", texts: { QPExport.imageFile($0) })
+                        } label: {
+                            Label("导出", systemImage: "square.and.arrow.up")
+                        }
+                        Spacer()
+                        Button(editMode ? "完成" : "选择") {
+                            editMode.toggle()
+                            if !editMode { selection.removeAll() }
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    .font(.subheadline)
+
+                    if editMode {
+                        HStack(spacing: 16) {
+                            // v1.8.19 教训：List 同一行多个 Button 必须 borderless，
+                            // 否则点「全选」会把复制/删除一起触发，变成「全选=全删」。
+                            Button("全选") { selection = Set(filtered.map(\.text)) }
+                                .buttonStyle(.borderless)
+                            Button("复制所选") { copySelected() }
+                                .buttonStyle(.borderless)
+                            Button("删除所选", role: .destructive) { confirmDelete = true }
+                                .buttonStyle(.borderless)
+                                .disabled(selection.isEmpty)
+                            Spacer()
+                            Text("已选 \(selection.count) 条")
+                                .font(.footnote).foregroundColor(.secondary)
+                        }
+                        .font(.subheadline)
+                    }
+                } footer: {
+                    Text("「选择」后点条目勾选，可全选、复制所选、删除所选（有二次确认）；导出范围 = 有选择时导出所选，否则导出当前筛选下的全部。「设置 → 局域网同步 → 导出到电脑」开着时文件直发电脑（下载\\墨指导出），关着时走系统分享。")
                 }
 
                 if filtered.isEmpty {
@@ -173,10 +248,29 @@ struct HistoryView: View {
                     Section("历史记录（\(filtered.count)）") {
                         ForEach(filtered, id: \.text) { item in
                             Button {
-                                UIPasteboard.general.string = item.text
-                                flash = "已复制到剪贴板"
+                                if editMode {
+                                    if selection.contains(item.text) { selection.remove(item.text) }
+                                    else { selection.insert(item.text) }
+                                } else {
+                                    UIPasteboard.general.string = item.text
+                                    // v1.8.22「复制后移到最前」：两端共用开关，
+                                    // 用了旧条目也把它排到列表最前，键盘里同样跟随。
+                                    if QPSharedHistory.moveUsedToTopOn() {
+                                        PiPManager.appendLocal(item.text)
+                                        _ = QPSharedHistory.append(item.text)
+                                        reload()
+                                        notice("已复制到剪贴板，并移到最前")
+                                    } else {
+                                        notice("已复制到剪贴板")
+                                    }
+                                }
                             } label: {
                                 HStack {
+                                    if editMode {
+                                        Image(systemName: selection.contains(item.text)
+                                              ? "checkmark.circle.fill" : "circle")
+                                            .foregroundColor(.accentColor)
+                                    }
                                     Image(systemName: "doc.on.clipboard").foregroundColor(.blue)
                                     Text(item.text).lineLimit(2).foregroundColor(.primary)
                                     Spacer()
@@ -186,12 +280,10 @@ struct HistoryView: View {
                             .buttonStyle(.borderless)
                         }
                         .onDelete { idx in
-                            // 与「连续复制」页同一个删除通道：写墓碑 + 清本地，
-                            // 共享通道里的同名条目一并被过滤，不会删了又冒出来。
                             let texts = idx.map { filtered[$0].text }
                             PiPManager.deleteTexts(texts)
                             reload()
-                            flash = "已删除 \(texts.count) 条"
+                            notice("已删除 \(texts.count) 条")
                         }
                     }
                 }
@@ -200,88 +292,280 @@ struct HistoryView: View {
             .navigationTitle("剪贴板历史")
             .onAppear { reload() }
             .onChange(of: scenePhase) { phase in
-                // 从后台/画中画回来、或切回这个 Tab 时重读一次，
-                // 保证键盘与后台新收录的条目立刻出现在这一页。
                 if phase == .active { reload() }
             }
+            .sheet(isPresented: Binding(
+                get: { sharePayload != nil },
+                set: { if !$0 { sharePayload = nil } })) {
+                if let payload = sharePayload { ActivityView(items: payload) }
+            }
+            .alert("确认删除所选？", isPresented: $confirmDelete) {
+                Button("取消", role: .cancel) { }
+                Button("删除", role: .destructive) { deleteSelected() }
+            } message: {
+                Text("将永久删除选中的 \(selection.count) 条（仅本机主 App 列表；键盘端需单独清除）。此操作不可撤销。")
+            }
+        }
+    }
+
+    // MARK: 列表动作（与 PiPControlView 同一套实现）
+
+    private func exportTexts() -> [String] {
+        let texts = selection.isEmpty
+            ? filtered.map(\.text)
+            : filtered.filter { selection.contains($0.text) }.map(\.text)
+        return texts.isEmpty ? [""] : texts
+    }
+
+    private func exportButton(_ title: String,
+                              texts: @escaping ([String]) -> URL?) -> some View {
+        Button(title) {
+            let t = exportTexts()
+            if t == [""] { notice("没有可导出的内容"); return }
+            guard let url = texts(t) else { notice("导出失败：文件生成出错"); return }
+            if QPSharedHistory.exportToPcOn() { sendToPc(url) }
+            else { sharePayload = [url] }
+        }
+    }
+
+    private func sendToPc(_ url: URL) {
+        guard let data = try? Data(contentsOf: url) else { notice("读取导出文件失败"); return }
+        let mime: String
+        switch url.pathExtension.lowercased() {
+        case "txt": mime = "text/plain"
+        case "csv": mime = "text/csv"
+        case "html": mime = "text/html"
+        case "pdf": mime = "application/pdf"
+        case "doc": mime = "application/msword"
+        case "xlsx": mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        case "png": mime = "image/png"
+        default: mime = "application/octet-stream"
+        }
+        let d = UserDefaults.standard
+        let addr = d.string(forKey: "qp.syncURL")
+            ?? d.string(forKey: "qp_server_url")
+            ?? "http://192.168.1.2:8787"
+        let pair = d.string(forKey: "qp.syncPair") ?? ""
+        notice("正在发送到电脑…")
+        SyncClient(url: addr, pair: pair).sendFile(
+            data, name: url.lastPathComponent, mime: mime) { err in
+                DispatchQueue.main.async {
+                    if let err = err { self.notice("发送失败：\(err)") }
+                    else { self.notice("已发到电脑：\(url.lastPathComponent)（下载\\墨指导出）") }
+                }
+        }
+    }
+
+    private func copySelected() {
+        let texts = selection.isEmpty
+            ? filtered.map(\.text)
+            : filtered.filter { selection.contains($0.text) }.map(\.text)
+        guard !texts.isEmpty else { notice("没有可复制的内容"); return }
+        UIPasteboard.general.string = texts.joined(separator: "\n\n————\n\n")
+        notice("已复制 \(texts.count) 条到剪贴板")
+    }
+
+    private func deleteSelected() {
+        let texts = Array(selection)
+        guard !texts.isEmpty else { return }
+        let before = entries.count
+        PiPManager.deleteTexts(texts)
+        reload()
+        selection.removeAll()
+        let removed = before - entries.count
+        if removed > texts.count {
+            notice("⚠️ 删除异常：应删 \(texts.count) 条，实际移除 \(removed) 条，请检查")
+        } else {
+            notice("已删除 \(removed) 条（主 App 列表；键盘列表需在键盘里单独清）")
         }
     }
 }
 
-// MARK: - 分类 / 常用语
+// MARK: - 分类 / 常用语（v1.8.22：导入本地文件 + 与键盘工具栏共用同一份数据）
 
 struct CategoryView: View {
+    /// 用 JSON 数组字符串存，而不是换行拼接：单条常用语可以长达 20000 字节、
+    /// 里面完全可能带换行，用 \n 分隔会把一条拆成好几条。
     @AppStorage("qp.app.phrases") private var stored: String = ""
     @State private var draft = ""
+    @State private var search = ""
+    @State private var notice = ""
+    @State private var showImporter = false
+    /// body 每次重算都会读 items，绝不能在里面去读 4MB 的共享通道 —— 会卡。
+    /// 只在 onAppear / 改动后读一次，平时用内存数组。
+    @State private var entries: [String] = []
 
     private var defaultPhrases: [String] {
         ["好的，收到", "稍后回复你", "谢谢！", "地址：", "明天上午方便吗"]
     }
-    private var items: [String] {
-        let s = stored.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
-        return s.isEmpty ? defaultPhrases : s
+    private var filtered: [String] {
+        search.isEmpty ? entries : entries.filter { $0.localizedCaseInsensitiveContains(search) }
     }
+
+    private static func decode(_ s: String) -> [String] {
+        guard !s.isEmpty else { return [] }
+        if let d = s.data(using: .utf8),
+           let a = try? JSONDecoder().decode([String].self, from: d) { return a }
+        // 兼容 v1.8.21 及更早的「换行拼接」老数据
+        return s.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+    }
+    private static func encode(_ a: [String]) -> String {
+        guard let d = try? JSONEncoder().encode(a),
+              let s = String(data: d, encoding: .utf8) else { return "" }
+        return s
+    }
+
+    private func reload() {
+        let local = Self.decode(stored)
+        if !local.isEmpty { entries = QPPhraseStore.sanitize(local); return }
+        let shared = QPPhraseStore.read()
+        entries = shared.isEmpty ? defaultPhrases : shared
+    }
+
+    /// 所有改动的唯一出口：本地存一份 + 写键盘独立通道，键盘工具条点开就是同一份。
+    private func commit(_ arr: [String]) {
+        let cleaned = QPPhraseStore.sanitize(arr)
+        stored = Self.encode(cleaned)
+        entries = cleaned
+        _ = QPPhraseStore.write(cleaned)
+    }
+
+    private func flash(_ s: String) { notice = s }
 
     var body: some View {
         NavigationStack {
             List {
                 Section("添加常用语") {
-                    HStack {
-                        TextField("输入一条常用回复", text: $draft)
-                        Button("添加") {
-                            guard !draft.isEmpty else { return }
-                            var arr = items
-                            arr.insert(draft, at: 0)
-                            stored = arr.joined(separator: "\n")
-                            draft = ""
-                        }
+                    TextEditor(text: $draft)
+                        .frame(minHeight: 68)
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.secondary.opacity(0.25)))
+                    Button("添加（可直接粘贴长文本）") {
+                        guard !draft.isEmpty else { return }
+                        var a = entries
+                        a.insert(draft, at: 0)
+                        commit(a)
+                        draft = ""
+                        flash("已添加并同步到键盘工具条的「常用语」")
                     }
+                    .buttonStyle(.borderless)
+                    if !notice.isEmpty {
+                        Text(notice).font(.footnote).foregroundColor(.blue)
+                    }
+                } footer: {
+                    Text("一条最长 20000 字节（约六千多个汉字），最多 200 条；超长会按字边界安全截断，不会切出半个汉字。列表用固定行高，长文本不会让键盘变卡。")
                 }
-                Section("常用语（\(items.count)）") {
-                    ForEach(items, id: \.self) { text in
+
+                Section("导入 / 同步") {
+                    Button {
+                        showImporter = true
+                    } label: {
+                        Label("从手机本地文件导入（txt / csv）", systemImage: "doc.badge.plus")
+                    }
+                    Button {
+                        _ = QPPhraseStore.write(entries)
+                        flash("已同步：键盘工具条点「常用语」就能看到这 \(entries.count) 条")
+                    } label: {
+                        Label("立即同步到键盘", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    Text("导入规则：每行一条（支持 UTF-8 / GBK 的 txt、csv），自动去空行、去重、截断到 200 条。导入后与主 App 这一页、键盘工具条的「常用语」浮层是同一份数据。")
+                        .font(.footnote).foregroundColor(.secondary)
+                }
+
+                Section("容量") {
+                    HStack {
+                        Text("条数"); Spacer()
+                        Text("\(entries.count) / \(QPPhraseStore.maxCount)").foregroundColor(.secondary)
+                    }
+                    HStack {
+                        Text("已用字节"); Spacer()
+                        Text("\(QPPhraseStore.usedBytes(entries)) / 单条 \(QPPhraseStore.maxItemBytes)")
+                            .foregroundColor(.secondary)
+                    }
+                    Text("200 条 × 单条 20000 字节约 4MB，保存时一次性写入，之后键盘只在点开浮层时读一次，不参与 0.5 秒剪贴板轮询。")
+                        .font(.footnote).foregroundColor(.secondary)
+                }
+
+                Section("常用语（\(filtered.count)）") {
+                    ForEach(filtered, id: \.self) { text in
                         Button {
                             UIPasteboard.general.string = text
+                            flash("已复制这一条（\(text.utf8.count) 字节）")
                         } label: {
                             HStack {
-                                Text(text).foregroundColor(.primary)
+                                // 只显示摘要：2 万字节的整段文本绝不参与列表布局计算
+                                Text(String(text.prefix(80)))
+                                    .lineLimit(2).foregroundColor(.primary)
                                 Spacer()
                                 Image(systemName: "square.on.square").foregroundColor(.secondary)
                             }
                         }
+                        .buttonStyle(.borderless)
                     }
                     .onDelete { idx in
-                        var arr = items
-                        let rm = Set(idx.map { items[$0] })
-                        arr.removeAll { rm.contains($0) }
-                        stored = arr.joined(separator: "\n")
+                        let rm = Set(idx.map { filtered[$0] })
+                        commit(entries.filter { !rm.contains($0) })
+                        flash("已删除并同步到键盘")
                     }
-                }
-                Section {
-                    Text("点一条即复制到系统剪贴板。在 墨指 键盘的「常用语」Tab 里可直接点条目上屏。")
-                        .font(.footnote).foregroundColor(.secondary)
+                } footer: {
+                    Text("点一条即复制到系统剪贴板；在 墨指 键盘工具条点「常用语」图标，可直接点条目上屏。")
                 }
             }
+            .searchable(text: $search, prompt: "搜索常用语")
             .navigationTitle("分类 · 常用语")
+            .onAppear { reload() }
+            .fileImporter(isPresented: $showImporter,
+                          allowedContentTypes: [.plainText, .commaSeparatedText, .data],
+                          allowsMultipleSelection: false) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    let scoped = url.startAccessingSecurityScopedResource()
+                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                    guard let data = try? Data(contentsOf: url) else {
+                        flash("导入失败：读不到文件内容"); return
+                    }
+                    let text = Self.decodeFile(data)
+                    guard !text.isEmpty else { flash("导入失败：文件是空的或编码不支持"); return }
+                    let lines = text
+                        .replacingOccurrences(of: "\r\n", with: "\n")
+                        .replacingOccurrences(of: "\r", with: "\n")
+                        .split(separator: "\n", omittingEmptySubsequences: true)
+                        .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                    var merged = lines
+                    merged.append(contentsOf: entries)
+                    let before = entries.count
+                    commit(merged)
+                    let added = entries.count - before
+                    flash("导入完成：新增 \(added) 条，当前共 \(entries.count) 条（上限 200 条 / 单条 20000 字节），已同步到键盘")
+                case .failure(let e):
+                    flash("导入失败：\(e.localizedDescription)")
+                }
+            }
         }
+    }
+
+    /// UTF-8 优先；Windows 记事本存出来的 GBK/GB18030 中文也能读。
+    private static func decodeFile(_ data: Data) -> String {
+        if let s = String(data: data, encoding: .utf8) {
+            return s.hasPrefix("\u{FEFF}") ? String(s.dropFirst()) : s
+        }
+        // GB18030 的 NSStringEncoding 固定值（0x80000632），比依赖 CoreFoundation
+        // 常量导入更稳；Windows 记事本另存的中文 txt 大多是这个编码。
+        let gbk = String.Encoding(rawValue: 0x80000632)
+        return String(data: data, encoding: gbk) ?? ""
     }
 }
 
 // MARK: - 设置首页
 
 struct SettingsView: View {
-    @AppStorage("qp_server_url") private var savedURL: String = ""
-    @State private var draft = ""
-    @State private var hint = ""
-    @State private var testText = ""
-
-    private static let defaultURL = "http://192.168.1.2:8787"
-
     var body: some View {
         NavigationStack {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("墨指 v1.8.21 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.22 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -295,43 +579,16 @@ struct SettingsView: View {
                     NavigationLink("局域网同步（CopyQ）") { SyncSettingsView() }
                     NavigationLink("键盘设置") { KbdSettingsView() }
                     NavigationLink("快捷符号") { SymSettingsView() }
-                    NavigationLink("连续复制") { ContinuousView() }
                     NavigationLink("使用教程") { TutorialListView() }
                 }
 
-                Section("1. 连接电脑") {
-                    TextField(Self.defaultURL, text: $draft)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled(true)
-                    Button {
-                        let u = normalize(draft)
-                        savedURL = u
-                        draft = u
-                        UIPasteboard.general.string = u
-                        hint = "已保存并复制地址。切到 墨指 键盘会自动采用；也可在键盘设置里点「用剪贴板里的电脑地址」。"
-                    } label: {
-                        Label("保存并复制地址到剪贴板", systemImage: "doc.on.clipboard")
-                    }
-                    if !savedURL.isEmpty {
-                        Text("当前地址：\(savedURL)").font(.footnote).foregroundColor(.secondary)
-                    }
-                    if !hint.isEmpty { Text(hint).font(.footnote).foregroundColor(.blue) }
-                    Text("电脑需启动 墨指 同步服务，且手机与电脑连同一 WiFi。IP 变化后重新填一次即可。")
-                        .font(.footnote).foregroundColor(.secondary)
-                }
-
-                Section("2. 启用键盘") {
-                    Text("设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 墨指\n然后点开 墨指 → 开启「允许完全访问」")
+                Section("启用键盘 / 连接电脑") {
+                    Text("设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 墨指 → 开启「允许完全访问」。打开系统设置的按钮在「键盘设置」页顶部（全工程只留这一个）。")
                         .font(.subheadline)
-                    // v1.8.21：系统设置入口全工程只留一个，见「设置 → 键盘设置」页顶部
-                    Text("打开系统设置的按钮在「键盘设置」页顶部，本页不再重复放。")
-                        .font(.footnote).foregroundColor(.secondary)
-                }
-
-                Section("3. 立即测试") {
-                    TextField("在这里输入，切到 墨指 键盘试功能", text: $testText)
-                    Text("键盘里点卡片直接上屏；💻=电脑复制，📱=手机发的；图片显示缩略图；蓝色「发送」把输入框文字发回电脑。")
+                    // v1.8.22：这页原来的「1. 连接电脑」地址输入框、「3. 立即测试」
+                    // 与「局域网同步」详情页 / 底部 Tab 完全重复，已删掉。
+                    // 电脑地址、配对码、连接开关、立即检测统一在「局域网同步」页设置。
+                    Text("电脑地址、配对码、连接开关、状态检测，全部在「局域网同步（CopyQ）」这一页；本页不再重复放一套。")
                         .font(.footnote).foregroundColor(.secondary)
                 }
 
@@ -347,16 +604,7 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
-            .onAppear { draft = savedURL.isEmpty ? Self.defaultURL : savedURL }
         }
-    }
-
-    private func normalize(_ raw: String) -> String {
-        var u = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if u.isEmpty { u = Self.defaultURL }
-        if !u.hasPrefix("http://") && !u.hasPrefix("https://") { u = "http://" + u }
-        while u.hasSuffix("/") { u.removeLast() }
-        return u
     }
 }
 
@@ -375,6 +623,8 @@ struct SyncSettingsView: View {
     /// 「下载\墨指导出」文件夹；关 = 主 App 导出走系统分享（可转发微信等），
     /// 键盘文本导出复制到剪贴板。两端共用（QPSharedHistory.exportToPc）。
     @State private var exportToPc = QPSharedHistory.exportToPcOn()
+    /// v1.8.22「复制后移到最前」：点一条旧记录使用后自动排到列表最前。
+    @State private var moveUsedToTop = QPSharedHistory.moveUsedToTopOn()
     @State private var draft = ""
     @State private var status = "未检测"
 
@@ -398,6 +648,14 @@ struct SyncSettingsView: View {
                         QPSharedHistory.setExportToPc(on)
                     }
                 Text("开：导出文件直接发送到电脑的「下载\\墨指导出」文件夹（电脑端浏览器打开 http://127.0.0.1:8787/setup 可改接收位置）。关：主 App 导出走系统分享（可转发微信、保存到文件等），键盘的文本导出直接复制到剪贴板。键盘设置里是同一个开关。")
+                    .font(.footnote).foregroundColor(.secondary)
+            }
+            Section("剪贴板行为（两端共用）") {
+                Toggle("复制后移到最前", isOn: $moveUsedToTop)
+                    .onChange(of: moveUsedToTop) { on in
+                        QPSharedHistory.setMoveUsedToTop(on)
+                    }
+                Text("开着时：在历史页或连续复制页点一条旧记录复制，这条会自动排到列表最前，键盘里的剪贴板列表也跟着排到最前；关掉则列表顺序不变。系统里复制新内容一直都会排到最前，不受这个开关影响。键盘设置里是同一个开关。")
                     .font(.footnote).foregroundColor(.secondary)
             }
             Section("连接状态") {
@@ -431,6 +689,7 @@ struct SyncSettingsView: View {
             syncOn = !QPSharedHistory.syncOff()   // 键盘端改过开关 → 进页面刷新
             netGuard = QPSharedHistory.netGuardOn() // v1.8.18：同上
             exportToPc = QPSharedHistory.exportToPcOn() // v1.8.20：同上
+            moveUsedToTop = QPSharedHistory.moveUsedToTopOn() // v1.8.22：同上
         }
     }
 
@@ -463,18 +722,15 @@ struct KbdSettingsView: View {
                 Text("进入 设置 → 通用 → 键盘 → 墨指 → 允许完全访问；并把「从其他 App 粘贴」设为允许（后台连续复制需要）。")
                     .font(.footnote).foregroundColor(.secondary)
             }
-            Section {
-                NavigationLink("使用教程") { TutorialListView() }
-                NavigationLink("快捷符号") { SymSettingsView() }
-                NavigationLink("连续复制") { ContinuousView() }
-                NavigationLink("局域网同步（CopyQ）") { SyncSettingsView() }
-            }
+            // v1.8.22：删掉这里重复的第二套「使用教程 / 快捷符号 / 连续复制 /
+            // 局域网同步」入口 —— 设置主表里已经各有一份，点开「键盘设置」又看到
+            // 一模一样的四个入口就是用户说的「版面重复」。
             Section("键盘开关位置") {
-                Text("所有键盘开关都在【键盘内部】：切到 墨指 键盘 → 点工具条「⋯」→ 设置 → 键盘设置。")
+                Text("所有键盘本地开关都在【键盘内部】：切到 墨指 键盘 → 点工具条「⋯」→ 设置 → 键盘设置。")
                     .font(.subheadline)
-                Text("包含：悬浮窗关闭按钮、点击直接切换、显示新内容提示、显示清空按钮、空格滑动移光标、发送后自动收起、连续复制、键盘增高、列数、工具条对齐。")
+                Text("包含：悬浮窗关闭按钮、点击直接切换、显示新内容提示、显示清空按钮、空格滑动移光标、发送后自动收起、连续复制、复制后移到最前、键盘增高、列数、工具条对齐。")
                     .font(.footnote).foregroundColor(.secondary)
-                Text("iOS 限制：主 App 与键盘扩展默认不共享设置容器，为避免 App Groups 让爱思免费签名变复杂，开关直接存在键盘里、在键盘里改，主 App 这页不重复造假开关。")
+                Text("「连接电脑 / 断网自动暂停 / 导出到电脑 / 复制后移到最前」和「快捷符号」是两端共用一份：在设置 → 局域网同步 / 快捷符号里改，键盘下次弹出即跟随；在键盘里改，回到 App 也会刷新。")
                     .font(.footnote).foregroundColor(.secondary)
             }
             Section("如何启用键盘") {
@@ -498,13 +754,19 @@ struct KbdSettingsView: View {
     }
 }
 
-// MARK: - 设置详情：快捷符号
+// MARK: - 设置详情：快捷符号（v1.8.22：App 里改的真的会同步到键盘）
 
 struct SymSettingsView: View {
     @AppStorage("qp.app.symbols") private var stored: String = ""
+    @AppStorage("qp.app.symbolsAt") private var localAt: Double = 0
     @State private var draft = ""
+    @State private var showCount = 4
+    @State private var align = "left"
 
-    private var defaults: [String] { ["。", "，", "？", "！", "："] }
+    /// v1.8.22：默认符号表补全（以前只有 5 个标点，用户说「没弄全」）
+    private var defaults: [String] {
+        ["。", "，", "？", "！", "：", "；", "、", "…", "～", "「", "」", "（", "）", "·", "—"]
+    }
     private var symbols: [String] {
         let s = stored.split(separator: "\u{1F}").map(String.init).filter { !$0.isEmpty }
         return s.isEmpty ? defaults : s
@@ -518,6 +780,9 @@ struct SymSettingsView: View {
                         Text("\(i + 1)").foregroundColor(.secondary).frame(width: 22)
                         Text(s).font(.title3)
                         Spacer()
+                        if i < showCount {
+                            Text("工具条").font(.caption2).foregroundColor(.blue)
+                        }
                         Button { move(i, -1) } label: { Image(systemName: "arrow.up") }.disabled(i == 0)
                         Button { move(i, 1) } label: { Image(systemName: "arrow.down") }.disabled(i == symbols.count - 1)
                         Button { remove(i) } label: { Image(systemName: "xmark").foregroundColor(.red) }
@@ -529,34 +794,72 @@ struct SymSettingsView: View {
                     Button("添加") {
                         guard !draft.isEmpty else { return }
                         var a = symbols; a.append(String(draft.prefix(4)))
-                        stored = a.joined(separator: "\u{1F}"); draft = ""
+                        commit(a); draft = ""
                     }
+                    .buttonStyle(.borderless)
                 }
+            } footer: {
+                Text("排在前面的优先显示在工具条；点符号可直接在光标处插入。")
             }
             Section("工具条显示数量") {
-                Text("2 / 3 / 4 / 5 个，可在键盘「⋯ → 快捷符号」里设置。空间不足时自动收进「⋯」面板。")
+                Picker("显示几个", selection: $showCount) {
+                    Text("2 个").tag(2); Text("3 个").tag(3)
+                    Text("4 个").tag(4); Text("5 个").tag(5)
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: showCount) { _ in syncToKeyboard() }
+                Text("最少 2 个、最多 5 个；空间不足时后面的自动收进「⋯」。这一项以前只是文字说明，现在能真正设置了。")
                     .font(.footnote).foregroundColor(.secondary)
             }
             Section("工具条按钮对齐") {
-                Text("键盘、地球、连续复制三个按钮可整体居左、居中或居右，在键盘「⋯ → 快捷符号」里切换。")
-                    .font(.footnote).foregroundColor(.secondary)
+                Picker("对齐方式", selection: $align) {
+                    Text("居左").tag("left"); Text("居中").tag("center"); Text("居右").tag("right")
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: align) { _ in syncToKeyboard() }
             }
             Section {
-                Button("恢复默认符号") { stored = "" }
-                Text("主 App 的符号列表仅作预览；真正生效的是键盘内的设置。可通过复制到剪贴板后在键盘里采用。")
+                Button("恢复默认符号") {
+                    commit(defaults); showCount = 4; align = "left"
+                    syncToKeyboard()
+                }
+                Button("立即同步到键盘") {
+                    syncToKeyboard()
+                }
+                Text("这里和键盘「⋯ → 快捷符号」是同一份设置：任一端改了，另一端下次出现时跟随。改完键盘下次弹出即生效；如果键盘正开着，点一下上面的「立即同步到键盘」。")
                     .font(.footnote).foregroundColor(.secondary)
             }
         }
         .navigationTitle("快捷符号")
+        .onAppear {
+            let s = QPSharedHistory.sharedSymbolSettings()
+            // 键盘里改过（时间戳更新）→ 采用键盘那一份，别拿 App 的旧值盖回去
+            if s.at > localAt, !s.symbols.isEmpty {
+                stored = s.symbols.joined(separator: "\u{1F}")
+                localAt = s.at
+            }
+            showCount = min(max(s.count, 2), 5)
+            align = ["left", "center", "right"].contains(s.align) ? s.align : "left"
+        }
+    }
+
+    private func commit(_ a: [String]) {
+        stored = a.joined(separator: "\u{1F}")
+        syncToKeyboard()
+    }
+
+    /// 写共享通道：键盘 refreshSymbols 会读到（时间戳比本地新就采用）。
+    private func syncToKeyboard() {
+        localAt = QPSharedHistory.setSharedSymbols(symbols, count: showCount, align: align)
     }
 
     private func move(_ i: Int, _ d: Int) {
         var a = symbols
         guard i + d >= 0, i + d < a.count else { return }
-        a.swapAt(i, i + d); stored = a.joined(separator: "\u{1F}")
+        a.swapAt(i, i + d); commit(a)
     }
     private func remove(_ i: Int) {
-        var a = symbols; a.remove(at: i); stored = a.joined(separator: "\u{1F}")
+        var a = symbols; a.remove(at: i); commit(a)
     }
 }
 
@@ -645,7 +948,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("墨指 v1.8.21 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.22 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

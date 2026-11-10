@@ -49,6 +49,15 @@ final class KeyboardViewController: UIInputViewController {
     private let pickList = UIStackView()
     private let pickBar = UIStackView()
     private var pickSelIDs = Set<String>()
+    // MARK: v1.8.22 常用语浮层：表格复用 + 固定行高，单条 20000 字节也不卡
+    private let phraseOverlay = UIView()
+    private let phraseBox = UIView()
+    private let phraseTable = UITableView()
+    private let phraseField = UITextField()
+    private let phraseCount = UILabel()
+    private var phraseAll: [String] = []
+    private var phraseShown: [String] = []
+    private var phraseWork: DispatchWorkItem?
     private weak var filterButton: UIButton?
     private weak var sortButton: UIButton?
     /// 当前滑开的卡片，滑开新的就把旧的收回去
@@ -807,6 +816,19 @@ final class KeyboardViewController: UIInputViewController {
         toolbar.addArrangedSubview(sortBtn)
         sortButton = sortBtn
 
+        // v1.8.22 常用语：工具条新增一个图标（自绘便签+三横线），
+        // 点开是表格复用的常用语浮层，数据与主 App「分类」页同一份。
+        let phraseBtn = toolButton("")
+        phraseBtn.setImage(phraseIcon(QPColor.ink).withRenderingMode(.alwaysTemplate),
+                           for: .normal)
+        phraseBtn.tintColor = QPColor.ink
+        phraseBtn.widthAnchor.constraint(equalToConstant: QPTool.size).isActive = true
+        phraseBtn.heightAnchor.constraint(equalToConstant: QPTool.size).isActive = true
+        phraseBtn.setContentCompressionResistancePriority(.required, for: .horizontal)
+        phraseBtn.addAction(UIAction { [weak self] _ in self?.openPhrasePanel() },
+                            for: .touchUpInside)
+        toolbar.addArrangedSubview(phraseBtn)
+
         symScroll.showsHorizontalScrollIndicator = false
         symScroll.translatesAutoresizingMaskIntoConstraints = false
         symStack.axis = .horizontal
@@ -903,6 +925,17 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func refreshSymbols() {
+        // v1.8.22：主 App「快捷符号」页改过（共享时间戳更新）→ 采用那一份。
+        // 符号最多 15 个，读一次共享通道很轻；只在真正更新时写 UserDefaults。
+        let shared = QPSharedHistory.sharedSymbolSettings()
+        if shared.at > prefs.symbolsAt, !shared.symbols.isEmpty {
+            prefs.symbols = shared.symbols
+            prefs.symbolCount = shared.count
+            if ["left", "center", "right"].contains(shared.align) {
+                prefs.align = shared.align
+            }
+            prefs.symbolsAt = shared.at
+        }
         symStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         // 原型 .kbToolbar .spL/.spR：居左/居中/居右由两端弹性占位实现
         let leadSpacer = UIView(), trailSpacer = UIView()
@@ -1253,6 +1286,18 @@ final class KeyboardViewController: UIInputViewController {
             if item.isImage { self.showImage(item) }
             else {
                 self.insertText(item.text)
+                // v1.8.22「复制后移到最前」（两端共用开关，默认开）：
+                // 点了一条旧记录上屏，就把它排到列表最前，方便连着粘贴同一条。
+                if QPSharedHistory.moveUsedToTopOn(), self.prefs.capture(item.text) {
+                    // moveToFront 只在共享历史里本来就有这条时写通道，
+                    // 且保留用户当前剪贴板正文，不会把「上屏」变成「覆盖剪贴板」。
+                    if QPSharedHistory.moveToFront(item.text) {
+                        // 剪贴板兜底通道写一次会改 changeCount；对齐一下，
+                        // 避免下一轮 0.5 秒轮询误判成「又复制了一次」。
+                        self.prefs.lastSeenChange = UIPasteboard.general.changeCount
+                    }
+                    DispatchQueue.main.async { self.refreshList() }
+                }
                 if self.prefs.autoCollapse { self.dismissKeyboard() }
             }
         }
@@ -1585,7 +1630,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.21 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.22 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -2489,6 +2534,155 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    // MARK: - v1.8.22 常用语（工具条图标 + 表格复用浮层）
+
+    /// 自绘「便签 + 三横线」常用语图标，24pt 画布、与整排图标同一套画法。
+    private func phraseIcon(_ color: UIColor) -> UIImage {
+        let fmt = UIGraphicsImageRendererFormat()
+        fmt.scale = 3
+        let c = QPTool.iconCanvas
+        return UIGraphicsImageRenderer(size: CGSize(width: c, height: c), format: fmt).image { _ in
+            color.setStroke()
+            let box = UIBezierPath(roundedRect: CGRect(x: 3.5, y: 3.5, width: 17, height: 17),
+                                   cornerRadius: 2.6)
+            box.lineWidth = 1.9
+            box.stroke()
+            let lines = UIBezierPath()
+            for y in [8.5, 12.0, 15.5] as [CGFloat] {
+                lines.move(to: CGPoint(x: 7, y: y))
+                lines.addLine(to: CGPoint(x: 17, y: y))
+            }
+            lines.lineWidth = 1.7
+            lines.lineCapStyle = .round
+            lines.stroke()
+        }
+    }
+
+    private func buildPhrasePanel() {
+        phraseOverlay.isHidden = true
+        phraseOverlay.frame = view.bounds
+        phraseOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        phraseOverlay.backgroundColor = UIColor.black.withAlphaComponent(0.32)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(closePhrasePanel))
+        tap.cancelsTouchesInView = false
+        // ★ 与 v1.8.18 勾选浮层同款：外层「点空白关闭」必须挂 delegate，
+        //   否则会和表格/按钮抢 touch，表现成「点条目没反应」。
+        tap.delegate = self
+        phraseOverlay.addGestureRecognizer(tap)
+        view.addSubview(phraseOverlay)
+
+        phraseBox.backgroundColor = UIColor.systemBackground
+        phraseBox.layer.cornerRadius = 16
+        phraseBox.clipsToBounds = true
+        phraseBox.translatesAutoresizingMaskIntoConstraints = false
+        phraseOverlay.addSubview(phraseBox)
+
+        let title = UILabel()
+        title.text = "常用语"
+        title.font = .systemFont(ofSize: 16, weight: .semibold)
+        title.translatesAutoresizingMaskIntoConstraints = false
+
+        let close = UIButton(type: .system)
+        close.setTitle("✕", for: .normal)
+        close.titleLabel?.font = .systemFont(ofSize: 16, weight: .medium)
+        close.translatesAutoresizingMaskIntoConstraints = false
+        close.addAction(UIAction { [weak self] _ in self?.closePhrasePanel() },
+                        for: .touchUpInside)
+
+        phraseCount.font = .systemFont(ofSize: 11)
+        phraseCount.textColor = QPColor.sub
+        phraseCount.translatesAutoresizingMaskIntoConstraints = false
+
+        phraseField.placeholder = "搜索常用语"
+        phraseField.borderStyle = .roundedRect
+        phraseField.font = .systemFont(ofSize: 14)
+        phraseField.clearButtonMode = .whileEditing
+        phraseField.returnKeyType = .search
+        phraseField.translatesAutoresizingMaskIntoConstraints = false
+        phraseField.addTarget(self, action: #selector(phraseSearchChanged),
+                              for: .editingChanged)
+
+        // ★ 长文本不卡的关键：UITableView 复用 + 固定行高，
+        //   单元格只画前 80 个字符，2 万字节的正文绝不参与高度计算。
+        phraseTable.register(UITableViewCell.self, forCellReuseIdentifier: "MozhiPhraseCell")
+        phraseTable.dataSource = self
+        phraseTable.delegate = self
+        phraseTable.rowHeight = 56
+        phraseTable.estimatedRowHeight = 56
+        phraseTable.keyboardDismissMode = .onDrag
+        phraseTable.translatesAutoresizingMaskIntoConstraints = false
+
+        phraseBox.addSubview(title)
+        phraseBox.addSubview(close)
+        phraseBox.addSubview(phraseCount)
+        phraseBox.addSubview(phraseField)
+        phraseBox.addSubview(phraseTable)
+        NSLayoutConstraint.activate([
+            phraseBox.leadingAnchor.constraint(equalTo: phraseOverlay.leadingAnchor, constant: 10),
+            phraseBox.trailingAnchor.constraint(equalTo: phraseOverlay.trailingAnchor, constant: -10),
+            phraseBox.topAnchor.constraint(equalTo: phraseOverlay.topAnchor, constant: 8),
+            phraseBox.bottomAnchor.constraint(equalTo: phraseOverlay.bottomAnchor, constant: -10),
+            title.leadingAnchor.constraint(equalTo: phraseBox.leadingAnchor, constant: 14),
+            title.topAnchor.constraint(equalTo: phraseBox.topAnchor, constant: 10),
+            close.trailingAnchor.constraint(equalTo: phraseBox.trailingAnchor, constant: -12),
+            close.centerYAnchor.constraint(equalTo: title.centerYAnchor),
+            close.widthAnchor.constraint(equalToConstant: 34),
+            phraseCount.leadingAnchor.constraint(equalTo: phraseBox.leadingAnchor, constant: 14),
+            phraseCount.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 2),
+            phraseField.leadingAnchor.constraint(equalTo: phraseBox.leadingAnchor, constant: 12),
+            phraseField.trailingAnchor.constraint(equalTo: phraseBox.trailingAnchor, constant: -12),
+            phraseField.topAnchor.constraint(equalTo: phraseCount.bottomAnchor, constant: 6),
+            phraseField.heightAnchor.constraint(equalToConstant: 32),
+            phraseTable.leadingAnchor.constraint(equalTo: phraseBox.leadingAnchor),
+            phraseTable.trailingAnchor.constraint(equalTo: phraseBox.trailingAnchor),
+            phraseTable.topAnchor.constraint(equalTo: phraseField.bottomAnchor, constant: 6),
+            phraseTable.bottomAnchor.constraint(equalTo: phraseBox.bottomAnchor, constant: -6)
+        ])
+    }
+
+    @objc private func openPhrasePanel() {
+        // 只在点开时读一次独立通道（4MB 上限），平时 0.5 秒轮询完全不碰它
+        let shared = QPPhraseStore.read()
+        phraseAll = shared.isEmpty ? prefs.phrases : shared
+        phraseShown = phraseAll
+        phraseField.text = ""
+        phraseCount.text = "共 \(phraseAll.count) 条（上限 200 条 / 单条 20000 字节）· 与主 App「分类」同一份"
+        phraseTable.reloadData()
+        phraseOverlay.frame = view.bounds
+        phraseOverlay.isHidden = false
+        view.bringSubviewToFront(phraseOverlay)
+    }
+
+    @objc private func closePhrasePanel() {
+        phraseOverlay.isHidden = true
+        phraseField.resignFirstResponder()
+    }
+
+    /// 搜索放后台 + 0.15s 防抖：200 条长文本扫描不占主线程，输入不卡。
+    @objc private func phraseSearchChanged() {
+        phraseWork?.cancel()
+        let q = phraseField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let all = phraseAll
+        if q.isEmpty {
+            phraseShown = all
+            phraseTable.reloadData()
+            phraseCount.text = "共 \(all.count) 条（上限 200 条 / 单条 20000 字节）· 与主 App「分类」同一份"
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            let hit = all.filter { $0.localizedCaseInsensitiveContains(q) }
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.phraseShown = Array(hit.prefix(200))
+                self.phraseTable.reloadData()
+                self.phraseCount.text = "匹配 \(hit.count) 条，显示前 \(self.phraseShown.count) 条"
+            }
+        }
+        phraseWork = work
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.15,
+                                                             execute: work)
+    }
+
     // MARK: - v1.8.8 筛选 / 排序 / 导出（工具条漏斗 + 箭头按钮）
 
     /// 自绘「漏斗」筛选图标，24pt 画布、1.9pt 圆头描边，与整排图标统一。
@@ -2620,6 +2814,8 @@ final class KeyboardViewController: UIInputViewController {
             pickList.bottomAnchor.constraint(equalTo: pickScroll.contentLayoutGuide.bottomAnchor),
             pickList.widthAnchor.constraint(equalTo: pickScroll.frameLayoutGuide.widthAnchor),
         ])
+        // v1.8.22：常用语浮层与其它菜单一起在 viewDidLoad 阶段建好
+        buildPhrasePanel()
     }
 
     @objc private func closePick() { pickOverlay.isHidden = true }
@@ -3157,6 +3353,12 @@ extension KeyboardViewController: UIGestureRecognizerDelegate {
     ///   点在按钮上时手势一律不接收，否则「选不上条目」。
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldReceive touch: UITouch) -> Bool {
+        // v1.8.22 常用语浮层：点在面板内部（表格 / 搜索框 / 按钮）都不要被
+        // 「点空白关闭」吃掉，只有点在面板外的遮罩上才关闭。
+        if gestureRecognizer.view === phraseOverlay {
+            let p = touch.location(in: phraseOverlay)
+            return !phraseBox.frame.contains(p)
+        }
         guard gestureRecognizer.view === cardMenuOverlay ||
               gestureRecognizer.view === menuOverlay ||
               gestureRecognizer.view === pickOverlay ||
@@ -3168,6 +3370,36 @@ extension KeyboardViewController: UIGestureRecognizerDelegate {
             v = cur.superview
         }
         return true
+    }
+}
+
+// MARK: - v1.8.22 常用语浮层表格（复用单元格 + 固定行高，长文本不参与布局）
+
+extension KeyboardViewController: UITableViewDataSource, UITableViewDelegate {
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        phraseShown.count
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "MozhiPhraseCell", for: indexPath)
+        let full = phraseShown[indexPath.row]
+        // 只画前 80 个字符的摘要；单条 20000 字节的正文绝不参与高度计算。
+        cell.textLabel?.text = String(full.prefix(80))
+            .replacingOccurrences(of: "\n", with: " ")
+        cell.textLabel?.numberOfLines = 2
+        cell.textLabel?.font = .systemFont(ofSize: 14)
+        cell.textLabel?.textColor = UIColor.label
+        cell.selectionStyle = .gray
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard indexPath.row < phraseShown.count else { return }
+        let full = phraseShown[indexPath.row]
+        insertText(full)          // 点一条：把全文（可 2 万字节）上屏
+        closePhrasePanel()
+        if prefs.autoCollapse { dismissKeyboard() }
     }
 }
 

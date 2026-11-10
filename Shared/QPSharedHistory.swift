@@ -54,6 +54,17 @@ enum QPSharedHistory {
         var exportToPc: Bool? = nil
         /// 最后改 exportToPc 的时间戳（秒）。
         var exportToPcAt: Double? = nil
+        /// v1.8.22「复制后移到最前」开关（true = 点一条旧记录使用后把它排到列表最前）。
+        /// 系统剪贴板出现新内容本来就会置顶，这个开关管的是「用了旧条目也置顶」，
+        /// 键盘与主 App 共用同一个开关，一处改另一端跟随。
+        var moveUsedToTop: Bool? = nil
+        var moveUsedToTopAt: Double? = nil
+        /// v1.8.22 快捷符号设置（主 App 与键盘共用一份）：符号列表 / 工具条显示几个 / 对齐。
+        /// 放在这里而不是各自 UserDefaults，才能实现「App 里改了键盘立即生效」。
+        var sharedSymbols: [String]? = nil
+        var sharedSymbolCount: Int? = nil
+        var sharedAlign: String? = nil
+        var sharedSymbolsAt: Double? = nil
 
         var isBlocked: Bool { blocked == true }
         var isWanted: Bool { want == true }
@@ -187,6 +198,26 @@ enum QPSharedHistory {
         // 心跳只写在 App Group 文件里；剪贴板通道不能拿来当心跳
         if groupURL() != nil { p.beatAt = Date().timeIntervalSince1970 }
         write(p, keeping: text)
+        return true
+    }
+
+    /// v1.8.22「复制后移到最前」：把共享通道里已有的一条移到最前，
+    /// **不覆盖用户剪贴板正文**（键盘里点卡片是「上屏」，不是「复制」，
+    /// 用 append 会把用户当前剪贴板内容冲成这条文本）。
+    /// 只有这一条本来就在共享历史里才写；返回 false 表示无需写通道。
+    @discardableResult
+    static func moveToFront(_ text: String) -> Bool {
+        guard !text.isEmpty else { return false }
+        var p = read()
+        guard let i = p.items.firstIndex(of: text), i > 0 else { return false }
+        var times = p.times ?? []
+        let now = Date().timeIntervalSince1970
+        while times.count < p.items.count { times.append(now) }
+        let t = times[i]
+        p.items.remove(at: i); times.remove(at: i)
+        p.items.insert(text, at: 0); times.insert(max(t, now), at: 0)
+        p.times = times
+        write(p, keeping: UIPasteboard.general.string)
         return true
     }
 
@@ -369,6 +400,77 @@ enum QPSharedHistory {
         return true
     }
 
+    // MARK: 「复制后移到最前」开关（v1.8.22）—— 机制与上面三个共用开关相同
+
+    private static var _localMoveUsedToTop = true
+    private static var _localMoveUsedToTopAt: Double = 0
+    private static var _moveInit = false
+    private static let udMoveUsedToTop = "qp.moveUsedToTop"
+    private static let udMoveUsedToTopAt = "qp.moveUsedToTopAt"
+
+    private static func ensureMoveInit() {
+        if _moveInit { return }
+        _moveInit = true
+        if UserDefaults.standard.object(forKey: udMoveUsedToTop) != nil {
+            _localMoveUsedToTop = UserDefaults.standard.bool(forKey: udMoveUsedToTop)
+        }
+        _localMoveUsedToTopAt = UserDefaults.standard.double(forKey: udMoveUsedToTopAt)
+    }
+
+    /// 读「复制后移到最前」是否开启。默认开；共享通道里更新的值优先。
+    static func moveUsedToTopOn() -> Bool {
+        ensureMoveInit()
+        var p: Payload?
+        if let g = readGroup() { p = g }
+        else if let pb = readPasteboard() { p = pb }
+        if let p = p, let on = p.moveUsedToTop, let at = p.moveUsedToTopAt, at > _localMoveUsedToTopAt {
+            _localMoveUsedToTop = on
+            _localMoveUsedToTopAt = at
+            UserDefaults.standard.set(on, forKey: udMoveUsedToTop)
+            UserDefaults.standard.set(at, forKey: udMoveUsedToTopAt)
+        }
+        return _localMoveUsedToTop
+    }
+
+    @discardableResult
+    static func setMoveUsedToTop(_ on: Bool) -> Bool {
+        ensureMoveInit()
+        var p = read()
+        p.moveUsedToTop = on
+        p.moveUsedToTopAt = Date().timeIntervalSince1970
+        _localMoveUsedToTop = on
+        _localMoveUsedToTopAt = p.moveUsedToTopAt ?? 0
+        UserDefaults.standard.set(on, forKey: udMoveUsedToTop)
+        UserDefaults.standard.set(_localMoveUsedToTopAt, forKey: udMoveUsedToTopAt)
+        write(p, keeping: UIPasteboard.general.string)
+        return true
+    }
+
+    // MARK: 快捷符号设置（v1.8.22，主 App 与键盘共用一份）
+
+    /// 共享符号设置。symbols 为空 = 还没有人在 App 里设置过，键盘用自己的本地默认。
+    static func sharedSymbolSettings() -> (symbols: [String], count: Int, align: String, at: Double) {
+        let p = read()
+        return (p.sharedSymbols ?? [],
+                p.sharedSymbolCount ?? 4,
+                p.sharedAlign ?? "left",
+                p.sharedSymbolsAt ?? 0)
+    }
+
+    /// 写共享符号设置：App 的「快捷符号」页和键盘内「快捷符号」页都调这里。
+    /// 返回写入的时间戳，调用方记下它，免得下次进页面又被自己的值「更新」一次。
+    @discardableResult
+    static func setSharedSymbols(_ symbols: [String], count: Int, align: String) -> Double {
+        let at = Date().timeIntervalSince1970
+        var p = read()
+        p.sharedSymbols = symbols
+        p.sharedSymbolCount = count
+        p.sharedAlign = align
+        p.sharedSymbolsAt = at
+        write(p, keeping: UIPasteboard.general.string)
+        return at
+    }
+
     /// 清空共享记录。没有 App Group 时**不写系统剪贴板**：
     /// 写一次就会改 changeCount，反而会让键盘把刚清掉的内容又当成「新复制」抓回来。
     static func clear() {
@@ -402,12 +504,108 @@ enum QPSharedHistory {
     private static func writePasteboard(_ data: Data, text: String?) {
         let pb = UIPasteboard.general
         guard let body = text ?? pb.string, !body.isEmpty else { return }
-        pb.items = [["public.utf8-plain-text": body,
-                     "public.text": body,
-                     pbType: data]]
+        // v1.8.22：剪贴板是「单 item」，以前这里整条重写会把同一个 item 里
+        // 别的自定义类型（尤其是常用语通道 QPPhraseStore）冲掉。
+        // 现在先留下已有 item 里的其它 key，只覆盖正文与自己的 capture 数据。
+        var item: [String: Any] = [:]
+        if let first = pb.items.first {
+            for (k, v) in first where k != "public.utf8-plain-text" && k != "public.text" {
+                item[k] = v
+            }
+        }
+        item["public.utf8-plain-text"] = body
+        item["public.text"] = body
+        item[pbType] = data
+        pb.items = [item]
     }
 
     private static func groupURL() -> URL? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID)
+    }
+
+    /// 供 QPPhraseStore 复用同一个 App Group 目录 / 剪贴板类型，避免两条通道互相冲掉。
+    static func sharedGroupURL() -> URL? { groupURL() }
+    static let capturePBType = pbType
+}
+
+// MARK: - 常用语独立通道（v1.8.22）
+
+/// 为什么必须独立：单条常用语可以长达 20000 字节、最多 200 条（合计可达 4MB），
+/// 而 QPSharedHistory 的 Payload 在键盘里被 0.5 秒轮询、每次新增剪贴板记录都要
+/// 重新编码写入。把大列表塞进去，用户每复制一次都要编码几 MB —— 那就是「卡」。
+/// 这里用**独立的 App Group 文件**（或剪贴板里独立的自定义类型），
+/// 键盘只有真正点开「常用语」浮层时才读一次，平时轮询完全不碰它。
+enum QPPhraseStore {
+    /// 用户口径（v1.8.22）：最多 200 条常用语，**单条**可以到 20000 字节。
+    /// 「一万」说的是一条里的字节数，不是条数 —— 条数严格限制 200。
+    static let maxCount = 200
+    static let maxItemBytes = 20000
+
+    /// 导入/保存前统一清洗：去空行、按 UTF-8 字节安全截断超长条目、去重、限 200 条。
+    static func sanitize(_ items: [String]) -> [String] {
+        var out: [String] = []
+        var seen = Set<String>()
+        for raw in items {
+            let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !s.isEmpty else { continue }
+            let capped = capUTF8(s)
+            if seen.insert(capped).inserted { out.append(capped) }
+            if out.count >= maxCount { break }
+        }
+        return out
+    }
+
+    /// 按 Character 边界截断到 maxItemBytes 个字节，不会切出半个汉字/半个 emoji。
+    private static func capUTF8(_ s: String) -> String {
+        guard s.utf8.count > maxItemBytes else { return s }
+        var out = ""
+        var used = 0
+        for ch in s {
+            let n = String(ch).utf8.count
+            if used + n > maxItemBytes { break }
+            out.append(ch)
+            used += n
+        }
+        return out
+    }
+
+    /// 当前列表的总字节数（App 分类页显示「用了多少 / 上限多少」）。
+    static func usedBytes(_ items: [String]) -> Int {
+        items.reduce(0) { $0 + $1.utf8.count }
+    }
+    private static let phrasePBType = "app.mulberry6323.qp.phrases"
+    private static let phraseFile = "mozhi-phrases.json"
+
+    static func read() -> [String] {
+        if let url = QPSharedHistory.sharedGroupURL() {
+            let f = url.appendingPathComponent(phraseFile)
+            if let d = try? Data(contentsOf: f),
+               let a = try? JSONDecoder().decode([String].self, from: d) { return a }
+            return []
+        }
+        // 读自定义类型不算「读正文」，不会触发粘贴授权弹窗
+        guard let d = UIPasteboard.general.data(forPasteboardType: phrasePBType),
+              let a = try? JSONDecoder().decode([String].self, from: d) else { return [] }
+        return a
+    }
+
+    /// 主 App「分类」页保存 / 导入时调用。无 App Group 时写进剪贴板同一个 item，
+    /// 保留原有正文、图片以及 capture 通道的数据，不覆盖用户剪贴板内容。
+    @discardableResult
+    static func write(_ items: [String]) -> Int {
+        let arr = sanitize(items)
+        guard let data = try? JSONEncoder().encode(arr) else { return 0 }
+        if let url = QPSharedHistory.sharedGroupURL() {
+            try? data.write(to: url.appendingPathComponent(phraseFile), options: .atomic)
+            return arr.count
+        }
+        let pb = UIPasteboard.general
+        var item: [String: Any] = [:]
+        if let first = pb.items.first {
+            for (k, v) in first { item[k] = v }
+        }
+        item[phrasePBType] = data
+        pb.items = [item]
+        return arr.count
     }
 }

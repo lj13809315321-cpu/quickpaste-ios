@@ -826,7 +826,16 @@ struct PiPControlView: View {
                                     }
                                 } else {
                                     UIPasteboard.general.string = e.text
-                                    flash("已复制该条内容，去任何输入框粘贴即可")
+                                    // v1.8.22「复制后移到最前」（两端共用）：
+                                    // 用了旧条目也排到最前，键盘里同步跟随。
+                                    if QPSharedHistory.moveUsedToTopOn() {
+                                        PiPManager.appendLocal(e.text)
+                                        _ = QPSharedHistory.append(e.text)
+                                        entries = PiPManager.mergedItems()
+                                        flash("已复制，并移到最前（键盘同步）")
+                                    } else {
+                                        flash("已复制该条内容，去任何输入框粘贴即可")
+                                    }
                                 }
                             } label: {
                                 HStack(alignment: .top, spacing: 10) {

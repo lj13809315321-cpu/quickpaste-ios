@@ -174,6 +174,14 @@ struct KeyboardPrefs {
         set { store.set(clamp(newValue, 2, 5), forKey: "qp.symbolCount") }
     }
 
+    /// v1.8.22：最后采用的「共享快捷符号设置」时间戳。
+    /// 主 App 的快捷符号页改了会写共享通道；键盘只在时间戳更新时采用一次，
+    /// 之后键盘内自己改的符号不会被 App 的旧值反复盖回去。
+    var symbolsAt: Double {
+        get { store.double(forKey: "qp.symbolsAt") }
+        set { store.set(newValue, forKey: "qp.symbolsAt") }
+    }
+
     var phrases: [String] {
         get {
             let saved = store.stringArray(forKey: "qp.phrases")
