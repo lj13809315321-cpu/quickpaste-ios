@@ -448,6 +448,10 @@ final class KeyboardViewController: UIInputViewController {
         // 主 App 一进前台就消费：没在跑就开、正在跑就关。
         // ★ 下面四路径 / URL / 手势 / 图标一个字都不改。
         QPSharedHistory.markPendingPiPToggle()
+        // v1.8.30：Payload 会被主 App 的收录心跳整份覆盖，pending 标记会被冲掉；
+        // 改走独立指令文件 / 独立剪贴板类型，主 App 前台通知 + 轮询一定能消费到。
+        // ★ 下面四路径 / URL / 手势 / 图标依旧一个字都不改。
+        QPSharedHistory.markPipCommand()
         var trace: [String] = []
         let tried = openURLFromKeyboard(url, trace: &trace)
         // 键盘还挂在窗口上 = 没跳走；真被主 App 盖住后本扩展会挂起，这段通常不执行。
@@ -1806,7 +1810,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.29 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.30 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -1814,6 +1818,7 @@ final class KeyboardViewController: UIInputViewController {
         // v1.8.27：菜单里的「打开 墨指 主 App」已移到轻点工具条「连续复制」图标，
         // v1.8.28：轻点该图标现在会直接开启连续复制；跳转实现保持 v1.8.27 原样。
         // v1.8.29：改成共享通道一次性开关指令，再按一下即关闭。
+        // v1.8.30：改走独立指令通道 + 前台通知/轮询，图一也能真正切到连续复制页。
         // 这里不再堆菜单项（用户反馈工具条/菜单太挤、那一行根本看不到）。
         menuStack.addArrangedSubview(menuRow("⟳ 立即同步（\(items.count) 条）") { [weak self] in
             self?.pull(showConnecting: true, force: true); self?.closeMenu()

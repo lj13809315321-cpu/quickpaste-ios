@@ -102,6 +102,9 @@ struct AppRootView: View {
         //   本版改由共享通道带一次性「开/关指令」，主 App 在
         //   onOpenURL / onAppear / scenePhase active 三处任一处消费。
         //   旧 mozhi://pip/start 分支原样保留，仅作老链接兼容，不作为入口。
+        // ★ v1.8.30：图一「按 bundle id 拉起」这条根本不投递 URL，
+        //   上面 onOpenURL 的 tab=2 对它无效；切页与开关改由独立指令通道
+        //   + UIKit 前台通知 + 前台轮询保证（见本结构末尾）。
         // ★ 不能用 absoluteString.contains("pip") 判定路径，按 host 分流。
         .onOpenURL { url in
             let host = url.host ?? ""
@@ -113,7 +116,7 @@ struct AppRootView: View {
                 }
             } else if host == "tab", url.path.contains("pip") {
                 tab = 2
-                if !self.applyPendingPiPToggle(),
+                if !self.applyPendingPiPCommand(),
                    !url.absoluteString.contains("from=keyboard-more") {
                     // 设置页 SwiftUI Link：系统确实把 URL 送到了，
                     // 保持 v1.8.28 已验证成功的「进去就开」行为。
@@ -124,7 +127,7 @@ struct AppRootView: View {
             }
         }
         .onAppear {
-            let didToggle = self.applyPendingPiPToggle()
+            let didToggle = self.applyPendingPiPCommand()
             // v1.8.26 兜底：跳被拦时手动点桌面图标也直达连续复制页。
             if QPSharedHistory.consumePendingTabPip() { tab = 2 }
             if !didToggle {
@@ -134,17 +137,30 @@ struct AppRootView: View {
             }
         }
         .onChange(of: scenePhase) { phase in
-            // ★ 图一那条路真正会走到的入口：App 已在后台、被键盘拉回前台时
-            //   onAppear 不触发，只有这里会变 active。
-            if phase == .active { _ = self.applyPendingPiPToggle() }
+            if phase == .active { self.consumeKeyboardCommand() }
+        }
+        // ★ v1.8.30：图一按 bundle id 把 App 拉回前台时 URL 不投递、
+        //   onOpenURL 不触发；若 App 只是被键盘盖住、没真正进过后台，
+        //   onAppear 和 scenePhase 也都不会再触发 —— 三个回调可能全落空，
+        //   这就是「一直停在历史页」的真因。再加 UIKit 前台通知 +
+        //   前台 0.6 秒轮询两道保险；指令读到即清，重复调用天然幂等。
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.didBecomeActiveNotification)) { _ in
+            self.consumeKeyboardCommand()
+        }
+        .onReceive(Timer.publish(every: 0.6, on: .main, in: .common).autoconnect()) { _ in
+            guard scenePhase == .active else { return }
+            self.consumeKeyboardCommand()
         }
     }
 
-    /// 消费键盘写的一次性开关指令：当前在跑就关，没在跑就开。
+    /// v1.8.30：消费键盘写进「独立指令通道」的一次性命令。
+    /// 不再读 Payload —— 主 App 的连续复制收录心跳会整份覆盖 Payload，
+    /// 塞在里面的 pending 标记会被冲掉。切到连续复制页 + 按 running 开/关。
     /// 0.9s 等窗口就绪，1.8s 幂等补偿（冷启动首次可能拿不到 keyWindow）；
     /// 两次都按「期望状态」判断，不会把刚开的又关掉。
-    private func applyPendingPiPToggle() -> Bool {
-        guard QPSharedHistory.consumePendingPiPToggle() else { return false }
+    private func applyPendingPiPCommand() -> Bool {
+        guard QPSharedHistory.consumePipCommand() else { return false }
         tab = 2
         let shouldRun = !PiPManager.shared.running
         for delay in [0.9, 1.8] {
@@ -157,6 +173,12 @@ struct AppRootView: View {
             }
         }
         return true
+    }
+
+    /// 前台任一入口统一消费：独立开关指令 + 旧的「手动点桌面图标」切页兜底。
+    private func consumeKeyboardCommand() {
+        _ = applyPendingPiPCommand()
+        if QPSharedHistory.consumePendingTabPip() { tab = 2 }
     }
 }
 
@@ -623,7 +645,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("墨指 v1.8.29 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.30 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -1018,7 +1040,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("墨指 v1.8.29 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.30 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

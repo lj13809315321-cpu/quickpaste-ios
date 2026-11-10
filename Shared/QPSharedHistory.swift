@@ -108,6 +108,11 @@ enum QPSharedHistory {
     private static let pbType = "app.mulberry6323.qp.capture"
     private static let fileName = "mozhi-shared-history.json"
     private static let maxItems = 30
+    /// v1.8.30：独立于 Payload 的一次性「切页 + 开关」指令文件 / 剪贴板类型。
+    /// ★ 不能塞进 Payload —— 主 App 的连续复制收录心跳每次都整份 write()
+    ///   覆盖 Payload，键盘刚写进去的 pending 标记会被主 App 的旧副本冲掉。
+    private static let pipCmdFile = "mozhi-pip-command.json"
+    private static let pipCmdPBType = "app.mulberry6323.mozhi.pipcmd"
 
     /// 没有 App Group 时是否允许用系统剪贴板兜底。
     /// 关闭后完全不动用户剪贴板（画中画抓到的东西键盘读不到，但绝不污染剪贴板）。
@@ -500,6 +505,51 @@ enum QPSharedHistory {
               Date().timeIntervalSince1970 - at < 90 else { return false }
         p.pendingPiPToggle = nil
         write(p, keeping: UIPasteboard.general.string)
+        return true
+    }
+
+    // MARK: v1.8.30 独立一次性指令（不受 Payload 整份覆盖影响）
+
+    /// 键盘轻点工具条「连续复制」图标时调用。
+    /// 走独立文件 / 独立剪贴板类型，绝不碰 Payload，也不会碰用户剪贴板正文：
+    /// setData 只替换第一个 item 里的这个自定义类型，不新增 item、不动正文。
+    static func markPipCommand() {
+        let at = Date().timeIntervalSince1970
+        guard let data = try? JSONEncoder().encode(at) else { return }
+        // ★ 双写：两端 App Group 签名不一致时，groupURL() 可能一边有效一边无效，
+        //   只写一条通道就会丢指令。剪贴板那条用 setData 只改第一个 item 里
+        //   自己的 key，不新增 item、不动正文，用户复制的内容零风险。
+        if let url = groupURL() {
+            try? data.write(to: url.appendingPathComponent(pipCmdFile), options: .atomic)
+        }
+        if pasteboardFallbackEnabled {
+            UIPasteboard.general.setData(data, forPasteboardType: pipCmdPBType)
+        }
+    }
+
+    /// 主 App 在前台任一入口调用：90 秒内的指令生效，读到即清，只执行一次。
+    /// 两条通道任一命中即可；命中后两条都写成过期值，避免另一条路重复触发。
+    /// ★ 常规轮询（无指令时）只读一次小文件 + 一次剪贴板自定义类型，
+    ///   不落盘、不改 changeCount，不会带来卡顿。
+    static func consumePipCommand() -> Bool {
+        let now = Date().timeIntervalSince1970
+        let cmdFile = groupURL()?.appendingPathComponent(pipCmdFile)
+        var hit = false
+        if let f = cmdFile,
+           let d = try? Data(contentsOf: f),
+           let at = try? JSONDecoder().decode(Double.self, from: d),
+           now - at < 90 { hit = true }
+        if !hit,
+           let d = UIPasteboard.general.data(forPasteboardType: pipCmdPBType),
+           let at = try? JSONDecoder().decode(Double.self, from: d),
+           now - at < 90 { hit = true }
+        guard hit else { return false }
+        // 写「过期值 0」代替删除：删除失败时也不会重复消费导致反复开关。
+        let expired = (try? JSONEncoder().encode(Double(0))) ?? Data()
+        if let f = cmdFile { try? expired.write(to: f, options: .atomic) }
+        if pasteboardFallbackEnabled {
+            UIPasteboard.general.setData(expired, forPasteboardType: pipCmdPBType)
+        }
         return true
     }
 
