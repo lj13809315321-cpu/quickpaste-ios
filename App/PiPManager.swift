@@ -226,7 +226,7 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
 
         let vc = QPPiPViewController()
         vc.preferredContentSize = CGSize(width: 640, height: 360)
-        capturedCount = QPSharedHistory.read().items.count
+        capturedCount = Self.mergedItems().count
         vc.update(count: capturedCount)
         contentVC = vc
 
@@ -267,10 +267,91 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
 
     /// 页面定时调用，把后台新收录的条数刷到界面上
     func refreshCount() {
-        let p = QPSharedHistory.read()
-        capturedCount = p.items.count
-        blocked = p.isBlocked
+        capturedCount = Self.mergedItems().count
+        blocked = QPSharedHistory.read().isBlocked
         contentVC?.update(blocked: blocked, count: capturedCount)
+    }
+
+    // MARK: - App 本地收录历史（v1.8.14）
+
+    /// ★「永远 8 条」的根因与修复：手机端签名没有签 App Group entitlement，
+    ///   共享通道退化为「剪贴板自定义类型兜底」——主 App 在后台读不到剪贴板时
+    ///   既读不出也写不进，列表就永远停在最后一次前台写入时的条数
+    ///   （用户实测：开启连续复制后列表一直 8 条、计数归零重算）。
+    ///   修复 = 收录同时写主 App 自己的 UserDefaults（qp.app.pipHistory），
+    ///   列表显示「本地 ∪ 共享」合并去重；删除用墓碑（qp.app.deletedMarks）
+    ///   过滤，本地与共享两侧都立即隐藏。
+    private struct LocalEntry: Codable {
+        var t: String
+        var ts: Double
+    }
+
+    static func localHistory() -> [LocalEntry] {
+        guard let data = UserDefaults.standard.data(forKey: "qp.app.pipHistory"),
+              let arr = try? JSONDecoder().decode([LocalEntry].self, from: data) else { return [] }
+        return arr
+    }
+
+    private static func saveLocal(_ arr: [LocalEntry]) {
+        if let data = try? JSONEncoder().encode(arr) {
+            UserDefaults.standard.set(data, forKey: "qp.app.pipHistory")
+        }
+    }
+
+    /// 指纹：截前 140 字。墓碑按指纹过滤，超长文本也能稳定匹配。
+    static func fingerprint(_ text: String) -> String {
+        String(text.prefix(140))
+    }
+
+    static func deletedMarks() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: "qp.app.deletedMarks") ?? [])
+    }
+
+    private static func saveDeletedMarks(_ s: Set<String>) {
+        let capped = Array(s.prefix(500))
+        UserDefaults.standard.set(capped, forKey: "qp.app.deletedMarks")
+    }
+
+    /// 收录一条进本地历史（PiP 抓到新文本时调用）。
+    @discardableResult
+    static func appendLocal(_ text: String) -> Bool {
+        var arr = localHistory()
+        if arr.first?.t == text { return false }
+        arr.removeAll { $0.t == text }
+        arr.insert(LocalEntry(t: text, ts: Date().timeIntervalSince1970), at: 0)
+        if arr.count > 200 { arr = Array(arr.prefix(200)) }
+        saveLocal(arr)
+        return true
+    }
+
+    /// 合并视图：本地 ∪ 共享，去重（指纹，取时间较新者）、过滤墓碑、按时间倒序。
+    /// 共享通道没有逐条时间戳：给递减伪时间保持「共享里靠前的条目靠上」。
+    static func mergedItems() -> [(text: String, ts: Double)] {
+        let marks = deletedMarks()
+        var seen = Set<String>()
+        var arr = localHistory().map { ($0.t, $0.ts) }
+        var pseudo = Date().timeIntervalSince1970 - 1
+        for t in QPSharedHistory.read().items {
+            arr.append((t, pseudo))
+            pseudo -= 1
+        }
+        var out: [(String, Double)] = []
+        for (t, ts) in arr.sorted(by: { $0.1 > $1.1 }) {
+            let fp = fingerprint(t)
+            guard !marks.contains(fp), !seen.contains(fp) else { continue }
+            seen.insert(fp)
+            out.append((t, ts))
+        }
+        return out
+    }
+
+    /// 批量删除：写墓碑 + 从本地历史移除（共享通道无逐条删除 API，靠墓碑过滤）。
+    static func deleteTexts(_ texts: [String]) {
+        var marks = deletedMarks()
+        for t in texts { marks.insert(fingerprint(t)) }
+        saveDeletedMarks(marks)
+        let fps = Set(texts.map { fingerprint($0) })
+        saveLocal(localHistory().filter { !fps.contains(fingerprint($0.t)) })
     }
 
     // MARK: - 后台保活（音频 + audio 后台模式）
@@ -417,8 +498,9 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
             QPSharedHistory.setBlocked(false)
         }
         if QPSharedHistory.append(s) {
+            Self.appendLocal(s)
             pushToPc(s)
-            let n = QPSharedHistory.read().items.count
+            let n = Self.mergedItems().count
             DispatchQueue.main.async {
                 self.capturedCount = n
                 self.contentVC?.update(blocked: false, count: n)
@@ -426,7 +508,7 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
             }
         } else {
             // 同一条重复复制：正文一致，也算读到了，说明没被拦
-            let n = QPSharedHistory.read().items.count
+            let n = Self.mergedItems().count
             DispatchQueue.main.async {
                 self.capturedCount = n
                 self.contentVC?.update(blocked: false, count: n)
@@ -437,10 +519,9 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     /// 主 App 在后台（画中画）抓到的新内容，同样直接推给电脑。
     /// 键盘没弹出来的时候复制，电脑那边照样立刻能看到 —— 这才是「连续复制」的意义。
     private func pushToPc(_ text: String) {
-        // v1.8.13「断开连接」（主 App 侧总开关）：关掉后画中画后台收录的
-        // 内容也不再自动推给电脑；键盘侧开关独立存放在键盘进程里。
-        let d0 = UserDefaults.standard
-        guard (d0.object(forKey: "qp.app.syncEnabled") as? Bool) ?? true else { return }
+        // v1.8.14「连接电脑」总开关（两端共用，权威状态在共享通道 syncOff）：
+        // 主 App 设置页或键盘快捷菜单任一处断开，这里都不再自动推。
+        guard !QPSharedHistory.read().isSyncOff else { return }
         guard !pushedRecent.contains(text) else { return }
         pushedRecent.append(text)
         if pushedRecent.count > 30 { pushedRecent.removeFirst(pushedRecent.count - 30) }
@@ -463,7 +544,7 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         QPSharedHistory.setBlocked(true)
         DispatchQueue.main.async {
             self.blocked = true
-            self.contentVC?.update(blocked: true, count: QPSharedHistory.read().items.count)
+            self.contentVC?.update(blocked: true, count: Self.mergedItems().count)
             self.message = "系统不让后台读剪贴板：设置 → QuickPaste → 从其他 App 粘贴 → 允许"
         }
     }
@@ -511,7 +592,7 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
             QPSharedHistory.setPip(true)
             QPSharedHistory.setWant(true)
             UserDefaults.standard.set(true, forKey: "qp.autoPiP")
-            self.capturedCount = QPSharedHistory.read().items.count
+            self.capturedCount = Self.mergedItems().count
             self.contentVC?.update(blocked: self.blocked, count: self.capturedCount)
         }
     }
@@ -546,7 +627,34 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
 
 struct PiPControlView: View {
     @ObservedObject private var pip = PiPManager.shared
-    @State private var items: [String] = QPSharedHistory.read().items
+    /// 合并视图（本地 ∪ 共享、去重、墓碑过滤）——见 PiPManager.mergedItems()
+    @State private var entries: [(text: String, ts: Double)] = PiPManager.mergedItems()
+    /// 筛选：0 全部 / 1 文本 / 2 链接
+    @State private var filterKind = 0
+    /// 批量编辑：选择模式 + 已选集合（以原文为 id）
+    @State private var editMode = false
+    @State private var selection = Set<String>()
+    /// 导出分享面板
+    @State private var sharePayload: [Any]?
+    @State private var notice = ""
+
+    /// 链接条目判断（与键盘侧 isLinkItem 同口径）
+    private static func isLink(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.hasPrefix("http://") || t.hasPrefix("https://") || t.hasPrefix("www.")
+    }
+
+    private var filtered: [(text: String, ts: Double)] {
+        switch filterKind {
+        case 1: return entries.filter { !Self.isLink($0.text) }
+        case 2: return entries.filter { Self.isLink($0.text) }
+        default: return entries
+        }
+    }
+
+    private var filterName: String {
+        ["全部", "文本", "链接"][filterKind]
+    }
 
     var body: some View {
         NavigationStack {
@@ -625,15 +733,92 @@ struct PiPControlView: View {
                          + "小窗消失 = 停止监听。")
                 }
 
-                Section("已收录 \(items.count) 条") {
-                    if items.isEmpty {
-                        Text("开启后，在别的 App 里复制的文字会出现在这里，"
-                             + "也会出现在键盘的剪贴板列表里。")
+                // ── v1.8.14 收录列表：筛选 / 批量选择 / 删除 / 复制 / 导出 ──
+                Section {
+                    HStack(spacing: 16) {
+                        Menu {
+                            Picker("筛选", selection: $filterKind) {
+                                Text("全部").tag(0)
+                                Text("文本").tag(1)
+                                Text("链接").tag(2)
+                            }
+                        } label: {
+                            Label(filterName, systemImage: "line.3.horizontal.decrease.circle")
+                        }
+                        Menu {
+                            exportButton("导出为 TXT", texts: { QPExport.txtFile($0) })
+                            exportButton("导出为 CSV", texts: { QPExport.csvFile($0) })
+                            exportButton("导出为 Word(.doc)", texts: { QPExport.wordFile($0) })
+                            exportButton("导出为 PDF", texts: { QPExport.pdfFile($0) })
+                            exportButton("导出为 HTML", texts: { QPExport.htmlFile($0) })
+                            exportButton("导出为图片", texts: { QPExport.imageFile($0) })
+                        } label: {
+                            Label("导出", systemImage: "square.and.arrow.up")
+                        }
+                        Spacer()
+                        Button(editMode ? "完成" : "选择") {
+                            editMode.toggle()
+                            if !editMode { selection.removeAll() }
+                        }
+                    }
+                    .font(.subheadline)
+
+                    if editMode {
+                        HStack(spacing: 16) {
+                            Button("全选") { selection = Set(filtered.map(\.text)) }
+                            Button("复制所选") { copySelected() }
+                            Button("删除所选", role: .destructive) { deleteSelected() }
+                                .disabled(selection.isEmpty)
+                            Spacer()
+                            Text("已选 \(selection.count) 条")
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                        }
+                        .font(.subheadline)
+                    }
+                    if !notice.isEmpty {
+                        Text(notice).font(.footnote).foregroundColor(.blue)
+                    }
+                } footer: {
+                    Text("「选择」后点条目勾选，可批量删除；导出范围 = 有选择时导出所选，否则导出当前筛选下的全部。主 App 历史只收文字，图片只在键盘端。")
+                }
+
+                Section("已收录 \(filtered.count) 条") {
+                    if filtered.isEmpty {
+                        Text("还没有收录。开启连续复制后，在别的 App 里复制的文字会出现在这里，也会出现在键盘的剪贴板列表里。")
                             .font(.footnote)
                             .foregroundColor(.secondary)
                     } else {
-                        ForEach(Array(items.prefix(20).enumerated()), id: \.offset) { pair in
-                            Text(pair.element).lineLimit(2).font(.subheadline)
+                        ForEach(filtered, id: \.text) { e in
+                            Button {
+                                if editMode {
+                                    if selection.contains(e.text) {
+                                        selection.remove(e.text)
+                                    } else {
+                                        selection.insert(e.text)
+                                    }
+                                } else {
+                                    UIPasteboard.general.string = e.text
+                                    flash("已复制该条内容，去任何输入框粘贴即可")
+                                }
+                            } label: {
+                                HStack(alignment: .top, spacing: 10) {
+                                    if editMode {
+                                        Image(systemName: selection.contains(e.text)
+                                              ? "checkmark.circle.fill" : "circle")
+                                            .foregroundColor(.accentColor)
+                                    }
+                                    Text(e.text)
+                                        .lineLimit(2)
+                                        .font(.subheadline)
+                                        .foregroundColor(.primary)
+                                    Spacer()
+                                    Text("\(e.text.count) 字")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -646,11 +831,59 @@ struct PiPControlView: View {
             }
             .navigationTitle("连续复制")
             .onReceive(Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()) { _ in
-                items = QPSharedHistory.read().items
+                entries = PiPManager.mergedItems()
                 pip.refreshCount()
             }
             .onAppear { pip.startIfWanted() }
+            .sheet(isPresented: Binding(
+                get: { sharePayload != nil },
+                set: { if !$0 { sharePayload = nil } })) {
+                if let payload = sharePayload {
+                    ActivityView(items: payload)
+                }
+            }
         }
+    }
+
+    // MARK: 列表动作
+
+    private func flash(_ msg: String) {
+        notice = msg
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { notice = "" }
+    }
+
+    /// 导出范围：有选择时导出所选，否则导出当前筛选下的全部
+    private func exportTexts() -> [String] {
+        let texts = selection.isEmpty
+            ? filtered.map(\.text)
+            : filtered.filter { selection.contains($0.text) }.map(\.text)
+        return texts.isEmpty ? [""] : texts
+    }
+
+    private func exportButton(_ title: String,
+                              texts: @escaping ([String]) -> URL?) -> some View {
+        Button(title) {
+            let t = exportTexts()
+            if t == [""] { flash("没有可导出的内容"); return }
+            guard let url = texts(t) else { flash("导出失败：文件生成出错"); return }
+            sharePayload = [url]
+        }
+    }
+
+    private func copySelected() {
+        let texts = selection.isEmpty ? filtered.map(\.text) : filtered.filter { selection.contains($0.text) }.map(\.text)
+        guard !texts.isEmpty else { flash("没有可复制的内容"); return }
+        UIPasteboard.general.string = texts.joined(separator: "\n\n————\n\n")
+        flash("已复制 \(texts.count) 条到剪贴板，去任何输入框粘贴即可")
+    }
+
+    private func deleteSelected() {
+        let texts = Array(selection)
+        guard !texts.isEmpty else { return }
+        PiPManager.deleteTexts(texts)
+        entries = PiPManager.mergedItems()
+        selection.removeAll()
+        flash("已删除 \(texts.count) 条（主 App 列表；键盘列表需在键盘里单独清）")
     }
 
     static func openAppSettings() {
@@ -670,4 +903,27 @@ struct PiPControlView: View {
         }
         .padding(.vertical, 1)
     }
+}
+
+// MARK: - 系统分享面板（导出文件用）
+//
+// iPad（TARGETED_DEVICE_FAMILY 含 2）上 UIActivityViewController 必须
+// 有 popover 锚点，否则 present 即崩：这里取 keyWindow 根视图中心兜底。
+
+struct ActivityView: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        if let window = (UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.keyWindow }
+            .first) {
+            vc.popoverPresentationController?.sourceView = window
+            vc.popoverPresentationController?.sourceRect =
+                CGRect(x: window.bounds.midX, y: window.bounds.midY, width: 1, height: 1)
+        }
+        return vc
+    }
+
+    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }

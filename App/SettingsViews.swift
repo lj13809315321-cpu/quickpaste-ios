@@ -52,10 +52,10 @@ enum AppTutorials {
             ("插入结果", "点结果框右侧蓝色上箭头把句子插入输入框。")
         ]),
         AppTutorial(id: "continuous", title: "连续复制与悬浮窗",
-                    summary: "点键盘工具条右二的方块按钮，变蓝即开启自动同步。",
+                    summary: "打开主 App「连续复制」页点开启，或用键盘设置里的「键盘可见时自动抓取」开关。",
                     sections: [
             ("先选保存位置", "键盘设置 → 连续复制，可选择「剪贴板历史」或「常用语」。"),
-            ("开启连续复制", "1. 确认键盘已开启完全访问。\n2. 切到 QuickPaste 键盘。\n3. 点工具条 ⧉ 变蓝即开启。\n4. 切回其他 App 继续复制，回到键盘即可看到记录。"),
+            ("开启连续复制", "1. 确认键盘已开启完全访问。\n2. 打开主 App「连续复制」页点「开启连续复制」（后台小窗自动出现）。\n3. 切回其他 App 继续复制，记录会持续增加。"),
             ("iOS 限制", "iOS 不允许第三方键盘显示系统级悬浮窗或后台常驻服务，抓取发生在每次呼出键盘时，不是后台静默监控。")
         ]),
         AppTutorial(id: "calc", title: "键盘计算器",
@@ -332,15 +332,20 @@ struct SettingsView: View {
 struct SyncSettingsView: View {
     @AppStorage("qp_server_url") private var savedURL: String = ""
     @AppStorage("qp.app.pair") private var pair: String = ""
-    @AppStorage("qp.app.syncEnabled") private var appSyncEnabled: Bool = true
+    /// v1.8.14「连接电脑」总开关：两端共用共享通道字段（QPSharedHistory.syncOff），
+    /// 键盘下次弹出时跟随这里的改动；键盘里改了，这里进页面时也会刷新。
+    @State private var syncOn = !QPSharedHistory.read().isSyncOff
     @State private var draft = ""
     @State private var status = "未检测"
 
     var body: some View {
         Form {
             Section("连接开关") {
-                Toggle("连接电脑同步（主 App）", isOn: $appSyncEnabled)
-                Text("断开连接：主 App 不再把复制的内容（含画中画后台收录的）自动发到电脑，「立即检测」仍可手动测一次。\n注意：主 App 和键盘的设置不互通 —— 键盘的轮询要在键盘里断开：切到 QuickPaste 键盘 → 工具条「⋯」→ 设置 → 局域网同步 → 关掉「连接电脑」。\n断开后手机照常使用键盘，只是不再自动和电脑互传。")
+                Toggle("连接电脑（两端共用）", isOn: $syncOn)
+                    .onChange(of: syncOn) { on in
+                        QPSharedHistory.setSyncOff(!on)
+                    }
+                Text("一个开关管两端：关掉后主 App 不再自动推送（含画中画后台收录），键盘也不再轮询拉取、不再自动推送——键盘下次弹出即生效；键盘里改了，回到这页也会刷新。\n断开后手机照常使用键盘，手动「立即检测 / 立即同步」仍可临时连一次。")
                     .font(.footnote).foregroundColor(.secondary)
             }
             Section("连接状态") {
@@ -369,7 +374,10 @@ struct SyncSettingsView: View {
             }
         }
         .navigationTitle("局域网同步（CopyQ）")
-        .onAppear { draft = savedURL.isEmpty ? "http://192.168.1.2:8787" : savedURL }
+        .onAppear {
+            draft = savedURL.isEmpty ? "http://192.168.1.2:8787" : savedURL
+            syncOn = !QPSharedHistory.read().isSyncOff   // 键盘端改过开关 → 进页面刷新
+        }
     }
 
     private func check() {
@@ -507,11 +515,10 @@ struct ContinuousView: View {
             }
             Section("如何开启") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("1. 在任意 App 切换到 QuickPaste 键盘")
-                    Text("2. 点工具条右二方块 ⧉，变蓝即开启自动同步")
-                    Text("3. 切回其他 App 继续复制，回到键盘即可看到记录")
+                    Text("1. 打开主 App「连续复制」页，点「开启连续复制」（后台小窗自动出现）")
+                    Text("2. 切到任意 App 继续复制，记录持续增加，键盘里也能看到")
                 }
-                Text("也可在键盘「⋯ → 设置 → 连续复制」里打开「呼出时抓取剪贴板」开关。")
+                Text("键盘侧开关在「⋯ → 设置 → 连续复制」的「键盘可见时自动抓取」。")
                     .font(.footnote).foregroundColor(.secondary)
             }
             Section("存储位置") {

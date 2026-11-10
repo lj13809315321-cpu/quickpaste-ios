@@ -424,7 +424,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
 
         body.addArrangedSubview(groupTitle("系统画中画（跨 App 连续复制）"))
         body.addArrangedSubview(card([
-            numberedRow(1, "点键盘工具条的「连续复制」按钮；系统允许跳转就直接打开 QuickPaste，并自动开小窗"),
+            numberedRow(1, "打开 QuickPaste 主 App → 连续复制页 → 点「开启连续复制」（自动开小窗）"),
             numberedRow(2, "跳不动就回主屏点 QuickPaste 图标，进去照样会自动开"),
             numberedRow(3, "★ 设置 → QuickPaste → 从其他 App 粘贴 → 允许（不设成允许，后台只能读到空内容）"),
             numberedRow(4, "小窗出现 = 正在后台监控；拖到屏幕边缘会缩成图标，点小窗上的 ✕ 结束")
@@ -496,9 +496,9 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         body.addArrangedSubview(groupTitle("连接开关"))
         body.addArrangedSubview(card([
             switchRow("连接电脑",
-                      sub: "断开连接：键盘不再每 3 秒轮询电脑、不再自动推送，不连电脑也流畅使用；手动「立即同步」仍可临时连一次",
-                      isOn: prefs.syncEnabled) { [weak self] v in
-                self?.prefs.syncEnabled = v
+                      sub: "两端共用这一个开关（主 App 端改了，键盘下次出现跟随；这里改了，主 App 也跟随）。断开后不再轮询、不再自动推送；手动「立即同步」仍可临时连一次",
+                      isOn: !(QPSharedHistory.read().isSyncOff)) { [weak self] v in
+                QPSharedHistory.setSyncOff(!v)
                 self?.delegate?.settingsDidChange()
             },
             switchRow("复制后自动发到电脑",
@@ -1132,8 +1132,8 @@ private enum Tutorial {
         ]),
         "continuous": Item(title: "连续复制与系统画中画", summary: "键盘弹着时实时抓取；开画中画可跨 App 后台监控。", sections: [
             ("键盘里连续复制", "键盘弹着时每 0.5 秒读一次系统剪贴板，复制第 2、3、N 段都会自动进列表，不用收起再弹出。"),
-            ("开启系统画中画", "1. 确认键盘已开启完全访问。\n2. 点键盘工具条的「连续复制」按钮；能跳就直接打开 QuickPaste 并自动开小窗。\n3. 跳不动就回主屏点 QuickPaste 图标，进去自动开。\n4. ★ 设置 → QuickPaste → 从其他 App 粘贴 → 允许，否则后台读不到内容。\n5. 出现系统 PiP 小窗后，切到微信、Safari 等任意 App 继续复制。"),
-            ("小窗怎么用", "PiP 小窗由 iOS 渲染，自带 ✕ 关闭；拖到屏幕左边框会自动缩小贴边（只露一个小箭头），点箭头可展开。小窗里大字的「已收录 N 条」才是真正抓到的条数；键盘第三个按钮变蓝且右上角是绿点，说明后台小窗真的活着。"),
+            ("开启系统画中画", "1. 确认键盘已开启完全访问。\n2. 打开 QuickPaste 主 App → 连续复制页 → 点「开启连续复制」，自动开小窗。\n3. ★ 设置 → QuickPaste → 从其他 App 粘贴 → 允许，否则后台读不到内容。\n4. 出现系统 PiP 小窗后，切到微信、Safari 等任意 App 继续复制。"),
+            ("小窗怎么用", "PiP 小窗由 iOS 渲染，自带 ✕ 关闭；拖到屏幕左边框会自动缩小贴边（只露一个小箭头），点箭头可展开。小窗里大字的「已收录 N 条」才是真正抓到的条数，主 App「连续复制」页的计数同步更新。"),
             ("重复内容与使用范围", "相同文字会去重。画中画收录的文字会写进共享历史，回到键盘自动出现在剪贴板列表里；系统粘贴授权弹窗需点「允许」。")
         ]),
         "calc": Item(title: "键盘计算器", summary: "按键直接写进输入框，点 = 才出结果。", sections: [

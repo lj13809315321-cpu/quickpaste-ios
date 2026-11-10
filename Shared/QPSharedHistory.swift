@@ -31,9 +31,15 @@ enum QPSharedHistory {
         var want: Bool? = nil
         /// 主 App 后台心跳（秒级时间戳）。键盘用它判断小窗其实是不是已经死了。
         var beatAt: Double? = nil
+        /// v1.8.14「连接电脑」总开关的**唯一权威状态**（true = 断开连接）。
+        /// 主 App 与键盘的 UserDefaults 互不相通，两端开关都读写这一个字段，
+        /// 谁改了另一端下次出现时跟随 —— 用户要求：本来就是一个功能。
+        /// 用可选类型，保证旧版本写下的 JSON 还能解码，不会丢历史。
+        var syncOff: Bool? = nil
 
         var isBlocked: Bool { blocked == true }
         var isWanted: Bool { want == true }
+        var isSyncOff: Bool { syncOff == true }
 
         /// 第 index 条的收录时刻（毫秒）。旧版本写的 / 剪贴板兜底通道没有时间戳 → nil
         func timeMS(at index: Int) -> Double? {
@@ -189,6 +195,18 @@ enum QPSharedHistory {
         guard p.isWanted != on else { return }
         p.want = on
         write(p, keeping: nil)
+    }
+
+    /// v1.8.14「连接电脑」总开关（两端共用，唯一权威状态）。
+    /// 主 App 设置页与键盘快捷菜单/设置页都调这里；写通道尽力而为：
+    /// 有 App Group 写共享文件最可靠；剪贴板兜底时需要保留正文（App 前台
+    /// 调用读得到正文），写不进也先把内存态更新，本进程立即生效。
+    @discardableResult
+    static func setSyncOff(_ on: Bool) -> Bool {
+        var p = read()
+        p.syncOff = on
+        write(p, keeping: UIPasteboard.general.string)
+        return true
     }
 
     /// 后台心跳。只有拿得到 App Group 文件时才写。

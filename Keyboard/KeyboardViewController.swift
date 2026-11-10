@@ -354,127 +354,8 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: - 连续复制（键盘内监听 + 主 App 画中画后台监听）
 
-    /// 第三个按钮（⧉）。用户明确要求：**别做成点了没反应的假开关**。
-    ///   · 已经开着 → 关掉键盘侧的开关（后台小窗请在小窗上点 ✕）；
-    ///   · 没开 → 立刻变蓝 + 让 App 记住「下次打开就自动开」，并尝试把 App 叫到前台。
-    /// 旧版跳转失败还弹一整块「打开 QuickPaste」的指引面板，点了照样不动 ——
-    /// 用户原话「弹也跳转不了有啥用」。现在不弹面板，只用一句 toast 如实说跳没跳成。
-    private func toggleContinuous() {
-        guard hasFullAccess else {
-            showToast("请先在 设置 → 键盘 → QuickPaste 开启「允许完全访问」")
-            return
-        }
-        let shared = QPSharedHistory.read()
-        pipLive = shared.isAlive
-        pipBlocked = shared.isBlocked
-        if prefs.continuous {
-            prefs.continuous = false
-            QPSharedHistory.setWant(false)
-            refreshCopyButton()
-            showToast("已关闭键盘内连续复制；后台小窗请点小窗上的 ✕")
-            return
-        }
-
-        prefs.continuous = true
-        capturedCount = 0
-        refreshCopyButton()
-        // 让主 App 一打开就自动开画中画（不依赖这次跳转是否成功）
-        QPSharedHistory.setWant(true)
-        if pipLive && !pipBlocked {
-            showToast("连续复制已开启（后台小窗在抓）")
-            return
-        }
-        openMainAppReporting("pip/start") { [weak self] ok in
-            if ok {
-                self?.showToast("已打开 QuickPaste，小窗会自动开启")
-            } else {
-                self?.showToast("没跳过去？回主屏点一下 QuickPaste 图标，小窗照样会自动开")
-            }
-        }
-    }
-
-    /// 打开主 App 并**如实回报**结果。
-    /// 键盘扩展里 extensionContext.open 基本都被系统拦掉，真正能用的是
-    /// 「运行期取 UIApplication.shared 再 openURL:」（第三方输入法都是这么做的）。
-    /// 所以先走那条，再等一小会儿看键盘是不是真的被 App 盖住了来判断成败。
-    private func openMainAppReporting(_ path: String,
-                                      completion: @escaping (Bool) -> Void) {
-        guard let url = URL(string: "quickpaste://" + path) else {
-            completion(false)
-            return
-        }
-        // 先把所有能试的都试一遍（官方 API + UIApplication.shared + 响应链）
-        let tried = openURLString(url.absoluteString)
-        // 键盘还在原位 = 没跳走；被盖住后本扩展会挂起，这段也就不会跑了
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
-            guard let self = self else { return }
-            let stillHere = self.viewIfLoaded?.window != nil
-            completion(tried && !stillHere)
-        }
-    }
-
-    /// 键盘扩展里打开 URL：把能试的路径全试一遍，任意一条生效即可。
-    /// ① 运行期取 UIApplication.shared → openURL:（第三方输入法通用做法，成功率最高）
-    /// ② open(_:options:completionHandler:) 新 API 兜底
-    /// ③ 官方扩展 API extensionContext.open（多数系统版本对键盘直接拒绝）
-    /// ④ 沿响应链找 openURL:
-    @discardableResult
-    private func openURLString(_ string: String) -> Bool {
-        guard let url = URL(string: string) else { return false }
-        let sel = NSSelectorFromString("openURL:")
-        var tried = false
-
-        // ① ② 运行期拿到 UIApplication 实例（扩展里不能直接写 .shared）
-        if let app = sharedApplicationInstance() {
-            if app.responds(to: sel) {
-                // 同一条 URL 只开一次，避免 App 收到两遍
-                _ = app.perform(sel, with: url)
-                return true
-            }
-            let sel3 = NSSelectorFromString("open:options:completionHandler:")
-            if app.responds(to: sel3), let imp = app.method(for: sel3) {
-                typealias OpenFn = @convention(c) (AnyObject, Selector, NSURL,
-                                                   NSDictionary,
-                                                   @convention(block) (Bool) -> Void) -> Void
-                let fn = unsafeBitCast(imp, to: OpenFn.self)
-                fn(app, sel3, url as NSURL, NSDictionary(), { _ in })
-                tried = true
-            }
-            if tried { return true }
-        }
-
-        // ③ 官方扩展 API（异步，同步拿不到结果）
-        if let ctx = extensionContext {
-            ctx.open(url, completionHandler: nil)
-            tried = true
-        }
-
-        // ④ 响应链（有些系统版本只有这条路通）
-        var responder: UIResponder? = self
-        while let r = responder {
-            if r.responds(to: sel) {
-                _ = r.perform(sel, with: url)
-                return true
-            }
-            responder = r.next
-        }
-        return tried
-    }
-
-    /// 扩展里不能直接引用 `UIApplication.shared`（编译期会被标成「扩展不可用」），
-    /// 运行期从 NSClassFromString 取类对象再 perform 是允许的 —— 这也是各家输入法
-    /// 能在键盘里跳回自家 App 的实际做法。
-    private func sharedApplicationInstance() -> NSObject? {
-        guard let cls = NSClassFromString("UIApplication") as? NSObject.Type else { return nil }
-        let sel = NSSelectorFromString("sharedApplication")
-        guard cls.responds(to: sel), let unmanaged = cls.perform(sel) else { return nil }
-        return unmanaged.takeUnretainedValue() as? NSObject
-    }
-
-    @objc private func openContinuousSettings(_ g: UILongPressGestureRecognizer) {
-        guard g.state == .began else { return }
-        settings.show(.continuous)
-    }
+    /// v1.8.14：工具条 ⧉ 按钮已按用户要求删除，toggleContinuous 与跳转主 App
+    /// 的整套 openURL 兜底代码随之移除。开关只在键盘设置页。
 
     private func syncCaptureState() {
         refreshCopyButton()
@@ -489,14 +370,21 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: - 同步
 
+    /// v1.8.14「连接电脑」总开关：**唯一权威状态在共享通道**（QPSharedHistory.syncOff），
+    /// 主 App 与键盘的开关读写同一个字段，谁改了另一端下次出现时跟随 ——
+    /// 用户要求：本来就是一个功能，不要各管各的。read() 有 mtime/内存缓存，高频调用无开销。
+    private func syncOn() -> Bool {
+        !QPSharedHistory.read().isSyncOff
+    }
+
     /// 拉取电脑剪贴板。v1.8.13 加「断开连接」总开关：
     /// - 开关关着时，轮询/被动调用（force=false）直接短路，一个字节都不发；
     /// - 用户手动点「立即同步 / 连接电脑并刷新 / 状态头」（force=true）
     ///   仍可临时连一次 —— 断开的是「自动连着」，不是「永远不能连」。
     private func pull(showConnecting: Bool, force: Bool = false) {
-        if !prefs.syncEnabled && !force {
+        if !syncOn() && !force {
             syncState = "off"
-            syncError = "已断开连接（设置 → 局域网同步 → 连接电脑）"
+            syncError = "已断开连接（主 App 或键盘里可重新打开「连接电脑」）"
             if showConnecting { refreshHead() }
             return
         }
@@ -558,7 +446,7 @@ final class KeyboardViewController: UIInputViewController {
     /// 复制即同步：抓到新内容就 POST 给电脑。
     /// 电脑没连上不丢，先进队列，等下一次拉取成功再补发。
     private func autoPush(_ text: String) {
-        guard prefs.syncEnabled, prefs.autoPush else { return }
+        guard syncOn(), prefs.autoPush else { return }
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty, !isServerAddress(t) else { return }
         if pushedRecent.contains(t) { return }
@@ -600,7 +488,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func startPolling() {
         stopPolling()
-        guard prefs.syncEnabled && prefs.syncAuto else { return }
+        guard syncOn() && prefs.syncAuto else { return }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             self?.pull(showConnecting: false)
         }
@@ -800,18 +688,9 @@ final class KeyboardViewController: UIInputViewController {
         // v1.8.9：地球键整键删掉（用户要求）——不切换输入法，
         // 切换输入法用系统键盘切换入口。
 
-        // HTML 原型 .kbTool.copyBtn：连续复制一级开关，蓝色=开启；与「同步」无关
-        let copyBtn = toolButton("")
-        copyBtn.tag = 101
-        copyBtn.setImage(copyIcon(QPColor.ink).withRenderingMode(.alwaysTemplate), for: .normal)
-        copyButton = copyBtn
-        copyBtn.addAction(UIAction { [weak self] _ in self?.toggleContinuous() },
-                          for: .touchUpInside)
-        let holdCopy = UILongPressGestureRecognizer(target: self,
-                                                    action: #selector(openContinuousSettings(_:)))
-        holdCopy.minimumPressDuration = 0.6
-        copyBtn.addGestureRecognizer(holdCopy)
-        toolbar.addArrangedSubview(copyBtn)
+        // v1.8.14：工具条「连续复制」按钮（⧉）整键删掉（用户要求：没啥用）。
+        // 开关仍在 键盘设置 → 连续复制 →「键盘可见时自动抓取」；
+        // 连续复制的说明与开关也不再散落多处。绿点指示随之移除。
 
         // v1.8.8 剪贴板筛选：点按弹类型筛选菜单（全部/文本/链接/图片/文件），
         // 长按弹导出菜单（TXT / CSV / 图片 -> 发送到电脑）。
@@ -1623,7 +1502,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.13 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.14 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -1657,17 +1536,16 @@ final class KeyboardViewController: UIInputViewController {
             self.pull(showConnecting: true, force: true)
             self.closeMenu()
         })
-        menuStack.addArrangedSubview(menuRow("连接电脑（同步总开关）：" + (prefs.syncEnabled ? "开" : "关")) { [weak self] in
+        menuStack.addArrangedSubview(menuRow("连接电脑（两端共用总开关）：" + (syncOn() ? "开" : "关")) { [weak self] in
             guard let self = self else { return }
-            self.prefs.syncEnabled.toggle()
-            if self.prefs.syncEnabled {
-                self.showToast("已恢复连接电脑")
+            let on = self.syncOn()
+            QPSharedHistory.setSyncOff(on)   // toggle：写共享权威状态，主 App 跟随
+            if !on {
+                self.showToast("已断开连接：不再轮询/自动推送，手动同步仍可用")
+            } else {
+                self.showToast("已恢复连接电脑（主 App 端同步生效）")
                 self.pull(showConnecting: true, force: true)
                 self.startPolling()
-            } else {
-                self.stopPolling()
-                self.syncState = "off"
-                self.showToast("已断开连接：不再轮询/自动推送，手动同步仍可用")
             }
             self.refreshHead()
             self.closeMenu()
@@ -2984,7 +2862,7 @@ final class KeyboardViewController: UIInputViewController {
             heightConstraint.constant = totalHeight
         }
         view.setNeedsLayout()
-        if prefs.syncEnabled && prefs.syncAuto { startPolling() } else { stopPolling() }
+        if syncOn() && prefs.syncAuto { startPolling() } else { stopPolling() }
         // 设置页里改了「启用连续复制」也要立刻同步浮层与轮询
         syncCaptureState()
     }
@@ -3019,7 +2897,7 @@ extension KeyboardViewController: KeyboardSettingsDelegate {
 
     func settingsStatus() -> (title: String, count: Int, url: String, backend: String) {
         let title: String
-        if !prefs.syncEnabled {
+        if !syncOn() {
             title = "已断开连接"
         } else {
             switch syncState {
