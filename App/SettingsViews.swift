@@ -435,7 +435,7 @@ struct CategoryView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("添加常用语") {
+                Section {
                     TextEditor(text: $draft)
                         .frame(minHeight: 68)
                         .overlay(RoundedRectangle(cornerRadius: 6)
@@ -452,6 +452,8 @@ struct CategoryView: View {
                     if !notice.isEmpty {
                         Text(notice).font(.footnote).foregroundColor(.blue)
                     }
+                } header: {
+                    Text("添加常用语")
                 } footer: {
                     Text("一条最长 20000 字节（约六千多个汉字），最多 200 条；超长会按字边界安全截断，不会切出半个汉字。列表用固定行高，长文本不会让键盘变卡。")
                 }
@@ -774,7 +776,7 @@ struct SymSettingsView: View {
 
     var body: some View {
         Form {
-            Section("当前符号（\(symbols.count)）") {
+            Section {
                 ForEach(Array(symbols.enumerated()), id: \.offset) { i, s in
                     HStack {
                         Text("\(i + 1)").foregroundColor(.secondary).frame(width: 22)
@@ -798,6 +800,8 @@ struct SymSettingsView: View {
                     }
                     .buttonStyle(.borderless)
                 }
+            } header: {
+                Text("当前符号（\(symbols.count)）")
             } footer: {
                 Text("排在前面的优先显示在工具条；点符号可直接在光标处插入。")
             }
