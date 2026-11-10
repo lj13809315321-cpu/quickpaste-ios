@@ -173,17 +173,22 @@ struct AppRootView: View {
             }
         }
         // v1.8.31：在哪个 App 点开的，开/关完成后就自动跳回那个 App。
-        guard let host = cmd.host, !host.isEmpty else {
+        // v1.8.32：iOS 26.4+ 系统不再给键盘宿主包名，识别不到时退到用户
+        // 设定的「默认返回 App」；两者都没有才留在本页（页面上有按钮可手动回）。
+        let host = (cmd.host?.isEmpty == false ? cmd.host : nil)
+            ?? QPSharedHistory.defaultReturnBundleId()
+        guard let target = host, !target.isEmpty else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) {
-                guard PiPManager.shared.running else { return }
-                PiPManager.shared.note("连续复制已开启；没识别出来源 App，已留在本页")
+                // 不管画中画有没有起来都给反馈，绝不出现「点了没反应」；
+                // 开 / 关两条路径都会走到这里，所以文案只描述状态不受影响。
+                PiPManager.shared.note("没识别出来源 App，可在本页「返回来源 App」选默认目标或点按钮返回；连续复制状态不受影响")
             }
             return true
         }
         if shouldRun {
-            Self.jumpBackAfterPiP(host: host)
+            Self.jumpBackAfterPiP(host: target)
         } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { Self.openHostApp(host) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { Self.openHostApp(target) }
         }
         return true
     }
@@ -201,27 +206,43 @@ struct AppRootView: View {
         }
     }
 
-    /// 按包名拉起来源 App（与键盘侧同一套系统私有接口，自用重签无审核风险）。
-    /// 1.2 秒后若还在前台，用常见 App 的 URL 协议再试一次；仍失败给一行提示。
-    private static func openHostApp(_ bundleId: String) {
-        guard !bundleId.isEmpty else { return }
-        if let cls = NSClassFromString("LSApplicationWorkspace") as? NSObject.Type,
-           let ws = cls.perform(NSSelectorFromString("defaultWorkspace"))?
-                       .takeUnretainedValue() as? NSObject {
-            let sel = NSSelectorFromString("openApplicationWithBundleID:")
-            if ws.responds(to: sel) { _ = ws.perform(sel, with: bundleId) }
+    /// v1.8.32：跳回来源 App。
+    /// ★ 顺序反过来：先用**公开 API** `UIApplication.shared.open(协议)`，
+    ///   这是 iOS 上最可靠的一条（第三方输入法语音输入跳回宿主也走这条）；
+    ///   1.0 秒后若还在前台，再用私有 `openApplicationWithBundleID:` 补一次。
+    /// ★ v1.8.31 的两处错：把私有接口放在协议之前；而且只给键盘 plist
+    ///   加了协议白名单，主 App 端 canOpenURL 一律 false —— 公开 API 被系统直接拒。
+    static func openHostApp(_ host: String) {
+        guard !host.isEmpty, host != "none" else { return }
+        let scheme = MozhiHostResolver.scheme(for: host) ?? host
+        if let url = URL(string: scheme), scheme.contains("://"),
+           UIApplication.shared.canOpenURL(url) {
+            UIApplication.shared.open(url, options: [:], completionHandler: nil)
+        } else if !host.contains("://") {
+            Self.openByBundleId(host)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             guard UIApplication.shared.applicationState == .active else { return }
-            if let scheme = MozhiHostResolver.knownSchemes[bundleId],
-               let url = URL(string: scheme) {
+            if !host.contains("://") {
+                AppRootView.openByBundleId(host)
+            } else if let url = URL(string: scheme) {
                 UIApplication.shared.open(url, options: [:], completionHandler: nil)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                 guard UIApplication.shared.applicationState == .active else { return }
-                PiPManager.shared.note("没跳回来源 App（\(bundleId)），可手动切回；连续复制不受影响")
+                PiPManager.shared.note("没跳回来源 App（\(host)），可点本页「返回来源 App」按钮或状态栏系统返回；连续复制不受影响")
             }
         }
+    }
+
+    /// 私有接口按包名拉起（键盘侧同款，真机已验证能把主 App 拉起来）。
+    /// 自用重签、不上架，无审核风险。
+    static func openByBundleId(_ bundleId: String) {
+        guard let cls = NSClassFromString("LSApplicationWorkspace") as? NSObject.Type,
+              let ws = cls.perform(NSSelectorFromString("defaultWorkspace"))?
+                          .takeUnretainedValue() as? NSObject else { return }
+        let sel = NSSelectorFromString("openApplicationWithBundleID:")
+        if ws.responds(to: sel) { _ = ws.perform(sel, with: bundleId) }
     }
 
     /// 前台任一入口统一消费：独立开关指令 + 旧的「手动点桌面图标」切页兜底。
@@ -694,7 +715,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("墨指 v1.8.31 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.32 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -1089,7 +1110,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("墨指 v1.8.31 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.32 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

@@ -658,6 +658,8 @@ struct PiPControlView: View {
     /// 导出分享面板
     @State private var sharePayload: [Any]?
     @State private var notice = ""
+    /// v1.8.32：用户设定的默认返回 App（iOS 26.4+ 拿不到宿主时的确定性兜底）
+    @State private var defaultReturn: String = QPSharedHistory.defaultReturn() ?? "auto"
     /// v1.8.16：删除所选前必须二次确认，杜绝「一键清空全部」的误操作
     @State private var confirmDelete = false
 
@@ -704,6 +706,35 @@ struct PiPControlView: View {
                             .foregroundColor(.secondary)
                     }
                     .padding(.vertical, 4)
+                }
+
+                // v1.8.32：iOS 26.4 起 Apple 移除了键盘扩展识别宿主 App 的
+                // 私有接口，自动返回不一定成功。给用户一个确定性兜底：
+                // 设一个默认返回 App + 一个随时可按的「立即返回」按钮。
+                Section("返回来源 App") {
+                    Picker("默认返回 App", selection: $defaultReturn) {
+                        ForEach(QPSharedHistory.returnChoices, id: \.id) { c in
+                            Text(c.name).tag(c.scheme)
+                        }
+                    }
+                    .onChange(of: defaultReturn) { v in
+                        QPSharedHistory.setDefaultReturn(v)
+                    }
+                    Button {
+                        let target = QPSharedHistory.cachedHostBundleId()
+                            ?? QPSharedHistory.defaultReturnBundleId()
+                            ?? ""
+                        if target.isEmpty {
+                            PiPManager.shared.note("还没识别出来源 App，也没设默认返回 App；请先在上面选一个")
+                        } else {
+                            AppRootView.openHostApp(target)
+                        }
+                    } label: {
+                        Label("立即返回来源 App", systemImage: "arrow.uturn.backward")
+                    }
+                    Text("iOS 26.4 起系统不再告诉键盘「当前在哪个 App」，自动返回可能失败。设一个默认返回 App 就一定能跳回去；也可以点屏幕左上角系统状态栏的「返回 微信」等按钮。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
                 }
 
                 if pip.blocked {

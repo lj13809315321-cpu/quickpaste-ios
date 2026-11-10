@@ -119,6 +119,10 @@ enum QPSharedHistory {
     /// 点图标那一刻若三条探测都失败，还能用这份缓存自动跳回。
     private static let lastHostFile = "mozhi-last-host.json"
     private static let lastHostPBType = "app.mulberry6323.mozhi.lasthost"
+    /// v1.8.32：用户设定的「默认返回 App」（存 URL 协议字符串）。
+    /// iOS 26.4+ 系统不再给键盘宿主包名，这份设定是确定性的兜底。
+    private static let defaultReturnFile = "mozhi-default-return.json"
+    private static let defaultReturnPBType = "app.mulberry6323.mozhi.defaultreturn"
 
     /// 没有 App Group 时是否允许用系统剪贴板兜底。
     /// 关闭后完全不动用户剪贴板（画中画抓到的东西键盘读不到，但绝不污染剪贴板）。
@@ -593,6 +597,57 @@ enum QPSharedHistory {
         return s
     }
 
+    // MARK: v1.8.32「默认返回 App」—— iOS 26.4+ 的确定性兜底
+
+    struct MozhiReturnChoice: Identifiable, Hashable {
+        let name: String
+        let scheme: String
+        var id: String { scheme }
+    }
+
+    /// 用户可选：自动识别 / 常用 App / 不自动返回。
+    /// 存的是 URL 协议串（如 "weixin://"）；"auto"＝交给系统识别。
+    static let returnChoices: [MozhiReturnChoice] = [
+        MozhiReturnChoice(name: "自动识别（推荐）", scheme: "auto"),
+        MozhiReturnChoice(name: "微信", scheme: "weixin://"),
+        MozhiReturnChoice(name: "抖音", scheme: "snssdk1128://"),
+        MozhiReturnChoice(name: "QQ", scheme: "mqq://"),
+        MozhiReturnChoice(name: "小红书", scheme: "xhsdiscover://"),
+        MozhiReturnChoice(name: "微博", scheme: "sinaweibo://"),
+        MozhiReturnChoice(name: "支付宝", scheme: "alipay://"),
+        MozhiReturnChoice(name: "淘宝", scheme: "taobao://"),
+        MozhiReturnChoice(name: "短信", scheme: "sms://"),
+        MozhiReturnChoice(name: "备忘录", scheme: "mobilenotes://"),
+        MozhiReturnChoice(name: "不自动返回", scheme: "none")
+    ]
+
+    static func setDefaultReturn(_ scheme: String) {
+        guard let data = try? JSONEncoder().encode(scheme) else { return }
+        if let url = groupURL() {
+            try? data.write(to: url.appendingPathComponent(defaultReturnFile), options: .atomic)
+        }
+        if pasteboardFallbackEnabled {
+            UIPasteboard.general.setData(data, forPasteboardType: defaultReturnPBType)
+        }
+    }
+
+    static func defaultReturn() -> String? {
+        if let f = groupURL()?.appendingPathComponent(defaultReturnFile),
+           let d = try? Data(contentsOf: f),
+           let s = try? JSONDecoder().decode(String.self, from: d), !s.isEmpty { return s }
+        guard let d = UIPasteboard.general.data(forPasteboardType: defaultReturnPBType),
+              let s = try? JSONDecoder().decode(String.self, from: d),
+              !s.isEmpty else { return nil }
+        return s
+    }
+
+    /// 键盘侧用：把默认设定折成 host 字符串。
+    /// "auto" / "none" / 未设置都返回 nil（交给识别或保持不跳）。
+    static func defaultReturnBundleId() -> String? {
+        guard let s = defaultReturn(), s != "auto", s != "none" else { return nil }
+        return s
+    }
+
     // MARK: 「复制后移到最前」开关（v1.8.22）—— 机制与上面三个共用开关相同
 
     private static var _localMoveUsedToTop = true
@@ -849,6 +904,27 @@ enum MozhiFeedback {
 /// 全部失败返回 nil，调用方用「最近一次成功识别」缓存兜底。
 /// 扫描深度与对象数都设了上限，只在键盘出现与点击时各跑一次，不轮询、不卡顿。
 enum MozhiHostResolver {
+
+    /// v1.8.32：arbiter 捕获值也要过一遍合法性判断（比旧三路径宽松，
+    /// 因为 iOS 26.4+ 真实系统 App 也会用 com.apple.* 命名空间）。
+    static func isPlausible(_ s: String) -> Bool {
+        guard s.count >= 4, s.count <= 120, s.contains(".") else { return false }
+        let own = Bundle.main.bundleIdentifier ?? ""
+        if s == own || s.hasPrefix("app.mulberry6323") { return false }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-_"))
+        if s.unicodeScalars.contains(where: { !allowed.contains($0) }) { return false }
+        let low = s.lowercased()
+        if low.hasPrefix("ui") || low.hasPrefix("ns") || low.hasPrefix("_")
+            || low.hasSuffix(".framework") || low.hasSuffix(".bundle")
+            || low.contains("xpc") || low.contains("extension") { return false }
+        return true
+    }
+
+    /// v1.8.32：包名（或已经是协议串）→ 可打开的 URL 协议。
+    static func scheme(for host: String) -> String? {
+        if host.contains("://") { return host }
+        return knownSchemes[host]
+    }
 
     /// 常见 App 包名 → URL 协议；按包名拉起失败时主 App 再试一次协议。
     static let knownSchemes: [String: String] = [

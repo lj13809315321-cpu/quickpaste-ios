@@ -249,12 +249,23 @@ final class KeyboardViewController: UIInputViewController {
         // 用户可能刚从系统设置改过「允许完全访问」，刷新粘贴按钮可用态
         kbBar?.refreshAccessState()
         // v1.8.31：键盘一出现就尽早解析并缓存宿主 App 包名。
-        // 延迟 0.1s 避开首屏布局，只跑一次、不轮询；点图标那一刻若探测
-        // 失败还能用这份缓存自动跳回原来的 App。
+        // v1.8.32：iOS 26.4 起旧私有链被 Apple 移除，先 ping 键盘仲裁器
+        // 拿 _sourceBundleIdentifier；拿不到再走原来的三路径探测。
+        // 只跑两次延迟读取，不轮询、不卡顿。
+        MozhiPingKeyboardArbiter()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) { [weak self] in
-            guard let self = self,
-                  let host = MozhiHostResolver.resolve(from: self) else { return }
-            QPSharedHistory.cacheHostBundleId(host)
+            guard let self = self else { return }
+            let host = MozhiCapturedHostBundleId()
+                ?? MozhiHostResolver.resolve(from: self)
+            if let h = host, MozhiHostResolver.isPlausible(h) {
+                QPSharedHistory.cacheHostBundleId(h)
+            }
+        }
+        // 仲裁器回调可能略晚，0.4s 再补读一次（同样不轮询）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.40) {
+            if let h = MozhiCapturedHostBundleId(), MozhiHostResolver.isPlausible(h) {
+                QPSharedHistory.cacheHostBundleId(h)
+            }
         }
         // iOS 16+ 首次读取会弹「是否允许粘贴」，弹窗关闭后分两次补读，
         // 覆盖用户点「允许」较慢的情况。
@@ -275,6 +286,9 @@ final class KeyboardViewController: UIInputViewController {
         // 收起键盘就撤掉兜底任务，别让它在后台再刷一次列表
         cardBusyGuard?.cancel()
         cardBusyGuard = nil
+        // v1.8.32：宿主包名只在本次键盘会话内有效，收起即清，
+        // 避免下次在别的 App 弹出时误用上一次的 App。
+        MozhiResetCapturedHost()
         // 撤销栈只在同一个输入框会话内有效，收起键盘即作废
         kbBar?.clearHistory()
         stopPolling()
@@ -461,7 +475,11 @@ final class KeyboardViewController: UIInputViewController {
         // ★ 下面四路径 / URL / 手势 / 图标依旧一个字都不改。
         // v1.8.31：把「从哪个 App 点过来的」一起带进指令；当次探测失败
         // 就用键盘出现时缓存的最近一次结果。
-        let host = MozhiHostResolver.resolve(from: self)
+        // v1.8.32：iOS 26.4+ 旧私有链失效，优先用 arbiter 捕获值；
+        // 再试旧三路径；再退到用户设定的「默认返回 App」；最后才是历史缓存。
+        let host = MozhiCapturedHostBundleId()
+            ?? MozhiHostResolver.resolve(from: self)
+            ?? QPSharedHistory.defaultReturnBundleId()
             ?? QPSharedHistory.cachedHostBundleId()
         QPSharedHistory.markPipCommand(host: host)
         var trace: [String] = []
@@ -1822,7 +1840,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.31 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.32 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)

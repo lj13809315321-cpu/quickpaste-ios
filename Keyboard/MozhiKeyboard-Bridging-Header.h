@@ -9,3 +9,6 @@
 //
 
 #import "KeyboardButtonBar.h"
+// v1.8.32：iOS 26.4+ 键盘仲裁器宿主包名捕获（ObjC +load 安装 hook）。
+// 只编进键盘扩展 target；主 App target 不引用这些 C 函数。
+#import "MozhiHostArbiterHook.h"
