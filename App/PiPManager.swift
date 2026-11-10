@@ -286,14 +286,13 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         var ts: Double
     }
 
-    static func localHistory() -> [LocalEntry] {
+    private static func localHistory() -> [LocalEntry] {
         guard let data = UserDefaults.standard.data(forKey: "qp.app.pipHistory"),
               let arr = try? JSONDecoder().decode([LocalEntry].self, from: data) else { return [] }
         return arr
     }
 
-    private static func saveLocal(_ arr: [LocalEntry]) {
-        if let data = try? JSONEncoder().encode(arr) {
+    private static func saveLocal(_ arr: [LocalEntry]) {        if let data = try? JSONEncoder().encode(arr) {
             UserDefaults.standard.set(data, forKey: "qp.app.pipHistory")
         }
     }
