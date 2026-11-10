@@ -1,7 +1,7 @@
 墨指 v1.8.17 同步输入法 手机安装包
 形态：安卓 IME / iOS 键盘扩展（原生键盘，非 WebView 壳）
 苹果交付：未签名 IPA（手机端签名工具直接导入）
-构建时间 (UTC): 2026-11-10 03:03:48
-commit: c939cf9f250e4a24b8a026d2653aa21db3ef56b0
+构建时间 (UTC): 2026-11-10 04:10:48
+commit: e62fbcbc46a9b1ac5d111f7269be07364661dd2a
 APK: 165247 bytes
-IPA(未签名): 2013256 bytes
+IPA(未签名): 2024398 bytes
