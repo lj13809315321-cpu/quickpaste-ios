@@ -641,6 +641,8 @@ struct PiPControlView: View {
     /// 导出分享面板
     @State private var sharePayload: [Any]?
     @State private var notice = ""
+    /// v1.8.16：删除所选前必须二次确认，杜绝「一键清空全部」的误操作
+    @State private var confirmDelete = false
 
     /// 链接条目判断（与键盘侧 isLinkItem 同口径）
     private static func isLink(_ s: String) -> Bool {
@@ -772,7 +774,7 @@ struct PiPControlView: View {
                         HStack(spacing: 16) {
                             Button("全选") { selection = Set(filtered.map(\.text)) }
                             Button("复制所选") { copySelected() }
-                            Button("删除所选", role: .destructive) { deleteSelected() }
+                            Button("删除所选", role: .destructive) { confirmDelete = true }
                                 .disabled(selection.isEmpty)
                             Spacer()
                             Text("已选 \(selection.count) 条")
@@ -847,6 +849,12 @@ struct PiPControlView: View {
                     ActivityView(items: payload)
                 }
             }
+            .alert("确认删除所选？", isPresented: $confirmDelete) {
+                Button("取消", role: .cancel) { }
+                Button("删除", role: .destructive) { deleteSelected() }
+            } message: {
+                Text("将永久删除选中的 \(selection.count) 条（仅本机主 App 列表；键盘端需单独清除）。此操作不可撤销。")
+            }
         }
     }
 
@@ -885,10 +893,19 @@ struct PiPControlView: View {
     private func deleteSelected() {
         let texts = Array(selection)
         guard !texts.isEmpty else { return }
+        let before = entries.count
         PiPManager.deleteTexts(texts)
-        entries = PiPManager.mergedItems()
+        let after = PiPManager.mergedItems()
+        entries = after
         selection.removeAll()
-        flash("已删除 \(texts.count) 条（主 App 列表；键盘列表需在键盘里单独清）")
+        let removed = before - after.count
+        // v1.8.16 安全护栏：指纹已是完整文本，删除精确命中选中的条数；
+        // 若实际移除数超过所选条数（异常），明确提示而非静默吞掉。
+        if removed > texts.count {
+            flash("⚠️ 删除异常：应删 \(texts.count) 条，实际移除 \(removed) 条，请检查")
+        } else {
+            flash("已删除 \(removed) 条（主 App 列表；键盘列表需在键盘里单独清）")
+        }
     }
 
     static func openAppSettings() {

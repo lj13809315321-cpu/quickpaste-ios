@@ -17,6 +17,7 @@ final class KeyboardViewController: UIInputViewController {
     private var thumbCache: [String: UIImage] = [:]
     private var syncSig = ""
     private var syncState = "off"       // off / connecting / online / error
+    private var fetching = false       // v1.8.16：防止轮询/刷新叠加，断网也不重复发请求
     private var syncError = ""
     private var syncCount = 0
     private var lastSync: Date?
@@ -34,6 +35,13 @@ final class KeyboardViewController: UIInputViewController {
     private let exportOverlay = UIView()
     private let exportBox = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
     private let exportStack = UIStackView()
+    // v1.8.16：键盘剪贴板导出新增「选择条目…」——勾选若干条后再选格式导出
+    private let pickOverlay = UIView()
+    private let pickBox = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
+    private let pickScroll = UIScrollView()
+    private let pickList = UIStackView()
+    private let pickBar = UIStackView()
+    private var pickSelIDs = Set<String>()
     private weak var filterButton: UIButton?
     private weak var sortButton: UIButton?
     /// 当前滑开的卡片，滑开新的就把旧的收回去
@@ -388,6 +396,11 @@ final class KeyboardViewController: UIInputViewController {
             if showConnecting { refreshHead() }
             return
         }
+        // v1.8.16：正在拉取时就不再叠加新请求，避免断网/弱网下请求堆积、反复回调
+        // 触发列表重建，导致输入法卡顿。手动强刷（force）时若正在拉取也跳过，
+        // 回调里会自然刷新。
+        if fetching { return }
+        fetching = true
         if showConnecting {
             syncState = "connecting"
             refreshHead()
@@ -397,6 +410,7 @@ final class KeyboardViewController: UIInputViewController {
         client.fetch(limit: 30, sig: syncSig.isEmpty ? nil : syncSig) { [weak self] result, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
+                self.fetching = false
                 if let r = result {
                     self.apply(r)
                 } else {
@@ -1502,7 +1516,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.15 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.16 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -2489,7 +2503,31 @@ final class KeyboardViewController: UIInputViewController {
         exportStack.distribution = .fillEqually
         exportStack.spacing = 0
         exportBox.contentView.addSubview(exportStack)
+
+        // 勾选导出浮层：上半部分可滚动勾选列表，下半部分格式按钮栏
+        pickOverlay.isHidden = true
+        pickOverlay.frame = view.bounds
+        pickOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        let ptap = UITapGestureRecognizer(target: self, action: #selector(closePick))
+        ptap.cancelsTouchesInView = false
+        pickOverlay.addGestureRecognizer(ptap)
+        view.addSubview(pickOverlay)
+        pickBox.layer.cornerRadius = 18
+        pickBox.clipsToBounds = true
+        pickOverlay.addSubview(pickBox)
+        pickScroll.translatesAutoresizingMaskIntoConstraints = false
+        pickList.axis = .vertical
+        pickList.spacing = 0
+        pickScroll.addSubview(pickList)
+        pickBox.contentView.addSubview(pickScroll)
+        pickBar.axis = .horizontal
+        pickBar.distribution = .fillEqually
+        pickBar.spacing = 6
+        pickBar.translatesAutoresizingMaskIntoConstraints = false
+        pickBox.contentView.addSubview(pickBar)
     }
+
+    @objc private func closePick() { pickOverlay.isHidden = true }
 
     @objc private func closeFilterMenu() { filterOverlay.isHidden = true }
     @objc private func closeExportMenu() { exportOverlay.isHidden = true }
@@ -2585,6 +2623,12 @@ final class KeyboardViewController: UIInputViewController {
         exportStack.addArrangedSubview(exportRow("导出为图片", icon: "photo.on.rectangle") {
             self.exportClipboard(as: "image")
         })
+        exportStack.addArrangedSubview(exportRow("导出为 Excel(.xlsx)", icon: "tablecells.fill") {
+            self.exportClipboard(as: "xlsx")
+        })
+        exportStack.addArrangedSubview(exportRow("选择条目…", icon: "checklist") {
+            self.openPick()
+        })
         let bounds = view.bounds
         let w: CGFloat = 190
         let rowH: CGFloat = 42
@@ -2599,6 +2643,122 @@ final class KeyboardViewController: UIInputViewController {
         exportStack.frame = CGRect(x: 0, y: 0, width: w, height: h)
         exportOverlay.isHidden = false
         view.bringSubviewToFront(exportOverlay)
+    }
+
+    /// 勾选导出：列出当前剪贴板条目，逐条打勾，再点格式按钮只导出勾选的
+    private func openPick() {
+        closeExportMenu(); closeMenu(); closeCardMenu(); closeFilterMenu()
+        pickSelIDs.removeAll()
+        pickList.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let items = displayItems
+        for (i, it) in items.enumerated() {
+            let row = QPHapticButton(type: .custom)
+            row.contentHorizontalAlignment = .leading
+            row.backgroundColor = .clear
+            let preview = it.text.prefix(40).replacingOccurrences(of: "\n", with: " ")
+            row.setTitle(String(preview) + (it.text.count > 40 ? "…" : ""), for: .normal)
+            row.setTitleColor(QPColor.ink, for: .normal)
+            row.titleLabel?.font = .systemFont(ofSize: 15, weight: .regular)
+            row.contentEdgeInsets = UIEdgeInsets(top: 0, left: 44, bottom: 0, right: 12)
+            let box = UIImageView(image: UIImage(systemName: "circle")?
+                .withConfiguration(UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)))
+            box.tintColor = QPColor.ink
+            box.contentMode = .scaleAspectFit
+            box.translatesAutoresizingMaskIntoConstraints = false
+            box.tag = 100
+            row.addSubview(box)
+            NSLayoutConstraint.activate([
+                box.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 14),
+                box.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+                box.widthAnchor.constraint(equalToConstant: 20),
+                box.heightAnchor.constraint(equalToConstant: 20),
+            ])
+            let id = it.id
+            row.accessibilityIdentifier = id
+            row.addAction(UIAction { [weak self] _ in
+                guard let self = self else { return }
+                if self.pickSelIDs.contains(id) {
+                    self.pickSelIDs.remove(id)
+                    box.image = UIImage(systemName: "circle")?
+                        .withConfiguration(UIImage.SymbolConfiguration(pointSize: 18, weight: .regular))
+                } else {
+                    self.pickSelIDs.insert(id)
+                    box.image = UIImage(systemName: "checkmark.circle.fill")?
+                        .withConfiguration(UIImage.SymbolConfiguration(pointSize: 18, weight: .regular))
+                }
+                self.updatePickBar()
+            }, for: .touchUpInside)
+            row.heightAnchor.constraint(equalToConstant: 44).isActive = true
+            pickList.addArrangedSubview(row)
+            _ = i
+        }
+        // 底部格式栏：全选 / 取消 + 七种格式
+        pickBar.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let all = barBtn("全选"); all.addAction(UIAction { [weak self] _ in
+            guard let self = self else { return }
+            self.pickSelIDs = Set(self.displayItems.map { $0.id })
+            self.refreshPickChecks()
+            self.updatePickBar()
+        }, for: .touchUpInside)
+        let none = barBtn("清空"); none.addAction(UIAction { [weak self] _ in
+            guard let self = self else { return }
+            self.pickSelIDs.removeAll()
+            self.refreshPickChecks()
+            self.updatePickBar()
+        }, for: .touchUpInside)
+        pickBar.addArrangedSubview(all); pickBar.addArrangedSubview(none)
+        let formats: [(String, String)] = [
+            ("TXT","txt"),("CSV","csv"),("Excel","xlsx"),("Word","word"),
+            ("PDF","pdf"),("HTML","html"),("图片","image")]
+        for (label, fmt) in formats {
+            let b = barBtn(label)
+            b.addAction(UIAction { [weak self] _ in
+                guard let self = self else { return }
+                self.exportClipboard(as: fmt, ids: self.pickSelIDs)
+                self.closePick()
+            }, for: .touchUpInside)
+            pickBar.addArrangedSubview(b)
+        }
+        updatePickBar()
+        // 浮层定位：占满键盘上方区域，列表可滚动
+        let b = view.bounds
+        pickOverlay.frame = b
+        pickBox.frame = CGRect(x: 8, y: 8, width: b.width - 16, height: b.height - 16)
+        let bw = pickBox.bounds.width
+        let bh = pickBox.bounds.height
+        pickScroll.frame = CGRect(x: 0, y: 0, width: bw, height: bh - 56)
+        pickScroll.contentSize = CGSize(width: bw, height: CGFloat(items.count) * 44)
+        pickBar.frame = CGRect(x: 8, y: bh - 50, width: bw - 16, height: 44)
+        pickList.frame = CGRect(x: 0, y: 0, width: pickScroll.contentSize.width,
+                                height: pickScroll.contentSize.height)
+        pickOverlay.isHidden = false
+        view.bringSubviewToFront(pickOverlay)
+    }
+
+    private func barBtn(_ t: String) -> UIButton {
+        let b = QPHapticButton(type: .system)
+        b.setTitle(t, for: .normal)
+        b.setTitleColor(QPColor.ink, for: .normal)
+        b.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
+        b.layer.cornerRadius = 8
+        b.backgroundColor = UIColor.systemGray5
+        b.heightAnchor.constraint(equalToConstant: 40).isActive = true
+        return b
+    }
+
+    private func refreshPickChecks() {
+        for v in pickList.arrangedSubviews {
+            guard let row = v as? UIButton,
+                  let id = row.accessibilityIdentifier,
+                  let box = row.viewWithTag(100) as? UIImageView else { continue }
+            let on = pickSelIDs.contains(id)
+            box.image = (on ? UIImage(systemName: "checkmark.circle.fill") : UIImage(systemName: "circle"))?
+                .withConfiguration(UIImage.SymbolConfiguration(pointSize: 18, weight: .regular))
+        }
+    }
+
+    private func updatePickBar() {
+        // 格式栏文案保持简洁；如需显示「已选 N 条」可在此扩展
     }
 
     private func exportRow(_ title: String, icon: String,
@@ -2628,11 +2788,17 @@ final class KeyboardViewController: UIInputViewController {
 
     /// 把当前列表（已按筛选/排序，所见即所得）导出成文件发到电脑 sync 服务。
     /// 走 POST /api/file（LocalSend 风格），电脑端落在 sync/files/ 并进列表。
-    private func exportClipboard(as format: String) {
+    private func exportClipboard(as format: String, ids: Set<String>? = nil) {
         closeExportMenu()
         guard hasFullAccess else { showToast("需要开启「允许完全访问」才能导出"); return }
-        let items = displayItems
-        guard !items.isEmpty else { showToast("列表为空，没有可导出的内容"); return }
+        let source = displayItems
+        guard !source.isEmpty else { showToast("列表为空，没有可导出的内容"); return }
+        // v1.8.16：勾选导出（ids 非空）时只导出勾选的条目；勾选了却没勾任何则提示
+        let items = (ids == nil) ? source : source.filter { ids!.contains($0.id) }
+        if ids != nil && items.isEmpty {
+            showToast("请先勾选要导出的条目")
+            return
+        }
         let texts = items.filter { !$0.isImage && $0.type != "file" }
         let images = items.filter { $0.isImage }
         let fmt = DateFormatter()
@@ -2704,6 +2870,12 @@ final class KeyboardViewController: UIInputViewController {
                     }
                 }
             }
+        case "xlsx":
+            guard let data = QPExport.xlsxData(texts.map { $0.text }) else {
+                showToast("Excel 生成失败"); return
+            }
+            send(data, name: "QuickPaste-剪贴板-\(stamp.string(from: Date())).xlsx",
+                 mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         default:
             break
         }
