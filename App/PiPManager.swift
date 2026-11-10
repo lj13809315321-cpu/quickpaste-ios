@@ -154,6 +154,10 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
 
     static let shared = PiPManager()
 
+    /// v1.8.31：message 是 private(set)，跨文件不可直接赋值；
+    /// 主 App 根视图用这个方法写一行状态提示。
+    func note(_ text: String) { message = text }
+
     @Published private(set) var running = false
     @Published private(set) var capturedCount = 0
     @Published private(set) var message = ""

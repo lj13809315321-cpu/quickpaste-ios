@@ -1403,7 +1403,7 @@ public class MozhiIME extends InputMethodService {
         if (menuOverlay == null) return;
         menuStack.removeAllViews();
         menuOverlay.setVisibility(View.VISIBLE);
-        menuStack.addView(menuTitle("快捷操作 · v1.8.30 同步"));
+        menuStack.addView(menuTitle("快捷操作 · v1.8.31 同步"));
         menuStack.addView(menuRow("⚙ 打开完整设置界面", new Runnable() {
             @Override public void run() { closeMenu(); openSettings(); }
         }));

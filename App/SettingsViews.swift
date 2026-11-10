@@ -160,7 +160,7 @@ struct AppRootView: View {
     /// 0.9s 等窗口就绪，1.8s 幂等补偿（冷启动首次可能拿不到 keyWindow）；
     /// 两次都按「期望状态」判断，不会把刚开的又关掉。
     private func applyPendingPiPCommand() -> Bool {
-        guard QPSharedHistory.consumePipCommand() else { return false }
+        guard let cmd = QPSharedHistory.consumePipCommand() else { return false }
         tab = 2
         let shouldRun = !PiPManager.shared.running
         for delay in [0.9, 1.8] {
@@ -172,7 +172,56 @@ struct AppRootView: View {
                 }
             }
         }
+        // v1.8.31：在哪个 App 点开的，开/关完成后就自动跳回那个 App。
+        guard let host = cmd.host, !host.isEmpty else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) {
+                guard PiPManager.shared.running else { return }
+                PiPManager.shared.note("连续复制已开启；没识别出来源 App，已留在本页")
+            }
+            return true
+        }
+        if shouldRun {
+            Self.jumpBackAfterPiP(host: host)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { Self.openHostApp(host) }
+        }
         return true
+    }
+
+    /// 等画中画真正起来（running 由启动回调置真）再跳回，最多等 3 秒；
+    /// 没起来就留在本页看系统提示，不假装「已开好并跳回」。
+    private static func jumpBackAfterPiP(host: String, triesLeft: Int = 15) {
+        if PiPManager.shared.running {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { Self.openHostApp(host) }
+            return
+        }
+        guard triesLeft > 0 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            Self.jumpBackAfterPiP(host: host, triesLeft: triesLeft - 1)
+        }
+    }
+
+    /// 按包名拉起来源 App（与键盘侧同一套系统私有接口，自用重签无审核风险）。
+    /// 1.2 秒后若还在前台，用常见 App 的 URL 协议再试一次；仍失败给一行提示。
+    private static func openHostApp(_ bundleId: String) {
+        guard !bundleId.isEmpty else { return }
+        if let cls = NSClassFromString("LSApplicationWorkspace") as? NSObject.Type,
+           let ws = cls.perform(NSSelectorFromString("defaultWorkspace"))?
+                       .takeUnretainedValue() as? NSObject {
+            let sel = NSSelectorFromString("openApplicationWithBundleID:")
+            if ws.responds(to: sel) { _ = ws.perform(sel, with: bundleId) }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            guard UIApplication.shared.applicationState == .active else { return }
+            if let scheme = MozhiHostResolver.knownSchemes[bundleId],
+               let url = URL(string: scheme) {
+                UIApplication.shared.open(url, options: [:], completionHandler: nil)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                guard UIApplication.shared.applicationState == .active else { return }
+                PiPManager.shared.note("没跳回来源 App（\(bundleId)），可手动切回；连续复制不受影响")
+            }
+        }
     }
 
     /// 前台任一入口统一消费：独立开关指令 + 旧的「手动点桌面图标」切页兜底。
@@ -645,7 +694,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("墨指 v1.8.30 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.31 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -1040,7 +1089,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("墨指 v1.8.30 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.31 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

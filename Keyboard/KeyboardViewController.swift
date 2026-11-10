@@ -248,6 +248,14 @@ final class KeyboardViewController: UIInputViewController {
         super.viewDidAppear(animated)
         // 用户可能刚从系统设置改过「允许完全访问」，刷新粘贴按钮可用态
         kbBar?.refreshAccessState()
+        // v1.8.31：键盘一出现就尽早解析并缓存宿主 App 包名。
+        // 延迟 0.1s 避开首屏布局，只跑一次、不轮询；点图标那一刻若探测
+        // 失败还能用这份缓存自动跳回原来的 App。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) { [weak self] in
+            guard let self = self,
+                  let host = MozhiHostResolver.resolve(from: self) else { return }
+            QPSharedHistory.cacheHostBundleId(host)
+        }
         // iOS 16+ 首次读取会弹「是否允许粘贴」，弹窗关闭后分两次补读，
         // 覆盖用户点「允许」较慢的情况。
         for delay in [0.35, 1.20] {
@@ -451,7 +459,11 @@ final class KeyboardViewController: UIInputViewController {
         // v1.8.30：Payload 会被主 App 的收录心跳整份覆盖，pending 标记会被冲掉；
         // 改走独立指令文件 / 独立剪贴板类型，主 App 前台通知 + 轮询一定能消费到。
         // ★ 下面四路径 / URL / 手势 / 图标依旧一个字都不改。
-        QPSharedHistory.markPipCommand()
+        // v1.8.31：把「从哪个 App 点过来的」一起带进指令；当次探测失败
+        // 就用键盘出现时缓存的最近一次结果。
+        let host = MozhiHostResolver.resolve(from: self)
+            ?? QPSharedHistory.cachedHostBundleId()
+        QPSharedHistory.markPipCommand(host: host)
         var trace: [String] = []
         let tried = openURLFromKeyboard(url, trace: &trace)
         // 键盘还挂在窗口上 = 没跳走；真被主 App 盖住后本扩展会挂起，这段通常不执行。
@@ -1810,7 +1822,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.30 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.31 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)

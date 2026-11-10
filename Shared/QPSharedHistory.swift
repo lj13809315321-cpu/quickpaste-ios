@@ -1,5 +1,7 @@
 import Foundation
 import UIKit
+import ObjectiveC
+import Darwin
 
 /// 主 App（系统画中画 PiP 后台监听）↔ 键盘扩展 之间的「连续复制」数据通道。
 ///
@@ -113,6 +115,10 @@ enum QPSharedHistory {
     ///   覆盖 Payload，键盘刚写进去的 pending 标记会被主 App 的旧副本冲掉。
     private static let pipCmdFile = "mozhi-pip-command.json"
     private static let pipCmdPBType = "app.mulberry6323.mozhi.pipcmd"
+    /// v1.8.31：缓存「最近一次成功识别到的宿主 App 包名」。
+    /// 点图标那一刻若三条探测都失败，还能用这份缓存自动跳回。
+    private static let lastHostFile = "mozhi-last-host.json"
+    private static let lastHostPBType = "app.mulberry6323.mozhi.lasthost"
 
     /// 没有 App Group 时是否允许用系统剪贴板兜底。
     /// 关闭后完全不动用户剪贴板（画中画抓到的东西键盘读不到，但绝不污染剪贴板）。
@@ -508,17 +514,22 @@ enum QPSharedHistory {
         return true
     }
 
-    // MARK: v1.8.30 独立一次性指令（不受 Payload 整份覆盖影响）
+    // MARK: v1.8.30 独立一次性指令 / v1.8.31 带来源 App 包名
+
+    /// 一次性指令。v1.8.30 只写时间戳（Double），v1.8.31 起带上宿主 App 包名，
+    /// 主 App 开/关连续复制后按它跳回原来的 App。
+    struct PipCommand: Codable {
+        var at: Double = 0
+        var host: String? = nil
+    }
 
     /// 键盘轻点工具条「连续复制」图标时调用。
     /// 走独立文件 / 独立剪贴板类型，绝不碰 Payload，也不会碰用户剪贴板正文：
     /// setData 只替换第一个 item 里的这个自定义类型，不新增 item、不动正文。
-    static func markPipCommand() {
-        let at = Date().timeIntervalSince1970
-        guard let data = try? JSONEncoder().encode(at) else { return }
-        // ★ 双写：两端 App Group 签名不一致时，groupURL() 可能一边有效一边无效，
-        //   只写一条通道就会丢指令。剪贴板那条用 setData 只改第一个 item 里
-        //   自己的 key，不新增 item、不动正文，用户复制的内容零风险。
+    static func markPipCommand(host: String?) {
+        let cmd = PipCommand(at: Date().timeIntervalSince1970, host: host)
+        guard let data = try? JSONEncoder().encode(cmd) else { return }
+        // ★ 双写：两端 App Group 签名不一致时，groupURL() 可能一边有效一边无效。
         if let url = groupURL() {
             try? data.write(to: url.appendingPathComponent(pipCmdFile), options: .atomic)
         }
@@ -528,29 +539,58 @@ enum QPSharedHistory {
     }
 
     /// 主 App 在前台任一入口调用：90 秒内的指令生效，读到即清，只执行一次。
-    /// 两条通道任一命中即可；命中后两条都写成过期值，避免另一条路重复触发。
+    /// 兼容 v1.8.30 写下的纯 Double 时间戳（那种没有来源包名，不会回跳）。
     /// ★ 常规轮询（无指令时）只读一次小文件 + 一次剪贴板自定义类型，
     ///   不落盘、不改 changeCount，不会带来卡顿。
-    static func consumePipCommand() -> Bool {
+    static func consumePipCommand() -> PipCommand? {
         let now = Date().timeIntervalSince1970
         let cmdFile = groupURL()?.appendingPathComponent(pipCmdFile)
-        var hit = false
-        if let f = cmdFile,
-           let d = try? Data(contentsOf: f),
-           let at = try? JSONDecoder().decode(Double.self, from: d),
-           now - at < 90 { hit = true }
-        if !hit,
-           let d = UIPasteboard.general.data(forPasteboardType: pipCmdPBType),
-           let at = try? JSONDecoder().decode(Double.self, from: d),
-           now - at < 90 { hit = true }
-        guard hit else { return false }
+
+        func valid(_ d: Data?) -> PipCommand? {
+            guard let d = d else { return nil }
+            if let c = try? JSONDecoder().decode(PipCommand.self, from: d),
+               c.at > 0, now - c.at < 90 { return c }
+            if let at = try? JSONDecoder().decode(Double.self, from: d),
+               at > 0, now - at < 90 { return PipCommand(at: at, host: nil) }
+            return nil
+        }
+
+        var fileData: Data? = nil
+        if let f = cmdFile { fileData = try? Data(contentsOf: f) }
+        let got = valid(fileData)
+            ?? valid(UIPasteboard.general.data(forPasteboardType: pipCmdPBType))
+        guard let cmd = got else { return nil }
         // 写「过期值 0」代替删除：删除失败时也不会重复消费导致反复开关。
-        let expired = (try? JSONEncoder().encode(Double(0))) ?? Data()
+        let expired = (try? JSONEncoder().encode(PipCommand(at: 0, host: nil))) ?? Data()
         if let f = cmdFile { try? expired.write(to: f, options: .atomic) }
         if pasteboardFallbackEnabled {
             UIPasteboard.general.setData(expired, forPasteboardType: pipCmdPBType)
         }
-        return true
+        return cmd
+    }
+
+    // MARK: v1.8.31「最近一次宿主 App 包名」缓存
+
+    /// 键盘每次出现时探测到宿主就写进来，长期有效（不清），
+    /// 点图标那一刻探测失败时用它兜底。
+    static func cacheHostBundleId(_ host: String) {
+        guard !host.isEmpty, let data = try? JSONEncoder().encode(host) else { return }
+        if let url = groupURL() {
+            try? data.write(to: url.appendingPathComponent(lastHostFile), options: .atomic)
+        }
+        if pasteboardFallbackEnabled {
+            UIPasteboard.general.setData(data, forPasteboardType: lastHostPBType)
+        }
+    }
+
+    static func cachedHostBundleId() -> String? {
+        if let f = groupURL()?.appendingPathComponent(lastHostFile),
+           let d = try? Data(contentsOf: f),
+           let s = try? JSONDecoder().decode(String.self, from: d), !s.isEmpty { return s }
+        guard let d = UIPasteboard.general.data(forPasteboardType: lastHostPBType),
+              let s = try? JSONDecoder().decode(String.self, from: d),
+              !s.isEmpty else { return nil }
+        return s
     }
 
     // MARK: 「复制后移到最前」开关（v1.8.22）—— 机制与上面三个共用开关相同
@@ -795,5 +835,166 @@ enum MozhiFeedback {
             generator.prepare()
         }
         generator.notificationOccurred(.success)
+    }
+}
+
+
+// MARK: - v1.8.31 宿主 App 包名解析（键盘侧调用 / 主 App 侧复用 scheme 表）
+
+/// 尽力解析「当前键盘宿主 App」的包名，用于开启连续复制后自动跳回。
+/// iOS 没有公开 API，按三条路径尝试：
+///   ① 安全 ivar 扫描（不用盲试 value(forKey:)，避免 NSUnknownKeyException）
+///   ② 系统工作区当前前台 App（点图标这一刻宿主仍是前台）
+///   ③ 老版 _hostPID + PKService + XPC 链（iOS 16~26.3）
+/// 全部失败返回 nil，调用方用「最近一次成功识别」缓存兜底。
+/// 扫描深度与对象数都设了上限，只在键盘出现与点击时各跑一次，不轮询、不卡顿。
+enum MozhiHostResolver {
+
+    /// 常见 App 包名 → URL 协议；按包名拉起失败时主 App 再试一次协议。
+    static let knownSchemes: [String: String] = [
+        "com.tencent.xin": "weixin://",                    // 微信
+        "com.ss.iphone.ugc.Aweme": "snssdk1128://",        // 抖音
+        "com.ss.iphone.ugc.AwemeLite": "snssdk1128://",    // 抖音极速版
+        "com.tencent.mqq": "mqq://",                       // QQ
+        "com.sina.weibo": "sinaweibo://",                  // 微博
+        "com.apple.MobileSMS": "sms://",                   // 短信
+        "com.apple.mobilenotes": "mobilenotes://",         // 备忘录
+        "com.apple.mobilesafari": "https://",              // Safari
+        "com.alipay.iphoneclient": "alipay://",            // 支付宝
+        "com.taobao.taobao4iphone": "taobao://",           // 淘宝
+        "com.xingin.discover": "xhsdiscover://",           // 小红书
+        "com.zhiliaoapp.musically": "snssdk1233://"        // TikTok
+    ]
+
+    static func resolve(from vc: UIInputViewController) -> String? {
+        let own = Bundle.main.bundleIdentifier ?? ""
+        var roots: [AnyObject] = [vc]
+        if let p = vc.parent { roots.append(p) }
+        var next: UIResponder? = vc.next
+        for _ in 0..<6 {
+            guard let n = next else { break }
+            roots.append(n)
+            next = n.next
+        }
+        // ① 优先认 ivar 名里带 host / bundle / source / app 的包名串
+        for o in roots {
+            if let s = scan(o, own: own, namedOnly: true, depth: 0) { return s }
+        }
+        // ② 系统工作区：点图标这一刻宿主 App 仍是前台 App
+        if let s = viaWorkspaceFrontmost(own: own) { return s }
+        // ③ iOS 16~26.3 的 PID + XPC 链
+        if let s = viaHostPID(vc: vc, own: own) { return s }
+        // ④ 最后放宽：任意对象 ivar 里的第三方包名
+        for o in roots {
+            if let s = scan(o, own: own, namedOnly: false, depth: 0) { return s }
+        }
+        return nil
+    }
+
+    // MARK: 安全 ivar 扫描
+
+    private static func scan(_ o: AnyObject, own: String, namedOnly: Bool, depth: Int) -> String? {
+        guard depth < 2 else { return nil }
+        var cls: AnyClass? = object_getClass(o)
+        var level = 0
+        var nested: [AnyObject] = []
+        while let c = cls, level < 8 {
+            var n: UInt32 = 0
+            if let list = class_copyIvarList(c, &n) {
+                for i in 0..<Int(n) {
+                    let iv = list[i]
+                    guard let enc = ivar_getTypeEncoding(iv),
+                          String(cString: enc).hasPrefix("@") else { continue }
+                    guard let raw = object_getIvar(o, iv) else { continue }
+                    let name = ivar_getName(iv).map { String(cString: $0) } ?? ""
+                    if let s = raw as? String, isHostBundleId(s, own: own) {
+                        let low = name.lowercased()
+                        let named = low.contains("host") || low.contains("bundle")
+                            || low.contains("source") || low.contains("app")
+                        if namedOnly == named { return s }
+                    }
+                    if nested.count < 10, !(raw is String), !(raw is NSNumber),
+                       let obj = raw as? AnyObject { nested.append(obj) }
+                }
+                free(list)
+            }
+            cls = class_getSuperclass(c)
+            level += 1
+        }
+        for child in nested {
+            if let s = scan(child, own: own, namedOnly: namedOnly, depth: depth + 1) { return s }
+        }
+        return nil
+    }
+
+    // MARK: 系统工作区的前台 App
+
+    private static func viaWorkspaceFrontmost(own: String) -> String? {
+        guard let wsCls = NSClassFromString("LSApplicationWorkspace") as? NSObject.Type else { return nil }
+        let def = NSSelectorFromString("defaultWorkspace")
+        guard wsCls.responds(to: def),
+              let ws = wsCls.perform(def)?.takeUnretainedValue() as? NSObject else { return nil }
+        for key in ["frontmostApplication", "activeApplication", "_frontmostApplication"] {
+            let sel = NSSelectorFromString(key)
+            guard ws.responds(to: sel),
+                  let m = class_getInstanceMethod(object_getClass(ws), sel) else { continue }
+            let ret = method_copyReturnType(m)
+            let isObj = String(cString: ret).hasPrefix("@")
+            free(ret)
+            guard isObj,
+                  let raw = ws.perform(sel)?.takeUnretainedValue() as? NSObject else { continue }
+            let bSel = NSSelectorFromString("bundleIdentifier")
+            guard raw.responds(to: bSel),
+                  let b = raw.perform(bSel)?.takeUnretainedValue() as? String,
+                  isHostBundleId(b, own: own) else { continue }
+            return b
+        }
+        return nil
+    }
+
+    // MARK: 老版 _hostPID + PKService + XPC
+
+    private static func viaHostPID(vc: UIInputViewController, own: String) -> String? {
+        guard let parent = vc.parent as? NSObject,
+              class_getInstanceVariable(object_getClass(parent), "_hostPID") != nil,
+              let pid = parent.value(forKey: "_hostPID") as? NSNumber,
+              let pkCls = NSClassFromString("PKService") as? NSObject.Type else { return nil }
+        let def = NSSelectorFromString("defaultService")
+        guard pkCls.responds(to: def),
+              let svc = pkCls.perform(def)?.takeUnretainedValue() as? NSObject else { return nil }
+        let perSel = NSSelectorFromString("personalities")
+        guard svc.responds(to: perSel),
+              let per = svc.perform(perSel)?.takeUnretainedValue() as? NSDictionary,
+              let infos = per.object(forKey: own) as? NSDictionary,
+              let info = infos.object(forKey: pid) as? NSObject else { return nil }
+        let conSel = NSSelectorFromString("connection")
+        guard info.responds(to: conSel),
+              let con = info.perform(conSel)?.takeUnretainedValue() as? NSObject else { return nil }
+        let xpcSel = NSSelectorFromString("_xpcConnection")
+        guard con.responds(to: xpcSel),
+              let xpc = con.perform(xpcSel)?.takeUnretainedValue() else { return nil }
+        guard let h = dlopen("/usr/lib/libc.dylib", RTLD_NOW) else { return nil }
+        defer { dlclose(h) }
+        guard let sym = dlsym(h, "xpc_connection_copy_bundle_id") else { return nil }
+        typealias Fn = @convention(c) (AnyObject) -> UnsafePointer<CChar>?
+        let fn = unsafeBitCast(sym, to: Fn.self)
+        guard let p = fn(xpc) else { return nil }
+        let s = String(cString: p)
+        return isHostBundleId(s, own: own) ? s : nil
+    }
+
+    // MARK: 判定（宁可不跳，也不乱跳到别的 App）
+
+    private static func isHostBundleId(_ s: String, own: String) -> Bool {
+        if s.isEmpty || s == own || s.hasPrefix("app.mulberry6323") { return false }
+        if s.count < 5 || s.count > 100 || !s.contains(".") { return false }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-_"))
+        if s.unicodeScalars.contains(where: { !allowed.contains($0) }) { return false }
+        let low = s.lowercased()
+        if low.hasPrefix("ui") || low.hasPrefix("ns") || low.hasPrefix("_")
+            || low.hasSuffix(".framework") || low.hasSuffix(".bundle")
+            || low.contains("xpc") || low.contains("extension") { return false }
+        if low.hasPrefix("com.apple.") && knownSchemes[s] == nil { return false }
+        return true
     }
 }
