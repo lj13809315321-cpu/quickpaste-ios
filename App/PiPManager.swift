@@ -780,14 +780,21 @@ struct PiPControlView: View {
                             editMode.toggle()
                             if !editMode { selection.removeAll() }
                         }
+                        .buttonStyle(.borderless)
                     }
                     .font(.subheadline)
 
                     if editMode {
                         HStack(spacing: 16) {
+                            // v1.8.19 修复：List 同一行里多个 Button 默认会整行共享点击，
+                            // 点「全选」把三个动作全触发（全选→删除确认），表现成「全选=删除」。
+                            // 必须显式 borderless，让点击只命中按到的那个按钮。
                             Button("全选") { selection = Set(filtered.map(\.text)) }
+                                .buttonStyle(.borderless)
                             Button("复制所选") { copySelected() }
+                                .buttonStyle(.borderless)
                             Button("删除所选", role: .destructive) { confirmDelete = true }
+                                .buttonStyle(.borderless)
                                 .disabled(selection.isEmpty)
                             Spacer()
                             Text("已选 \(selection.count) 条")
