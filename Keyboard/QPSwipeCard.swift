@@ -78,6 +78,11 @@ final class QPSwipeCard: UIView {
         long.cancelsTouchesInView = false
         long.delegate = self
         addGestureRecognizer(long)
+
+        // v1.8.15 修复：长按弹菜单后松手，系统仍会把这次手势识别成「轻点」从而
+        // 把卡片内容插入输入栏。让 tap 必须等 long 失败才触发 —— 长按一旦开始，
+        // 松手绝不会再走 onTap 插入；只有没触发长按的纯轻点才插入。
+        tap.require(toFail: long)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

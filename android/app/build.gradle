@@ -10,8 +10,8 @@ android {
         applicationId 'app.mulberry6323.quickpaste'
         minSdk 24
         targetSdk 34
-        versionCode 32
-        versionName '1.8.14-inputmethod'
+        versionCode 33
+        versionName '1.8.15-inputmethod'
     }
 
     // debug 构建使用 Android 自动生成的 debug keystore 签名，

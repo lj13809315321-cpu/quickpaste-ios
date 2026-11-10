@@ -124,6 +124,12 @@ public class QuickPasteIME extends InputMethodService {
     /** 最近已经推过的文本，避免同一条反复 POST */
     private final java.util.List<String> pushedRecent = new java.util.ArrayList<>();
 
+    // v1.8.15：批量选择 + 删除所选 / 导出
+    private boolean selectMode = false;
+    private final java.util.Set<String> selectedKeys = new java.util.HashSet<String>();
+    private LinearLayout selectBar;
+    private Button selectDelBtn;
+
     private FrameLayout menuOverlay;
     private LinearLayout menuStack;
     /** v1.6 完整多页设置界面 */
@@ -169,6 +175,7 @@ public class QuickPasteIME extends InputMethodService {
         buildCalc();
         buildClearRow();
         buildBottomBar();
+        buildSelectBar();
         buildMenuOverlay();
         buildImageOverlay();
 
@@ -1062,6 +1069,41 @@ public class QuickPasteIME extends InputMethodService {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_VERTICAL));
 
+        // v1.8.15 选择模式：点一下切换选中，显示 ✓，不再上屏
+        if (selectMode) {
+            final boolean sel = selectedKeys.contains(it.id);
+            card.setBackground(roundBg(sel ? Color.parseColor("#E8F1FF") : CARD, 12));
+            TextView check = new TextView(this);
+            check.setText(sel ? "✓" : "");
+            check.setTextColor(Color.WHITE);
+            check.setTextSize(14);
+            check.setGravity(Gravity.CENTER);
+            GradientDrawable cbg = new GradientDrawable();
+            cbg.setShape(GradientDrawable.OVAL);
+            cbg.setColor(sel ? GREEN : Color.parseColor("#C7C7CE"));
+            check.setBackground(cbg);
+            card.addView(check, new FrameLayout.LayoutParams(dp(24), dp(24),
+                    Gravity.END | Gravity.CENTER_VERTICAL));
+            FrameLayout.LayoutParams cp = (FrameLayout.LayoutParams) check.getLayoutParams();
+            cp.setMargins(0, 0, dp(8), 0);
+            card.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (selectedKeys.contains(it.id)) selectedKeys.remove(it.id);
+                    else selectedKeys.add(it.id);
+                    refreshList();
+                    updateSelectBar();
+                }
+            });
+            card.setOnLongClickListener(null);
+            LinearLayout.LayoutParams p = weighted
+                    ? new LinearLayout.LayoutParams(0, dp(56), 1f)
+                    : lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
+            p.setMargins(dp(3), dp(3), dp(3), dp(3));
+            card.setLayoutParams(p);
+            return card;
+        }
+
         TextView badge = new TextView(this);
         badge.setText(it.isLocal() ? "✂️" : (it.fromPhone() ? "📱" : "💻"));
         badge.setTextSize(11);
@@ -1361,7 +1403,7 @@ public class QuickPasteIME extends InputMethodService {
         if (menuOverlay == null) return;
         menuStack.removeAllViews();
         menuOverlay.setVisibility(View.VISIBLE);
-        menuStack.addView(menuTitle("快捷操作 · v1.6 同步"));
+        menuStack.addView(menuTitle("快捷操作 · v1.8.15 同步"));
         menuStack.addView(menuRow("⚙ 打开完整设置界面", new Runnable() {
             @Override public void run() { closeMenu(); openSettings(); }
         }));
@@ -1443,6 +1485,18 @@ public class QuickPasteIME extends InputMethodService {
                 switchIme();
                 closeMenu();
             }
+        }));
+        menuStack.addView(menuRow("☑ 选择多条并删除（全选 / 删除所选）", new Runnable() {
+            @Override public void run() { closeMenu(); enterSelectMode(); }
+        }));
+        menuStack.addView(menuRow("⬇ 导出全部为 TXT", new Runnable() {
+            @Override public void run() { closeMenu(); exportAndShare("txt"); }
+        }));
+        menuStack.addView(menuRow("⬇ 导出全部为 CSV", new Runnable() {
+            @Override public void run() { closeMenu(); exportAndShare("csv"); }
+        }));
+        menuStack.addView(menuRow("⬇ 导出全部为 Excel(.xlsx)", new Runnable() {
+            @Override public void run() { closeMenu(); exportAndShare("xlsx"); }
         }));
         menuStack.addView(menuRow("关闭菜单", new Runnable() {
             @Override
@@ -1551,6 +1605,114 @@ public class QuickPasteIME extends InputMethodService {
 
     private void closeMenu() {
         if (menuOverlay != null) menuOverlay.setVisibility(View.GONE);
+    }
+
+    // ------------------------------------------------------------ v1.8.15 选择模式 + 导出
+
+    private void buildSelectBar() {
+        selectBar = new LinearLayout(this);
+        selectBar.setOrientation(LinearLayout.HORIZONTAL);
+        selectBar.setGravity(Gravity.CENTER);
+        selectBar.setBackgroundColor(BLUE);
+        Button all = barBtn("全选");
+        all.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                for (SyncItem it : displayItems) selectedKeys.add(it.id);
+                refreshList();
+                updateSelectBar();
+            }
+        });
+        selectDelBtn = barBtn("删除所选");
+        selectDelBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { deleteSelected(); }
+        });
+        Button cancel = barBtn("取消");
+        cancel.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { exitSelectMode(); }
+        });
+        selectBar.addView(all);
+        selectBar.addView(selectDelBtn);
+        selectBar.addView(cancel);
+        selectBar.setVisibility(View.GONE);
+        content.addView(selectBar, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+    }
+
+    private Button barBtn(String text) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextColor(Color.WHITE);
+        b.setTextSize(13);
+        b.setBackgroundColor(Color.TRANSPARENT);
+        b.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        return b;
+    }
+
+    private void enterSelectMode() {
+        selectMode = true;
+        selectedKeys.clear();
+        if (selectBar != null) selectBar.setVisibility(View.VISIBLE);
+        refreshList();
+        updateSelectBar();
+    }
+
+    private void exitSelectMode() {
+        selectMode = false;
+        selectedKeys.clear();
+        if (selectBar != null) selectBar.setVisibility(View.GONE);
+        refreshList();
+    }
+
+    private void updateSelectBar() {
+        if (selectDelBtn == null) return;
+        int n = selectedKeys.size();
+        selectDelBtn.setText(n > 0 ? "删除所选(" + n + ")" : "删除所选");
+        selectDelBtn.setEnabled(n > 0);
+        selectDelBtn.setAlpha(n > 0 ? 1f : 0.5f);
+    }
+
+    /** 只删选中的条目：本机记录走 Prefs，电脑记录走 DELETE 接口，绝不清空全部。 */
+    private void deleteSelected() {
+        if (selectedKeys.isEmpty()) {
+            toast("未选择任何条目");
+            return;
+        }
+        final int n = selectedKeys.size();
+        for (final String key : new java.util.HashSet<String>(selectedKeys)) {
+            if (key.startsWith("local:")) {
+                String text = key.substring("local:".length());
+                prefs.remove(text, "clip");
+            } else {
+                deleteItem(key);
+            }
+        }
+        toast("已删除 " + n + " 条");
+        exitSelectMode();
+    }
+
+    /** 把当前列表导出为文件，用系统分享面板保存到手机或发给其它 App。 */
+    private void exportAndShare(String format) {
+        try {
+            java.util.List<String> texts = new java.util.ArrayList<String>();
+            for (SyncItem it : displayItems) texts.add(it.displayText());
+            if (texts.isEmpty()) {
+                toast("没有可导出的内容");
+                return;
+            }
+            File f = QpExport.write(this, texts, format);
+            String mime = "txt".equals(format) ? "text/plain"
+                    : ("csv".equals(format) ? "text/csv"
+                    : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            Uri uri = Uri.parse("content://" + getPackageName() + ".images/" + Uri.encode(f.getName()));
+            Intent it = new Intent(Intent.ACTION_SEND);
+            it.setType(mime);
+            it.putExtra(Intent.EXTRA_STREAM, uri);
+            it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(it);
+            toast("已生成 " + f.getName() + "，选个 App 保存或发送");
+        } catch (Exception e) {
+            toast("导出失败：" + e.getMessage());
+        }
     }
 
     private TextView menuTitle(String text) {

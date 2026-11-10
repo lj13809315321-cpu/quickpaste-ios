@@ -374,7 +374,7 @@ final class KeyboardViewController: UIInputViewController {
     /// 主 App 与键盘的开关读写同一个字段，谁改了另一端下次出现时跟随 ——
     /// 用户要求：本来就是一个功能，不要各管各的。read() 有 mtime/内存缓存，高频调用无开销。
     private func syncOn() -> Bool {
-        !QPSharedHistory.read().isSyncOff
+        !QPSharedHistory.syncOff()
     }
 
     /// 拉取电脑剪贴板。v1.8.13 加「断开连接」总开关：
@@ -582,14 +582,14 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: - 底部快捷条（路线 E：黄白微信助手底栏等价复刻）
 
-    /// 黄白底栏等价复刻（v1.8.11 按用户要求再调）：
-    /// 「切换」加回「关闭」左边；「←/→」换成「复制/粘贴」。
-    /// 最终顺序 = 切换 | 关闭 | 复制 | 粘贴 | 撤销 | 全选。
+    /// 黄白底栏等价复刻（v1.8.15 按用户要求再调）：
+    /// 去掉「复制」按钮（用户在底栏要的是切换/关闭/粘贴/撤销/全选）。
+    /// 最终顺序 = 切换 | 关闭 | 粘贴 | 撤销 | 全选。
     /// 独立一行贴键盘最底部，不与「返回/空格/发送」底栏冲突。
     private func setupKBButtonBar() {
         let bar = KBKeyboardButtonBar(inputViewController: self)
         bar.buttonActions = KBKeyboardButtonBar.actions(fromNames:
-            ["nextKeyboard", "dismiss", "copy", "paste", "undo", "selectAll"])
+            ["nextKeyboard", "dismiss", "paste", "undo", "selectAll"])
         // 底栏动作的提示文字（全选/复制/粘贴结果）走键盘统一 toast
         bar.onFeedback = { [weak self] msg in
             DispatchQueue.main.async { self?.showToast(msg as String) }

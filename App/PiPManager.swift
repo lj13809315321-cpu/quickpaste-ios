@@ -226,7 +226,9 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
 
         let vc = QPPiPViewController()
         vc.preferredContentSize = CGSize(width: 640, height: 360)
-        capturedCount = Self.mergedItems().count
+        // v1.8.15：画中画计数按「本次会话」归零，从 0 重新累加，
+        // 不再显示历史总条数（用户：启动一次应归零、重新计算）。
+        capturedCount = 0
         vc.update(count: capturedCount)
         contentVC = vc
 
@@ -265,9 +267,11 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         }
     }
 
-    /// 页面定时调用，把后台新收录的条数刷到界面上
+    /// 页面定时调用，把后台新收录的条数刷到界面上。
+    /// v1.8.15：只刷新「被系统拦」状态与小窗显示，不再用历史总条数覆盖
+    /// capturedCount（否则会话计数会被冲回历史数）。capturedCount 只在
+    /// 本次会话内从 0 累加。
     func refreshCount() {
-        capturedCount = Self.mergedItems().count
         blocked = QPSharedHistory.read().isBlocked
         contentVC?.update(blocked: blocked, count: capturedCount)
     }
@@ -297,9 +301,11 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         }
     }
 
-    /// 指纹：截前 140 字。墓碑按指纹过滤，超长文本也能稳定匹配。
+    /// 指纹：**用完整内容**。墓碑按指纹过滤，之前只取前 140 字，
+    /// 两条长文本前 140 字相同会被误判成同一条 —— 删除一条把别的也删掉。
+    /// 用完整内容后，删除精确命中选中的那一条，绝不会误删别的。
     static func fingerprint(_ text: String) -> String {
-        String(text.prefix(140))
+        text
     }
 
     static func deletedMarks() -> Set<String> {
@@ -499,18 +505,16 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         if QPSharedHistory.append(s) {
             Self.appendLocal(s)
             pushToPc(s)
-            let n = Self.mergedItems().count
             DispatchQueue.main.async {
-                self.capturedCount = n
-                self.contentVC?.update(blocked: false, count: n)
-                self.message = "已收录 \(n) 条"
+                // 本次会话新收录一条 → 计数 +1（从 0 开始重新累加）
+                self.capturedCount += 1
+                self.contentVC?.update(blocked: false, count: self.capturedCount)
+                self.message = "本次已收录 \(self.capturedCount) 条"
             }
         } else {
-            // 同一条重复复制：正文一致，也算读到了，说明没被拦
-            let n = Self.mergedItems().count
+            // 同一条重复复制：正文一致，也算读到了，说明没被拦（计数不变）
             DispatchQueue.main.async {
-                self.capturedCount = n
-                self.contentVC?.update(blocked: false, count: n)
+                self.contentVC?.update(blocked: false, count: self.capturedCount)
             }
         }
     }
@@ -520,7 +524,7 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     private func pushToPc(_ text: String) {
         // v1.8.14「连接电脑」总开关（两端共用，权威状态在共享通道 syncOff）：
         // 主 App 设置页或键盘快捷菜单任一处断开，这里都不再自动推。
-        guard !QPSharedHistory.read().isSyncOff else { return }
+        guard !QPSharedHistory.syncOff() else { return }
         guard !pushedRecent.contains(text) else { return }
         pushedRecent.append(text)
         if pushedRecent.count > 30 { pushedRecent.removeFirst(pushedRecent.count - 30) }
@@ -591,7 +595,8 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
             QPSharedHistory.setPip(true)
             QPSharedHistory.setWant(true)
             UserDefaults.standard.set(true, forKey: "qp.autoPiP")
-            self.capturedCount = Self.mergedItems().count
+            // v1.8.15：画中画真正启动 = 本次会话开始，计数归零重新累加
+            self.capturedCount = 0
             self.contentVC?.update(blocked: self.blocked, count: self.capturedCount)
         }
     }
@@ -669,7 +674,7 @@ struct PiPControlView: View {
                             Text(pip.running ? "连续复制中" : "未开启连续复制")
                                 .font(.title3.weight(.semibold))
                             Spacer()
-                            Text("已收录 \(pip.capturedCount) 条")
+                            Text("本次已收录 \(pip.capturedCount) 条")
                                 .font(.title3.weight(.bold))
                                 .monospacedDigit()
                         }
@@ -747,6 +752,7 @@ struct PiPControlView: View {
                         Menu {
                             exportButton("导出为 TXT", texts: { QPExport.txtFile($0) })
                             exportButton("导出为 CSV", texts: { QPExport.csvFile($0) })
+                            exportButton("导出为 Excel(.xlsx)", texts: { QPExport.xlsxFile($0) })
                             exportButton("导出为 Word(.doc)", texts: { QPExport.wordFile($0) })
                             exportButton("导出为 PDF", texts: { QPExport.pdfFile($0) })
                             exportButton("导出为 HTML", texts: { QPExport.htmlFile($0) })

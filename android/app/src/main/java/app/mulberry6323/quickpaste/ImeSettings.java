@@ -194,7 +194,7 @@ public final class ImeSettings {
 
     private void renderRoot() {
         body.addView(bigTitle("设置"));
-        body.addView(foot("QuickPaste v1.6 · 真·系统输入法 · 按 HTML 最新版效果原生实现，无网页、无演示动画"));
+        body.addView(foot("QuickPaste v1.8.15 · 真·系统输入法 · 按 HTML 最新版效果原生实现，无网页、无演示动画"));
 
         body.addView(groupTitle("使用"));
         LinearLayout use = card();
@@ -634,7 +634,7 @@ public final class ImeSettings {
 
     private void renderAbout() {
         LinearLayout c = card();
-        c.addView(info("QuickPaste v1.6 · 真·系统输入法"));
+        c.addView(info("QuickPaste v1.8.15 · 真·系统输入法"));
         c.addView(info("安卓：系统输入法 InputMethodService（BIND_INPUT_METHOD）"));
         c.addView(info("iOS：键盘扩展 .appex（com.apple.keyboard-service）"));
         c.addView(info("界面按 quickpaste-ios-prototype.html v1.6 原型原生实现，无 WebView、无演示动画。"));

@@ -31,11 +31,17 @@ enum QPSharedHistory {
         var want: Bool? = nil
         /// 主 App 后台心跳（秒级时间戳）。键盘用它判断小窗其实是不是已经死了。
         var beatAt: Double? = nil
-        /// v1.8.14「连接电脑」总开关的**唯一权威状态**（true = 断开连接）。
+        /// v1.8.15「连接电脑」总开关的**唯一权威状态**（true = 断开连接）。
         /// 主 App 与键盘的 UserDefaults 互不相通，两端开关都读写这一个字段，
         /// 谁改了另一端下次出现时跟随 —— 用户要求：本来就是一个功能。
         /// 用可选类型，保证旧版本写下的 JSON 还能解码，不会丢历史。
         var syncOff: Bool? = nil
+        /// 最后改 syncOff 的时间戳（秒）。**关键修复**：没有 App Group 时，
+        /// 共享状态靠剪贴板自定义类型兜底，而普通复制会把该类型冲掉、状态回弹
+        /// （表现就是「开关关不掉、两端不同步」）。加时间戳后，每个进程各自缓存
+        /// 最后一次认定的值，只在剪贴板带来「更新的」值时才更新，普通复制冲掉
+        /// 自定义类型也不会让开关回弹。
+        var syncOffAt: Double? = nil
 
         var isBlocked: Bool { blocked == true }
         var isWanted: Bool { want == true }
@@ -197,14 +203,52 @@ enum QPSharedHistory {
         write(p, keeping: nil)
     }
 
-    /// v1.8.14「连接电脑」总开关（两端共用，唯一权威状态）。
-    /// 主 App 设置页与键盘快捷菜单/设置页都调这里；写通道尽力而为：
-    /// 有 App Group 写共享文件最可靠；剪贴板兜底时需要保留正文（App 前台
-    /// 调用读得到正文），写不进也先把内存态更新，本进程立即生效。
+    // MARK: 「连接电脑」总开关 —— 本地缓存 + 时间戳跟随（v1.8.15 修复）
+
+    /// 每进程各自缓存最后一次认定的 syncOff。没有 App Group 时，共享状态靠剪贴板兜底，
+    /// 普通复制会把自定义类型冲掉；缓存让「关掉后不被冲掉回弹」，且只在剪贴板带来
+    /// 「更新的」值时才更新，实现两端互相跟随。
+    private static var _localSyncOff = false
+    private static var _localSyncOffAt: Double = 0
+    private static var _syncInit = false
+    private static let udSyncOff = "qp.syncOff"
+    private static let udSyncOffAt = "qp.syncOffAt"
+
+    private static func ensureSyncInit() {
+        if _syncInit { return }
+        _syncInit = true
+        _localSyncOff = UserDefaults.standard.bool(forKey: udSyncOff)
+        _localSyncOffAt = UserDefaults.standard.double(forKey: udSyncOffAt)
+    }
+
+    /// 读「连接电脑」是否断开（true = 断开）。优先认共享通道里**更新**的值，否则用本地缓存。
+    static func syncOff() -> Bool {
+        ensureSyncInit()
+        var p: Payload?
+        if let g = readGroup() { p = g }
+        else if let pb = readPasteboard() { p = pb }
+        if let p = p, let off = p.syncOff, let at = p.syncOffAt, at > _localSyncOffAt {
+            _localSyncOff = off
+            _localSyncOffAt = at
+            UserDefaults.standard.set(off, forKey: udSyncOff)
+            UserDefaults.standard.set(at, forKey: udSyncOffAt)
+        }
+        return _localSyncOff
+    }
+
+    /// v1.8.15「连接电脑」总开关（两端共用，唯一权威状态）。
+    /// 主 App 设置页与键盘快捷菜单/设置页都调这里：写共享通道 + 立即更新本地缓存，
+    /// 本进程立刻生效；另一端下次读共享通道（且时间戳更新）即跟随。
     @discardableResult
     static func setSyncOff(_ on: Bool) -> Bool {
+        ensureSyncInit()
         var p = read()
         p.syncOff = on
+        p.syncOffAt = Date().timeIntervalSince1970
+        _localSyncOff = on
+        _localSyncOffAt = p.syncOffAt ?? 0
+        UserDefaults.standard.set(on, forKey: udSyncOff)
+        UserDefaults.standard.set(_localSyncOffAt, forKey: udSyncOffAt)
         write(p, keeping: UIPasteboard.general.string)
         return true
     }

@@ -201,4 +201,145 @@ enum QPExport {
         guard let png = img.pngData() else { return nil }
         return writeTemp(png, name: "QuickPaste-连续复制-\(stamp).png")
     }
+
+    // MARK: Excel（.xlsx，手写 stored-ZIP + Office Open XML，无第三方依赖）
+
+    private static func u16(_ v: UInt16) -> Data {
+        var v = v.littleEndian
+        return Data(bytes: &v, count: 2)
+    }
+    private static func u32(_ v: UInt32) -> Data {
+        var v = v.littleEndian
+        return Data(bytes: &v, count: 4)
+    }
+
+    /// CRC32（IEEE），用于 ZIP 校验。
+    private static func crc32(_ data: Data) -> UInt32 {
+        var crc: UInt32 = 0xffffffff
+        for b in data {
+            crc ^= UInt32(b)
+            for _ in 0..<8 {
+                crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xedb88320 : (crc >> 1)
+            }
+        }
+        return ~crc
+    }
+
+    /// 把多个（文件名, 数据）打包成 **store（不压缩）** 的 ZIP。
+    /// 不压缩最稳：不需要 deflate，iOS 自带解压（Excel/系统）都能读。
+    private static func zipStored(_ files: [(name: String, data: Data)]) -> Data {
+        var out = Data()
+        var central = Data()
+        var offset = 0
+        for f in files {
+            let crc = crc32(f.data)
+            let size = UInt32(f.data.count)
+            let nameBytes = Data(f.name.utf8)
+
+            var lh = Data()
+            lh.append(u32(0x04034b50))   // 本地文件头签名
+            lh.append(u16(20))           // 解压所需版本
+            lh.append(u16(0))            // 通用标志
+            lh.append(u16(0))            // 压缩方式 0 = store
+            lh.append(u16(0))            // 最后修改时间
+            lh.append(u16(0))            // 最后修改日期
+            lh.append(u32(crc))
+            lh.append(u32(size))
+            lh.append(u32(size))
+            lh.append(u16(UInt16(nameBytes.count)))
+            lh.append(u16(0))            // 扩展字段长度
+            lh.append(nameBytes)
+            lh.append(f.data)
+            out.append(lh)
+
+            var cd = Data()
+            cd.append(u32(0x02014b50))   // 中央目录头签名
+            cd.append(u16(20))           // 版本（由）
+            cd.append(u16(20))           // 版本（需）
+            cd.append(u16(0))
+            cd.append(u16(0))
+            cd.append(u16(0))
+            cd.append(u16(0))
+            cd.append(u32(crc))
+            cd.append(u32(size))
+            cd.append(u32(size))
+            cd.append(u16(UInt16(nameBytes.count)))
+            cd.append(u16(0))            // 扩展字段
+            cd.append(u16(0))            // 注释
+            cd.append(u16(0))            // 磁盘号
+            cd.append(u16(0))            // 内部属性
+            cd.append(u32(0))            // 外部属性
+            cd.append(u32(UInt32(offset)))
+            cd.append(nameBytes)
+            central.append(cd)
+
+            offset += lh.count
+        }
+        let centralStart = offset
+        out.append(central)
+        var eocd = Data()
+        eocd.append(u32(0x06054b50))     // 中央目录结束签名
+        eocd.append(u16(0))
+        eocd.append(u16(0))
+        eocd.append(u16(UInt16(files.count)))
+        eocd.append(u16(UInt16(files.count)))
+        eocd.append(u32(UInt32(central.count)))
+        eocd.append(u32(UInt32(centralStart)))
+        eocd.append(u16(0))
+        out.append(eocd)
+        return out
+    }
+
+    private static func xlsxEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
+    }
+
+    /// 生成真正的 .xlsx（每一条占一行，A 列存文本；用 inlineStr 内联字符串，中文不乱码）。
+    static func xlsxData(_ items: [String]) -> Data? {
+        var rows = ""
+        for (i, s) in items.enumerated() {
+            let cell = "<c r=\"A\(i + 1)\" t=\"inlineStr\"><is><t xml:space=\"preserve\">\(xlsxEscape(s))</t></is></c>"
+            rows += "<row r=\"\(i + 1)\">\(cell)</row>"
+        }
+        let sheet = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+            + "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+            + "<sheetData>\(rows)</sheetData></worksheet>"
+        let contentTypes = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+            + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+            + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+            + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+            + "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>"
+            + "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+            + "</Types>"
+        let rels = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+            + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+            + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>"
+            + "</Relationships>"
+        let workbook = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+            + "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" "
+            + "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
+            + "<sheets><sheet name=\"剪贴板\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>"
+        let wbRels = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+            + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+            + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>"
+            + "</Relationships>"
+
+        let files: [(String, Data)] = [
+            ("[Content_Types].xml", Data(contentTypes.utf8)),
+            ("_rels/.rels", Data(rels.utf8)),
+            ("xl/workbook.xml", Data(workbook.utf8)),
+            ("xl/_rels/workbook.xml.rels", Data(wbRels.utf8)),
+            ("xl/worksheets/sheet1.xml", Data(sheet.utf8))
+        ]
+        return zipStored(files)
+    }
+
+    static func xlsxFile(_ items: [String]) -> URL? {
+        guard let d = xlsxData(items) else { return nil }
+        return writeTemp(d, name: "QuickPaste-连续复制-\(stamp).xlsx")
+    }
 }

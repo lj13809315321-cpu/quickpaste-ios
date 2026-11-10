@@ -334,7 +334,7 @@ struct SyncSettingsView: View {
     @AppStorage("qp.app.pair") private var pair: String = ""
     /// v1.8.14「连接电脑」总开关：两端共用共享通道字段（QPSharedHistory.syncOff），
     /// 键盘下次弹出时跟随这里的改动；键盘里改了，这里进页面时也会刷新。
-    @State private var syncOn = !QPSharedHistory.read().isSyncOff
+    @State private var syncOn = !QPSharedHistory.syncOff()
     @State private var draft = ""
     @State private var status = "未检测"
 
@@ -376,7 +376,7 @@ struct SyncSettingsView: View {
         .navigationTitle("局域网同步（CopyQ）")
         .onAppear {
             draft = savedURL.isEmpty ? "http://192.168.1.2:8787" : savedURL
-            syncOn = !QPSharedHistory.read().isSyncOff   // 键盘端改过开关 → 进页面刷新
+            syncOn = !QPSharedHistory.syncOff()   // 键盘端改过开关 → 进页面刷新
         }
     }
 

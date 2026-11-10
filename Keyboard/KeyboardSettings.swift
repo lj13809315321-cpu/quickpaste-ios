@@ -497,7 +497,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         body.addArrangedSubview(card([
             switchRow("连接电脑",
                       sub: "两端共用这一个开关（主 App 端改了，键盘下次出现跟随；这里改了，主 App 也跟随）。断开后不再轮询、不再自动推送；手动「立即同步」仍可临时连一次",
-                      isOn: !(QPSharedHistory.read().isSyncOff)) { [weak self] v in
+                      isOn: !QPSharedHistory.syncOff()) { [weak self] v in
                 QPSharedHistory.setSyncOff(!v)
                 self?.delegate?.settingsDidChange()
             },
