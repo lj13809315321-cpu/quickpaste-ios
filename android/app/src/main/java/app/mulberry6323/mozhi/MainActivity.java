@@ -68,7 +68,7 @@ public class MainActivity extends Activity {
         title.setTextColor(TEXT);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         page.addView(title);
-        TextView sub = label("v1.8.15 · 真·系统输入法 · 电脑 ↔ 手机 局域网剪贴板");
+        TextView sub = label("v1.8.17 · 真·系统输入法 · 电脑 ↔ 手机 局域网剪贴板");
         sub.setTextSize(13);
         page.addView(sub);
         page.addView(spacer(10));

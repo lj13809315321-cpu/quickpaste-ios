@@ -10,7 +10,7 @@ android {
         applicationId 'app.mulberry6323.mozhi'
         minSdk 24
         targetSdk 34
-        versionCode 35
+        versionCode 36
         versionName '1.8.17-inputmethod'
     }
 

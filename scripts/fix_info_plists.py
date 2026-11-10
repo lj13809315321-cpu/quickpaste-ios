@@ -49,7 +49,7 @@ MAIN_APP_PLIST = {
     "CFBundlePackageType": "APPL",
     "CFBundleSignature": "????",
     "CFBundleShortVersionString": "1.8.17",
-    "CFBundleVersion": "35",
+    "CFBundleVersion": "36",
     "LSRequiresIPhoneOS": True,
     "MinimumOSVersion": "16.0",
     "NSAppTransportSecurity": dict(ATS),
@@ -79,7 +79,7 @@ KEYBOARD_PLIST = {
     "CFBundlePackageType": "XPC!",
     "CFBundleSignature": "????",
     "CFBundleShortVersionString": "1.8.17",
-    "CFBundleVersion": "35",
+    "CFBundleVersion": "36",
     "MinimumOSVersion": "16.0",
     # 键盘扩展里跑 URLSession，这一份 ATS 例外同样不能少
     "NSAppTransportSecurity": dict(ATS),

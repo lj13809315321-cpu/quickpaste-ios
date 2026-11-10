@@ -525,13 +525,13 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
                 self?.delegate?.settingsClearAll()
             }
         ]))
-        body.addArrangedSubview(foot("电脑端需启动 墨指 同步服务（v1.6），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
+        body.addArrangedSubview(foot("电脑端需启动 墨指 同步服务（v1.8.17），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
     }
 
     // MARK: - 教程
 
     private func renderTutorialList() {
-        body.addArrangedSubview(foot("按 v1.6 原型的 6 篇使用教程，内容对应真输入法的实际操作。"))
+        body.addArrangedSubview(foot("按最新原型的 6 篇使用教程，内容对应真输入法的实际操作。"))
         body.addArrangedSubview(card(Tutorial.order.map { key in
             navRow(Tutorial.data[key]?.title ?? key) { [weak self] in self?.push(.tutorial(key)) }
         }))
@@ -613,7 +613,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             info("墨指 v1.8.17 · 真·系统输入法"),
             info("iOS：键盘扩展 .appex（com.apple.keyboard-service）"),
             info("安卓：系统输入法 InputMethodService"),
-            info("界面按 quickpaste-ios-prototype.html v1.6 原型原生实现，无 WebView、无演示动画。"),
+            info("界面按 最新版原型原生实现，无 WebView、无演示动画。"),
             info("数据只在你的局域网内传输，不经过公网。"),
             info("免费 Apple ID 签名 7 天到期后需重签，键盘内数据不会丢失。")
         ]))

@@ -537,11 +537,11 @@ public final class ImeSettings {
         sendCard.addView(actionRow("🗑 清空电脑上的全部同步记录", Color.parseColor("#FF3B30"),
                 new Runnable() { @Override public void run() { host.onClearAll(); } }));
         body.addView(sendCard);
-        body.addView(foot("电脑端需启动 墨指 同步服务（v1.6），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"));
+        body.addView(foot("电脑端需启动 墨指 同步服务（v1.8.17），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"));
     }
 
     private void renderTutorialList() {
-        body.addView(foot("按 v1.6 原型的 6 篇使用教程，内容对应真输入法的实际操作。"));
+        body.addView(foot("按最新原型的 6 篇使用教程，内容对应真输入法的实际操作。"));
         LinearLayout card = card();
         for (final String key : Tutorials.order()) {
             card.addView(navRow(Tutorials.title(key), "", "tut:" + key));
@@ -637,7 +637,7 @@ public final class ImeSettings {
         c.addView(info("墨指 v1.8.17 · 真·系统输入法"));
         c.addView(info("安卓：系统输入法 InputMethodService（BIND_INPUT_METHOD）"));
         c.addView(info("iOS：键盘扩展 .appex（com.apple.keyboard-service）"));
-        c.addView(info("界面按 quickpaste-ios-prototype.html v1.6 原型原生实现，无 WebView、无演示动画。"));
+        c.addView(info("界面按 最新版原型原生实现，无 WebView、无演示动画。"));
         c.addView(info("数据只在你的局域网内传输，不经过公网。"));
         body.addView(c);
     }

@@ -594,7 +594,7 @@ struct AboutView: View {
                 Text("安卓：系统输入法 InputMethodService")
             }
             Section("说明") {
-                Text("界面按 quickpaste-ios-prototype.html v1.6 原型原生实现，无 WebView、无演示动画。")
+                Text("界面按 最新版原型原生实现，无 WebView、无演示动画。")
                 Text("数据只在你的局域网内传输，不经过公网。")
                 Text("免费 Apple ID 签名 7 天到期后需重签，键盘内数据不会丢失。")
             }
