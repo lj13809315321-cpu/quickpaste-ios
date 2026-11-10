@@ -415,9 +415,17 @@ final class KeyboardViewController: UIInputViewController {
     // MARK: - 连续复制（键盘内监听 + 主 App 画中画后台监听）
 
     /// v1.8.14：工具条 ⧉ 按钮删除时，跳主 App 的整套 openURL 代码一起删了。
-    /// v1.8.24：按用户要求恢复跳转，但**版面一点不动、不加工具条按钮**，
-    /// 入口只挂在 ⋯ 快捷菜单里，落点 = 主 App「连续复制」Tab。
+    /// v1.8.24 恢复跳转时误加在「快捷操作」浮层里 —— 那个浮层唯一的入口是
+    /// 长按底行「发送」键，用户根本看不到；v1.8.25 按用户指认的红框位置
+    /// 改到**长按工具条「⋯」**：单击 ⋯ 仍是完整设置界面，长按 0.6 秒
+    /// 直接进主 App「连续复制」Tab。版面一点没动、没加任何按钮。
     /// ★ URL scheme 已在 v1.8.17 改名，必须用 mozhi://（旧 quickpaste:// 失效）。
+
+    /// 长按工具条「⋯」= 打开主 App 的连续复制页。
+    @objc private func moreLongPressed(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began else { return }
+        openMainAppContinuous()
+    }
 
     /// 打开主 App 的连续复制页。键盘扩展编译期拿不到 UIApplication.shared，
     /// 所以走运行时反射 + 响应链 + 官方扩展 API 三重兜底（各家输入法通用做法）。
@@ -1050,8 +1058,15 @@ final class KeyboardViewController: UIInputViewController {
         more.layer.cornerRadius = QPTool.radius
         more.widthAnchor.constraint(equalToConstant: QPTool.size).isActive = true
         more.heightAnchor.constraint(equalToConstant: QPTool.size).isActive = true
-        // 「⋯」现在是完整设置界面的入口，不再只是扁平菜单
+        // 「⋯」点一下 = 完整设置界面；v1.8.25 起长按 0.6 秒 = 直接打开主 App
+        // 的「连续复制」页（用户截红框指名的那个键，版面一点没动、没加按钮）。
         more.addAction(UIAction { [weak self] _ in self?.settings.show(.root) }, for: .touchUpInside)
+        let holdMore = UILongPressGestureRecognizer(target: self,
+                                                    action: #selector(moreLongPressed(_:)))
+        holdMore.minimumPressDuration = 0.6
+        holdMore.allowableMovement = 10
+        holdMore.cancelsTouchesInView = true   // 长按识别后不再触发上面的单击
+        more.addGestureRecognizer(holdMore)
         symStack.addArrangedSubview(more)
 
         if prefs.align != "right" { symStack.addArrangedSubview(trailSpacer) }
@@ -1732,17 +1747,13 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.24 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.25 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
         })
-        // v1.8.24：版面一点不动，只在 ⋯ 快捷菜单加这一行；点开主 App 并直接
-        // 落到「连续复制」Tab（URL 走 mozhi://tab/pip，见 openMainAppContinuous）。
-        menuStack.addArrangedSubview(menuRow("📱 打开 墨指 主 App") { [weak self] in
-            self?.closeMenu()
-            self?.openMainAppContinuous()
-        })
+        // v1.8.25：菜单里的「打开 墨指 主 App」已移到长按工具条「⋯」，
+        // 这里不再堆菜单项（用户反馈工具条/菜单太挤、那一行根本看不到）。
         menuStack.addArrangedSubview(menuRow("⟳ 立即同步（\(items.count) 条）") { [weak self] in
             self?.pull(showConnecting: true, force: true); self?.closeMenu()
         })

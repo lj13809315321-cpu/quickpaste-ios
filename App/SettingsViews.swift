@@ -88,7 +88,7 @@ struct AppRootView: View {
             }.tag(2)
             SettingsView().tabItem { Label("设置", systemImage: "gearshape") }.tag(3)
         }
-        // v1.8.24：键盘 ⋯ 菜单「打开 墨指 主 App」→ mozhi://tab/pip，只落到
+        // v1.8.25：入口改为「长按工具条 ⋯」→ mozhi://tab/pip，只落到
         // 连续复制 Tab；旧 mozhi://pip/start 仍是「自动开画中画」的链路。
         // ★ 不能用 absoluteString.contains("pip") 判定：新 URL 也含 pip，
         //   会把只想看一眼页面的用户强行拉起系统画中画。
@@ -578,7 +578,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("墨指 v1.8.24 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.25 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -973,7 +973,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("墨指 v1.8.24 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.25 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }
