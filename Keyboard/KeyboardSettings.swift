@@ -250,7 +250,9 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         }
         let box = UIView()
         box.backgroundColor = .clear
-        let v = linkHost!.view
+        // UIHostingController.view 是隐式解包可选；赋给局部变量后会变成 UIView?，
+        // 这里显式解包，避免 iOS 16 SDK 下「optional 未解包」的编译错误。
+        let v: UIView = linkHost!.view!
         v.translatesAutoresizingMaskIntoConstraints = false
         box.addSubview(v)
         NSLayoutConstraint.activate([
