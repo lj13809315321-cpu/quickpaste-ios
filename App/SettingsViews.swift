@@ -75,21 +75,23 @@ struct AppRootView: View {
 
     var body: some View {
         TabView(selection: $tab) {
-            // 连接 / 启用引导（原 ContentView，保留地址设置与完全访问引导）
-            ContentView().tabItem { Label("连接", systemImage: "link") }.tag(0)
-            HistoryView().tabItem { Label("历史", systemImage: "clock") }.tag(1)
-            CategoryView().tabItem { Label("分类", systemImage: "folder") }.tag(2)
+            // v1.8.21：删掉整个「连接」页 —— 它的「1. 连接电脑 / 2. 启用键盘 /
+            // 3. 立即测试」在下面的设置主表里各有一份，顶部那块「连续复制」
+            // 又和独立的「连续复制」Tab 完全重复，整页属于重复版面。
+            // 电脑地址、启用引导、系统设置入口全部统一收进「设置」。
+            HistoryView().tabItem { Label("历史", systemImage: "clock") }.tag(0)
+            CategoryView().tabItem { Label("分类", systemImage: "folder") }.tag(1)
             PiPControlView().tabItem {
                 Label("连续复制", systemImage: "rectangle.on.rectangle")
-            }.tag(3)
-            SettingsView().tabItem { Label("设置", systemImage: "gearshape") }.tag(4)
+            }.tag(2)
+            SettingsView().tabItem { Label("设置", systemImage: "gearshape") }.tag(3)
         }
         // 键盘里点「连续复制」按钮会打开 quickpaste://pip/start
         // 键盘扩展本身不能开画中画，所以键盘那边只负责「把 App 叫到前台」，
         // 真正的开启在这里做：进来就自动开，用户少点一次。
         .onOpenURL { url in
             guard url.host == "pip" || url.absoluteString.contains("pip") else { return }
-            tab = 3
+            tab = 2   // v1.8.21：删掉连接页后，连续复制从 tag 3 变 tag 2
             QPSharedHistory.setWant(true)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
                 PiPManager.shared.start()
@@ -105,43 +107,63 @@ struct AppRootView: View {
     }
 }
 
-// MARK: - 剪贴板历史（空态 / 有记录）
+// MARK: - 剪贴板历史（v1.8.21：与「连续复制」页 / 键盘共用同一份数据）
 
 struct HistoryView: View {
-    @AppStorage("qp.app.history") private var stored: String = ""
+    /// v1.8.21 修复「历史页永远空白」：
+    /// 旧版读 `qp.app.history`（主 App 一个孤立的本地键），全工程只有「记一条
+    /// （仅主 App 预览用）」会往里写，键盘和连续复制都不写它 → 页面没有作用。
+    /// 现在改读 PiPManager.mergedItems()：主 App 本地收录（qp.app.pipHistory）
+    /// ∪ 跨进程共享通道（QPSharedHistory），按时间倒序、去重、过滤删除墓碑，
+    /// 与「连续复制」Tab 显示的是同一份记录。
+    @State private var entries: [(text: String, ts: Double)] = PiPManager.mergedItems()
     @State private var draft = ""
     @State private var search = ""
+    @State private var flash = ""
+    @Environment(\.scenePhase) private var scenePhase
 
-    private var items: [String] {
-        stored.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+    private var filtered: [(text: String, ts: Double)] {
+        search.isEmpty ? entries
+                       : entries.filter { $0.text.localizedCaseInsensitiveContains(search) }
     }
-    private var filtered: [String] {
-        search.isEmpty ? items : items.filter { $0.localizedCaseInsensitiveContains(search) }
-    }
+
+    private func reload() { entries = PiPManager.mergedItems() }
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
                     HStack {
-                        TextField("记一条（仅主 App 预览用）", text: $draft)
+                        TextField("添加一条到历史（键盘里也能看到）", text: $draft)
                             .textInputAutocapitalization(.never)
                         Button("添加") {
-                            guard !draft.isEmpty else { return }
-                            var arr = items
-                            arr.insert(draft, at: 0)
-                            stored = arr.prefix(30).joined(separator: "\n")
+                            let t = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !t.isEmpty else { return }
+                            // 真添加：本地 + 共享通道各写一份，键盘下次弹出即可读到
+                            PiPManager.appendLocal(t)
+                            _ = QPSharedHistory.append(t)
                             draft = ""
+                            reload()
+                            flash = "已添加，键盘与连续复制页同步可见"
                         }
+                        .buttonStyle(.borderless)
                     }
+                    if !flash.isEmpty {
+                        Text(flash).font(.footnote).foregroundColor(.blue)
+                    }
+                } footer: {
+                    Text("这一页显示的是与「连续复制」页完全同一份记录：主 App 后台收录的、键盘里复制的、画中画抓到的，都在这里。点条目复制到剪贴板，左滑删除。")
                 }
+
                 if filtered.isEmpty {
                     Section {
                         VStack(spacing: 10) {
                             Image(systemName: "doc.on.clipboard").font(.largeTitle)
                                 .foregroundColor(.secondary)
-                            Text("还没有记录")
-                            Text("在别的 App 复制文字后，切到 墨指 键盘即可看到同步内容与本机历史。")
+                            Text(search.isEmpty ? "还没有记录" : "没有匹配的记录")
+                            Text(search.isEmpty
+                                 ? "在任意 App 复制文字后切到 墨指 键盘，或开启「连续复制」让 App 在后台收录，记录就会出现在这里。"
+                                 : "换个关键词再试试。")
                                 .font(.footnote).foregroundColor(.secondary)
                                 .multilineTextAlignment(.center)
                         }
@@ -149,29 +171,39 @@ struct HistoryView: View {
                     }
                 } else {
                     Section("历史记录（\(filtered.count)）") {
-                        ForEach(filtered, id: \.self) { text in
+                        ForEach(filtered, id: \.text) { item in
                             Button {
-                                UIPasteboard.general.string = text
+                                UIPasteboard.general.string = item.text
+                                flash = "已复制到剪贴板"
                             } label: {
                                 HStack {
                                     Image(systemName: "doc.on.clipboard").foregroundColor(.blue)
-                                    Text(text).lineLimit(2).foregroundColor(.primary)
+                                    Text(item.text).lineLimit(2).foregroundColor(.primary)
                                     Spacer()
                                     Image(systemName: "square.on.square").foregroundColor(.secondary)
                                 }
                             }
+                            .buttonStyle(.borderless)
                         }
                         .onDelete { idx in
-                            var arr = items
-                            let toRemove = Set(idx.map { filtered[$0] })
-                            arr.removeAll { toRemove.contains($0) }
-                            stored = arr.joined(separator: "\n")
+                            // 与「连续复制」页同一个删除通道：写墓碑 + 清本地，
+                            // 共享通道里的同名条目一并被过滤，不会删了又冒出来。
+                            let texts = idx.map { filtered[$0].text }
+                            PiPManager.deleteTexts(texts)
+                            reload()
+                            flash = "已删除 \(texts.count) 条"
                         }
                     }
                 }
             }
             .searchable(text: $search, prompt: "搜索历史")
             .navigationTitle("剪贴板历史")
+            .onAppear { reload() }
+            .onChange(of: scenePhase) { phase in
+                // 从后台/画中画回来、或切回这个 Tab 时重读一次，
+                // 保证键盘与后台新收录的条目立刻出现在这一页。
+                if phase == .active { reload() }
+            }
         }
     }
 }
@@ -249,9 +281,12 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("墨指 v1.8.20 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.21 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
+                            .font(.footnote).foregroundColor(.secondary)
+                        // v1.8.21：原「连接」页独有的「这是什么」说明压成这一行
+                        Text("墨指 是真正的系统输入法：在任何 App 的输入框切到「墨指」键盘，就能直接粘贴电脑上复制的文字与截图，也能把手机上输入的内容发回电脑。")
                             .font(.footnote).foregroundColor(.secondary)
                     }
                 }
@@ -289,11 +324,9 @@ struct SettingsView: View {
                 Section("2. 启用键盘") {
                     Text("设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 墨指\n然后点开 墨指 → 开启「允许完全访问」")
                         .font(.subheadline)
-                    Button {
-                        if let url = URL(string: UIApplication.openSettingsURLString) {
-                            UIApplication.shared.open(url)
-                        }
-                    } label: { Label("打开本 App 的系统设置", systemImage: "gear") }
+                    // v1.8.21：系统设置入口全工程只留一个，见「设置 → 键盘设置」页顶部
+                    Text("打开系统设置的按钮在「键盘设置」页顶部，本页不再重复放。")
+                        .font(.footnote).foregroundColor(.secondary)
                 }
 
                 Section("3. 立即测试") {
@@ -303,7 +336,7 @@ struct SettingsView: View {
                 }
 
                 Section("预览") {
-                    NavigationLink("查看有记录的历史") { HistoryView() }
+                    NavigationLink("剪贴板历史") { HistoryView() }
                     NavigationLink("重新播放引导页") { OnboardingView() }
                     NavigationLink("关于本版本") { AboutView() }
                 }
@@ -419,6 +452,17 @@ struct SyncSettingsView: View {
 struct KbdSettingsView: View {
     var body: some View {
         Form {
+            // v1.8.21：全工程唯一的系统设置入口，放在「设置 → 键盘设置」页顶部。
+            // 原「连接」页两处 + 设置主表一处已全部删掉，不再四处重复。
+            Section("打开系统设置") {
+                Button {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                } label: { Label("打开本 App 的系统设置", systemImage: "gear") }
+                Text("进入 设置 → 通用 → 键盘 → 墨指 → 允许完全访问；并把「从其他 App 粘贴」设为允许（后台连续复制需要）。")
+                    .font(.footnote).foregroundColor(.secondary)
+            }
             Section {
                 NavigationLink("使用教程") { TutorialListView() }
                 NavigationLink("快捷符号") { SymSettingsView() }
@@ -431,15 +475,6 @@ struct KbdSettingsView: View {
                 Text("包含：悬浮窗关闭按钮、点击直接切换、显示新内容提示、显示清空按钮、空格滑动移光标、发送后自动收起、连续复制、键盘增高、列数、工具条对齐。")
                     .font(.footnote).foregroundColor(.secondary)
                 Text("iOS 限制：主 App 与键盘扩展默认不共享设置容器，为避免 App Groups 让爱思免费签名变复杂，开关直接存在键盘里、在键盘里改，主 App 这页不重复造假开关。")
-                    .font(.footnote).foregroundColor(.secondary)
-            }
-            Section("打开系统设置") {
-                Button {
-                    if let url = URL(string: UIApplication.openSettingsURLString) {
-                        UIApplication.shared.open(url)
-                    }
-                } label: { Label("打开本 App 的系统设置", systemImage: "gear") }
-                Text("进入 设置 → 通用 → 键盘 → 墨指 → 允许完全访问；并把「从其他 App 粘贴」设为允许。")
                     .font(.footnote).foregroundColor(.secondary)
             }
             Section("如何启用键盘") {
@@ -610,7 +645,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("墨指 v1.8.20 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.21 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

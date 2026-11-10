@@ -368,10 +368,18 @@ final class KeyboardViewController: UIInputViewController {
                 if prefs.capture(raw) {
                     dirty = true
                     capturedCount += 1
+                    // v1.8.21：键盘自己抓到的新文字，同步写一份到跨进程共享通道。
+                    // 主 App 没签 App Group，读不到键盘容器里的 prefs.clips，
+                    // 所以此前「历史」页和「连续复制」页永远看不到键盘端历史。
+                    // 只在真正新增（capture 返回 true）时写，0.5 秒轮询里最多一次。
+                    // 注意：① 从共享通道并入键盘的那段绝不能反写，否则来回重复。
+                    _ = QPSharedHistory.append(raw)
                     // ★ 复制即同步：手机复制完，电脑端立刻就有这一条
                     autoPush(raw)
                 }
-                prefs.lastSeenChange = change
+                // append 在没有 App Group 时走剪贴板兜底通道、会改 changeCount；
+                // 用写之后的实际值对齐，避免下一轮轮询误判成「又复制了一次」。
+                prefs.lastSeenChange = pb.changeCount
             }
         }
 
@@ -1577,7 +1585,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.20 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.21 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -2110,7 +2118,8 @@ final class KeyboardViewController: UIInputViewController {
             let new = (self.editField?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !new.isEmpty else { self.showToast("内容不能为空"); return }
             if item.isLocal { self.prefs.remove(item.text, from: "clip") }
-            self.prefs.capture(new)
+            // v1.8.21：手动编辑后的新文本也写共享通道，主 App 历史页能同步看到
+            if self.prefs.capture(new) { _ = QPSharedHistory.append(new) }
             self.refreshList()
             self.closeSheet()
             self.showToast("已保存")
