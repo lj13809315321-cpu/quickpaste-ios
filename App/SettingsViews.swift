@@ -88,15 +88,21 @@ struct AppRootView: View {
             }.tag(2)
             SettingsView().tabItem { Label("设置", systemImage: "gearshape") }.tag(3)
         }
-        // 键盘里点「连续复制」按钮会打开 quickpaste://pip/start
-        // 键盘扩展本身不能开画中画，所以键盘那边只负责「把 App 叫到前台」，
-        // 真正的开启在这里做：进来就自动开，用户少点一次。
+        // v1.8.24：键盘 ⋯ 菜单「打开 墨指 主 App」→ mozhi://tab/pip，只落到
+        // 连续复制 Tab；旧 mozhi://pip/start 仍是「自动开画中画」的链路。
+        // ★ 不能用 absoluteString.contains("pip") 判定：新 URL 也含 pip，
+        //   会把只想看一眼页面的用户强行拉起系统画中画。
         .onOpenURL { url in
-            guard url.host == "pip" || url.absoluteString.contains("pip") else { return }
-            tab = 2   // v1.8.22：删掉连接页后，连续复制从 tag 3 变 tag 2
-            QPSharedHistory.setWant(true)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
-                PiPManager.shared.start()
+            let host = url.host ?? ""
+            if host == "pip" {
+                tab = 2   // v1.8.22：删掉连接页后，连续复制从 tag 3 变 tag 2
+                QPSharedHistory.setWant(true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                    PiPManager.shared.start()
+                }
+            } else if host == "tab", url.path.contains("pip") {
+                // 只切页，不 setWant、不 start —— 开不开画中画由用户自己点
+                tab = 2
             }
         }
         .onAppear {
@@ -572,7 +578,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("墨指 v1.8.23 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.24 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -967,7 +973,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("墨指 v1.8.23 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.24 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

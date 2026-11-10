@@ -48,8 +48,8 @@ MAIN_APP_PLIST = {
     "CFBundleName": "Mozhi",
     "CFBundlePackageType": "APPL",
     "CFBundleSignature": "????",
-    "CFBundleShortVersionString": "1.8.23",
-    "CFBundleVersion": "42",
+    "CFBundleShortVersionString": "1.8.24",
+    "CFBundleVersion": "43",
     "LSRequiresIPhoneOS": True,
     "MinimumOSVersion": "16.0",
     "NSAppTransportSecurity": dict(ATS),
@@ -59,7 +59,7 @@ MAIN_APP_PLIST = {
     # 系统画中画（PiP）连续复制：PiP 期间 App 需要在后台保持运行，
     # 靠 audio background mode + AVAudioSession(.playback) 实现。
     "UIBackgroundModes": ["audio"],
-    # 键盘里点「连续复制」跳主 App：quickpaste://pip/start
+    # 键盘里点「连续复制」跳主 App：mozhi://pip/start
     "CFBundleURLTypes": [{
         "CFBundleURLName": APP_ID,
         "CFBundleURLSchemes": ["mozhi"],
@@ -78,8 +78,8 @@ KEYBOARD_PLIST = {
     "CFBundleName": "Mozhi",
     "CFBundlePackageType": "XPC!",
     "CFBundleSignature": "????",
-    "CFBundleShortVersionString": "1.8.23",
-    "CFBundleVersion": "42",
+    "CFBundleShortVersionString": "1.8.24",
+    "CFBundleVersion": "43",
     "MinimumOSVersion": "16.0",
     # 键盘扩展里跑 URLSession，这一份 ATS 例外同样不能少
     "NSAppTransportSecurity": dict(ATS),

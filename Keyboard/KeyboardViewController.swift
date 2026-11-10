@@ -414,8 +414,69 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: - 连续复制（键盘内监听 + 主 App 画中画后台监听）
 
-    /// v1.8.14：工具条 ⧉ 按钮已按用户要求删除，toggleContinuous 与跳转主 App
-    /// 的整套 openURL 兜底代码随之移除。开关只在键盘设置页。
+    /// v1.8.14：工具条 ⧉ 按钮删除时，跳主 App 的整套 openURL 代码一起删了。
+    /// v1.8.24：按用户要求恢复跳转，但**版面一点不动、不加工具条按钮**，
+    /// 入口只挂在 ⋯ 快捷菜单里，落点 = 主 App「连续复制」Tab。
+    /// ★ URL scheme 已在 v1.8.17 改名，必须用 mozhi://（旧 quickpaste:// 失效）。
+
+    /// 打开主 App 的连续复制页。键盘扩展编译期拿不到 UIApplication.shared，
+    /// 所以走运行时反射 + 响应链 + 官方扩展 API 三重兜底（各家输入法通用做法）。
+    private func openMainAppContinuous() {
+        guard let url = URL(string: "mozhi://tab/pip?from=keyboard-menu") else { return }
+        let tried = openURLFromKeyboard(url)
+        // 键盘还挂在窗口上 = 没跳走；真被主 App 盖住后本扩展会挂起，这段不会执行。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            guard let self = self, self.viewIfLoaded?.window != nil else { return }
+            self.showToast(tried
+                ? "若没有跳转，请手动点桌面「墨指」图标"
+                : "打不开主 App：请开启 设置 → 通用 → 键盘 → 墨指 → 允许完全访问")
+        }
+    }
+
+    /// ① 运行时 UIApplication.shared → openURL:（成功率最高，不重复开）
+    /// ② 沿响应链找 openURL:
+    /// ③ extensionContext.open（键盘扩展常被系统拒绝，仅最后兜底）
+    @discardableResult
+    private func openURLFromKeyboard(_ url: URL) -> Bool {
+        let sel = NSSelectorFromString("openURL:")
+        if let app = sharedApplicationFromRuntime() {
+            if app.responds(to: sel) {
+                _ = app.perform(sel, with: url)
+                return true
+            }
+            let sel3 = NSSelectorFromString("open:options:completionHandler:")
+            if app.responds(to: sel3), let imp = app.method(for: sel3) {
+                typealias OpenFn = @convention(c) (AnyObject, Selector, NSURL,
+                                                   NSDictionary,
+                                                   @convention(block) (Bool) -> Void) -> Void
+                let fn = unsafeBitCast(imp, to: OpenFn.self)
+                fn(app, sel3, url as NSURL, NSDictionary(), { _ in })
+                return true
+            }
+        }
+        var responder: UIResponder? = self
+        while let r = responder {
+            if r.responds(to: sel) {
+                _ = r.perform(sel, with: url)
+                return true
+            }
+            responder = r.next
+        }
+        if let ctx = extensionContext {
+            ctx.open(url, completionHandler: nil)
+            return true
+        }
+        return false
+    }
+
+    /// 扩展里不能直接写 UIApplication.shared（编译期标「扩展不可用」），
+    /// 运行期 NSClassFromString + perform 取实例是允许的。
+    private func sharedApplicationFromRuntime() -> NSObject? {
+        guard let cls = NSClassFromString("UIApplication") as? NSObject.Type else { return nil }
+        let sel = NSSelectorFromString("sharedApplication")
+        guard cls.responds(to: sel), let unmanaged = cls.perform(sel) else { return nil }
+        return unmanaged.takeUnretainedValue() as? NSObject
+    }
 
     private func syncCaptureState() {
         refreshCopyButton()
@@ -1671,10 +1732,16 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.23 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.24 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
+        })
+        // v1.8.24：版面一点不动，只在 ⋯ 快捷菜单加这一行；点开主 App 并直接
+        // 落到「连续复制」Tab（URL 走 mozhi://tab/pip，见 openMainAppContinuous）。
+        menuStack.addArrangedSubview(menuRow("📱 打开 墨指 主 App") { [weak self] in
+            self?.closeMenu()
+            self?.openMainAppContinuous()
         })
         menuStack.addArrangedSubview(menuRow("⟳ 立即同步（\(items.count) 条）") { [weak self] in
             self?.pull(showConnecting: true, force: true); self?.closeMenu()
