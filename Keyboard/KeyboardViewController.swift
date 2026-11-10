@@ -1084,6 +1084,10 @@ final class KeyboardViewController: UIInputViewController {
         // 电脑端记录：带真实时间戳（毫秒），参与统一排序。
         // 老版本服务端没写 ts：给个固定兜底（同样不能每刷新现算，否则永远浮在上面）
         for (i, it) in items.enumerated() {
+            // v1.8.20：过滤「（空白内容）」空条目（老服务端/旧数据遗留），
+            // 只留真实文本、图片、文件 —— 空白条目在面板里毫无用处还占格子。
+            if !it.isImage && it.type != "file"
+                && it.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
             let key = it.isImage ? "i:" + it.id : "t:" + it.displayText
             guard seen.insert(key).inserted else { continue }
             if it.ts > 0 {
@@ -1573,7 +1577,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.19 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.20 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -2883,10 +2887,25 @@ final class KeyboardViewController: UIInputViewController {
         let head = "墨指 剪贴板导出（\(fmt.string(from: Date()))，共 \(texts.count) 条）"
 
         func send(_ data: Data, name: String, mime: String) {
-            client.pushFile(data, name: name, mime: mime) { err in
+            // v1.8.20「导出到电脑」开关（两端共用）：
+            // 开 → LocalSend 风格两步上传，文件落电脑「下载\墨指导出」；
+            // 关 → 手机本地模式：文本格式直接复制到剪贴板（可粘贴/转发），
+            //       二进制格式提示到主 App（键盘扩展拉不起系统分享面板）。
+            if !QPSharedHistory.exportToPcOn() {
+                if mime.hasPrefix("text/"),
+                   let s = String(data: data, encoding: .utf8) {
+                    UIPasteboard.general.string = s
+                    showToast("已复制导出内容（\(name)），去任意输入框粘贴或转发")
+                } else {
+                    showToast("「导出到电脑」已关：该格式请到主 App 导出分享")
+                }
+                return
+            }
+            client.sendFile(data, name: name, mime: mime) { err in
                 DispatchQueue.main.async {
-                    self.showToast(err == nil ? "已导出到电脑：\(name)"
-                                               : "导出失败：\(err ?? "")")
+                    self.showToast(err == nil
+                        ? "已导出到电脑：\(name)（在电脑的 下载\\墨指导出 文件夹）"
+                        : "导出失败：\(err ?? "")")
                 }
             }
         }

@@ -249,7 +249,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("墨指 v1.8.19 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.20 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -338,6 +338,10 @@ struct SyncSettingsView: View {
     /// v1.8.18「断网自动暂停」开关：断开 Wi-Fi（或只剩流量）时停止同步轮询/推送，
     /// 回 Wi-Fi 自动恢复。两端共用（QPSharedHistory.netGuard）。
     @State private var netGuard = QPSharedHistory.netGuardOn()
+    /// v1.8.20「导出到电脑」开关：开 = 主 App / 键盘的导出文件直接发送到电脑
+    /// 「下载\墨指导出」文件夹；关 = 主 App 导出走系统分享（可转发微信等），
+    /// 键盘文本导出复制到剪贴板。两端共用（QPSharedHistory.exportToPc）。
+    @State private var exportToPc = QPSharedHistory.exportToPcOn()
     @State private var draft = ""
     @State private var status = "未检测"
 
@@ -355,6 +359,12 @@ struct SyncSettingsView: View {
                         QPSharedHistory.setNetGuard(on)
                     }
                 Text("开着时：手机断开 Wi-Fi（断网或只剩流量）就自动停止同步轮询与推送，不再反复「连接中/失败」闪来闪去，也不浪费流量和电量；回到 Wi-Fi 自动恢复。关掉则断网也照常尝试连接。键盘设置里是同一个开关。")
+                    .font(.footnote).foregroundColor(.secondary)
+                Toggle("导出到电脑（两端共用）", isOn: $exportToPc)
+                    .onChange(of: exportToPc) { on in
+                        QPSharedHistory.setExportToPc(on)
+                    }
+                Text("开：导出文件直接发送到电脑的「下载\\墨指导出」文件夹（电脑端浏览器打开 http://127.0.0.1:8787/setup 可改接收位置）。关：主 App 导出走系统分享（可转发微信、保存到文件等），键盘的文本导出直接复制到剪贴板。键盘设置里是同一个开关。")
                     .font(.footnote).foregroundColor(.secondary)
             }
             Section("连接状态") {
@@ -387,6 +397,7 @@ struct SyncSettingsView: View {
             draft = savedURL.isEmpty ? "http://192.168.1.2:8787" : savedURL
             syncOn = !QPSharedHistory.syncOff()   // 键盘端改过开关 → 进页面刷新
             netGuard = QPSharedHistory.netGuardOn() // v1.8.18：同上
+            exportToPc = QPSharedHistory.exportToPcOn() // v1.8.20：同上
         }
     }
 
@@ -599,7 +610,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("墨指 v1.8.19 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.20 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

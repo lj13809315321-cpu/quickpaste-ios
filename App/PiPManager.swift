@@ -807,7 +807,7 @@ struct PiPControlView: View {
                         Text(notice).font(.footnote).foregroundColor(.blue)
                     }
                 } footer: {
-                    Text("「选择」后点条目勾选，可批量删除；导出范围 = 有选择时导出所选，否则导出当前筛选下的全部。主 App 历史只收文字，图片只在键盘端。")
+                    Text("「选择」后点条目勾选，可批量删除；导出范围 = 有选择时导出所选，否则导出当前筛选下的全部。「设置 → 局域网同步 → 导出到电脑」开着时导出文件直接发电脑（下载\\墨指导出），关着时走系统分享。主 App 历史只收文字，图片只在键盘端。")
                 }
 
                 Section("已收录 \(filtered.count) 条") {
@@ -899,7 +899,48 @@ struct PiPControlView: View {
             let t = exportTexts()
             if t == [""] { flash("没有可导出的内容"); return }
             guard let url = texts(t) else { flash("导出失败：文件生成出错"); return }
-            sharePayload = [url]
+            // v1.8.20「导出到电脑」开关（两端共用）：开 → 文件直发电脑接收文件夹；
+            // 关 → 系统分享面板（可转发微信、保存到「文件」等）。
+            if QPSharedHistory.exportToPcOn() {
+                sendToPc(url)
+            } else {
+                sharePayload = [url]
+            }
+        }
+    }
+
+    /// v1.8.20：把导出文件发到电脑（LocalSend 风格两步上传），落「下载\墨指导出」。
+    private func sendToPc(_ url: URL) {
+        guard let data = try? Data(contentsOf: url) else {
+            flash("读取导出文件失败")
+            return
+        }
+        let mime: String
+        switch url.pathExtension.lowercased() {
+        case "txt": mime = "text/plain"
+        case "csv": mime = "text/csv"
+        case "html": mime = "text/html"
+        case "pdf": mime = "application/pdf"
+        case "doc": mime = "application/msword"
+        case "xlsx": mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        case "png": mime = "image/png"
+        default: mime = "application/octet-stream"
+        }
+        let d = UserDefaults.standard
+        let addr = d.string(forKey: "qp.syncURL")
+            ?? d.string(forKey: "qp_server_url")
+            ?? "http://192.168.1.2:8787"
+        let pair = d.string(forKey: "qp.syncPair") ?? ""
+        flash("正在发送到电脑…")
+        SyncClient(url: addr, pair: pair).sendFile(
+            data, name: url.lastPathComponent, mime: mime) { err in
+                DispatchQueue.main.async {
+                    if let err = err {
+                        self.flash("发送失败：\(err)")
+                    } else {
+                        self.flash("已发到电脑：\(url.lastPathComponent)（在电脑的 下载\\墨指导出 文件夹）")
+                    }
+                }
         }
     }
 

@@ -48,6 +48,12 @@ enum QPSharedHistory {
         var netGuard: Bool? = nil
         /// 最后改 netGuard 的时间戳（秒），机制同 syncOffAt。
         var netGuardAt: Double? = nil
+        /// v1.8.20「导出到电脑」开关（true = 导出文件直接发送到电脑接收文件夹；
+        /// false = 手机本地模式：主 App 走系统分享、键盘把文本导出复制到剪贴板）。
+        /// 与 syncOff / netGuard 同一套权威 + 时间戳机制，两端共用一个开关。
+        var exportToPc: Bool? = nil
+        /// 最后改 exportToPc 的时间戳（秒）。
+        var exportToPcAt: Double? = nil
 
         var isBlocked: Bool { blocked == true }
         var isWanted: Bool { want == true }
@@ -312,6 +318,53 @@ enum QPSharedHistory {
         _localNetGuardAt = p.netGuardAt ?? 0
         UserDefaults.standard.set(on, forKey: udNetGuard)
         UserDefaults.standard.set(_localNetGuardAt, forKey: udNetGuardAt)
+        write(p, keeping: UIPasteboard.general.string)
+        return true
+    }
+
+    // MARK: 「导出到电脑」开关（v1.8.20）—— 机制与 syncOff / netGuard 相同
+
+    private static var _localExportToPc = true
+    private static var _localExportToPcAt: Double = 0
+    private static var _exportInit = false
+    private static let udExportToPc = "qp.exportToPc"
+    private static let udExportToPcAt = "qp.exportToPcAt"
+
+    private static func ensureExportInit() {
+        if _exportInit { return }
+        _exportInit = true
+        if UserDefaults.standard.object(forKey: udExportToPc) != nil {
+            _localExportToPc = UserDefaults.standard.bool(forKey: udExportToPc)
+        }
+        _localExportToPcAt = UserDefaults.standard.double(forKey: udExportToPcAt)
+    }
+
+    /// 读「导出到电脑」是否开启。优先认共享通道里更新的值；无任何记录时默认开。
+    static func exportToPcOn() -> Bool {
+        ensureExportInit()
+        var p: Payload?
+        if let g = readGroup() { p = g }
+        else if let pb = readPasteboard() { p = pb }
+        if let p = p, let on = p.exportToPc, let at = p.exportToPcAt, at > _localExportToPcAt {
+            _localExportToPc = on
+            _localExportToPcAt = at
+            UserDefaults.standard.set(on, forKey: udExportToPc)
+            UserDefaults.standard.set(at, forKey: udExportToPcAt)
+        }
+        return _localExportToPc
+    }
+
+    /// 写「导出到电脑」开关：共享通道 + 本进程立即生效，另一端跟随。
+    @discardableResult
+    static func setExportToPc(_ on: Bool) -> Bool {
+        ensureExportInit()
+        var p = read()
+        p.exportToPc = on
+        p.exportToPcAt = Date().timeIntervalSince1970
+        _localExportToPc = on
+        _localExportToPcAt = p.exportToPcAt ?? 0
+        UserDefaults.standard.set(on, forKey: udExportToPc)
+        UserDefaults.standard.set(_localExportToPcAt, forKey: udExportToPcAt)
         write(p, keeping: UIPasteboard.general.string)
         return true
     }

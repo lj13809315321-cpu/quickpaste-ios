@@ -255,7 +255,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             navRow("重新播放引导页") { [weak self] in self?.push(.onboarding) },
             navRow("关于本版本") { [weak self] in self?.push(.about) }
         ]))
-        body.addArrangedSubview(foot("墨指 v1.8.19 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
+        body.addArrangedSubview(foot("墨指 v1.8.20 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
     }
 
     // MARK: - 键盘设置（开关）
@@ -516,6 +516,12 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
                 QPSharedHistory.setNetGuard(v)
                 self?.delegate?.settingsDidChange()
             },
+            switchRow("导出到电脑",
+                      sub: "开：剪贴板面板的导出文件发送到电脑「下载\\墨指导出」文件夹；关：文本导出直接复制到剪贴板（二进制格式请到主 App 分享）。两端共用这个开关",
+                      isOn: QPSharedHistory.exportToPcOn()) { [weak self] v in
+                QPSharedHistory.setExportToPc(v)
+                self?.delegate?.settingsDidChange()
+            },
             actionRow("⟳ 立即同步") { [weak self] in
                 self?.delegate?.settingsSyncNow()
                 self?.delegate?.settingsToast("正在同步…")
@@ -531,7 +537,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
                 self?.delegate?.settingsClearAll()
             }
         ]))
-        body.addArrangedSubview(foot("电脑端需启动 墨指 同步服务（v1.8.19），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
+        body.addArrangedSubview(foot("电脑端需启动 墨指 同步服务（v1.8.20），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
     }
 
     // MARK: - 教程

@@ -141,6 +141,56 @@ final class SyncClient {
         }.resume()
     }
 
+    /// v1.8.20：LocalSend v2 风格两步上传（参照开源项目 localsend 的协议形状）：
+    ///   ① POST /api/prepare-upload  登记文件清单（文件名/大小/MIME）→ 拿 sessionId + token
+    ///   ② POST /api/upload?sessionId=..&fileId=..&token=..  文件本体作为 HTTP body 直传
+    /// 电脑端把文件落进「可见」的接收文件夹（默认 下载\墨指导出）。
+    /// 老版电脑端（< v1.8.20）没有这两个接口 → 自动回退旧的 POST /api/file。
+    func sendFile(_ data: Data, name: String, mime: String,
+                  completion: @escaping (String?) -> Void) {
+        func enc(_ s: String) -> String {
+            s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s
+        }
+        let fileId = "f" + UUID().uuidString.prefix(8)
+        guard var req = request("/api/prepare-upload", method: "POST") else {
+            completion("未设置电脑地址")
+            return
+        }
+        let body: [String: Any] = [
+            "alias": "墨指手机", "platform": "ios", "deviceType": "headless",
+            "files": [fileId: ["fileName": name, "mime": mime, "size": data.count]],
+        ]
+        req.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        URLSession.shared.dataTask(with: req) { d, r, e in
+            // 老服务端没有 prepare-upload → 回退旧接口
+            if let http = r as? HTTPURLResponse, http.statusCode == 404 {
+                self.pushFile(data, name: name, mime: mime, completion: completion)
+                return
+            }
+            if let err = self.check(d, r, e) { completion(err); return }
+            guard let d = d,
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let sid = o["sessionId"] as? String,
+                  let token = o["token"] as? String else {
+                completion("电脑端返回格式不对")
+                return
+            }
+            var path = "/api/upload?sessionId=\(enc(sid))&fileId=\(enc(fileId))&token=\(enc(token))"
+            if !self.pair.isEmpty { path += "&pair=\(enc(self.pair))" }
+            guard var up = self.request(path, method: "POST") else {
+                completion("未设置电脑地址")
+                return
+            }
+            up.setValue(mime.isEmpty ? "application/octet-stream" : mime,
+                        forHTTPHeaderField: "Content-Type")
+            up.httpBody = data
+            URLSession.shared.dataTask(with: up) { d2, r2, e2 in
+                completion(self.check(d2, r2, e2))
+            }.resume()
+        }.resume()
+    }
+
     func delete(id: String?, completion: @escaping (String?) -> Void) {
         var path = "/api/items"
         if let id = id, !id.isEmpty {
