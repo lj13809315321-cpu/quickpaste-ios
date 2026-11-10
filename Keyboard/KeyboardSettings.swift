@@ -1,4 +1,36 @@
 import UIKit
+import SwiftUI
+
+/// v1.8.26：键盘设置页里的「打开 墨指 主 App」入口。
+/// SwiftUI Link 由系统的 openURL 环境在用户点击时处理，不走 UIApplication；
+/// 这是 KeyboardKit 8.8.6 在 iOS 18 封掉 selector 方案后采用的官方 workaround，
+/// 也是目前唯一有框架级证据、能在新版 iOS 键盘扩展里打开 containing app 的方式。
+private struct MozhiMainAppLink: View {
+    private let target = URL(string: "mozhi://tab/pip?from=keyboard-link")
+
+    var body: some View {
+        if let url = target {
+            Link(destination: url) {
+                HStack(spacing: 8) {
+                    Text("📱 打开 墨指 主 App")
+                        .font(.system(size: 15, weight: .medium))
+                    Spacer(minLength: 4)
+                    Text("连续复制")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 14)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.primary)
+        }
+    }
+}
 
 /// v1.6 设置界面（真·输入法内，按 quickpaste-ios-prototype.html 的 PAGES 注册表 1:1 实现）。
 ///
@@ -33,6 +65,9 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
     }
 
     weak var delegate: KeyboardSettingsDelegate?
+    /// v1.8.26：Link 要挂在真实 UIViewController 上，openURL 环境才完整。
+    weak var hostController: UIViewController?
+    private var linkHost: UIHostingController<MozhiMainAppLink>?
     private var prefs = KeyboardPrefs()
 
     private let panel = UIView()
@@ -199,12 +234,48 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
         }
     }
 
+    // MARK: - v1.8.26 打开主 App（SwiftUI Link 行）
+
+    /// 把 SwiftUI Link 用 UIHostingController 包成设置页里的一行。
+    /// 只复用一个 hosting controller，避免每次重绘设置页都往 VC 层级里加一个 child。
+    private func openMainAppLinkRow() -> UIView {
+        if linkHost == nil {
+            let h = UIHostingController(rootView: MozhiMainAppLink())
+            h.view.backgroundColor = .clear
+            if let vc = hostController {
+                vc.addChild(h)
+                h.didMove(toParent: vc)
+            }
+            linkHost = h
+        }
+        let box = UIView()
+        box.backgroundColor = .clear
+        let v = linkHost!.view
+        v.translatesAutoresizingMaskIntoConstraints = false
+        box.addSubview(v)
+        NSLayoutConstraint.activate([
+            v.leadingAnchor.constraint(equalTo: box.leadingAnchor),
+            v.trailingAnchor.constraint(equalTo: box.trailingAnchor),
+            v.topAnchor.constraint(equalTo: box.topAnchor),
+            v.bottomAnchor.constraint(equalTo: box.bottomAnchor)
+        ])
+        box.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        return box
+    }
+
     // MARK: - 设置首页
 
     private func renderRoot() {
         let s = delegate?.settingsStatus() ?? (title: "未连接", count: 0, url: "", backend: "")
         body.addArrangedSubview(bigTitle("设置"))
         body.addArrangedSubview(promoCard())
+
+        // v1.8.26：二级设置页里的原生 SwiftUI Link 入口。
+        // 新版 iOS 会拦掉键盘扩展的程序化 openURL，但由系统 openURL 环境
+        // 处理的 Link 仍可打开主 App；长按工具条「⋯」仍保留作另一条路径。
+        body.addArrangedSubview(groupTitle("打开主 App"))
+        body.addArrangedSubview(card([openMainAppLinkRow()]))
+        body.addArrangedSubview(foot("点这一行直接进主 App「连续复制」页。也可长按工具条「⋯」尝试跳转；若系统都没放行，手动点桌面「墨指」图标同样会自动落到这一页。"))
 
         body.addArrangedSubview(groupTitle("使用"))
         body.addArrangedSubview(card([
@@ -256,7 +327,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             navRow("重新播放引导页") { [weak self] in self?.push(.onboarding) },
             navRow("关于本版本") { [weak self] in self?.push(.about) }
         ]))
-        body.addArrangedSubview(foot("墨指 v1.8.25 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
+        body.addArrangedSubview(foot("墨指 v1.8.26 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
     }
 
     // MARK: - 键盘设置（开关）
@@ -566,7 +637,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
                 self?.delegate?.settingsClearAll()
             }
         ]))
-        body.addArrangedSubview(foot("电脑端需启动 墨指 同步服务（v1.8.25），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
+        body.addArrangedSubview(foot("电脑端需启动 墨指 同步服务（v1.8.26），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
     }
 
     // MARK: - 教程

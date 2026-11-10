@@ -64,6 +64,10 @@ enum QPSharedHistory {
         /// 默认开；可选类型保证旧版本 JSON 照常解码。
         var copyHaptic: Bool? = nil
         var copyHapticAt: Double? = nil
+        /// v1.8.26：键盘请求「跳主 App 并落到连续复制 Tab」的时刻（秒）。
+        /// iOS 18+ 系统可能拦掉键盘扩展的所有跳转，主 App 手动打开时读到它
+        /// 就自动切到连续复制页并清除 —— 跳不成也能一键直达，且不开画中画。
+        var pendingTabPip: Double? = nil
         /// v1.8.22 快捷符号设置（主 App 与键盘共用一份）：符号列表 / 工具条显示几个 / 对齐。
         /// 放在这里而不是各自 UserDefaults，才能实现「App 里改了键盘立即生效」。
         var sharedSymbols: [String]? = nil
@@ -450,6 +454,26 @@ enum QPSharedHistory {
         UserDefaults.standard.set(_localCopyHapticAt, forKey: udCopyHapticAt)
         write(p, keeping: UIPasteboard.general.string)
         MozhiFeedback.noteSettingChanged(on)
+        return true
+    }
+
+    // MARK: v1.8.26「跳主 App 落到连续复制页」的一次性标记
+
+    /// 键盘发起跳转时调用。写进共享通道，App Group 或剪贴板自定义类型都能带过去。
+    /// 即使系统把跳转全拦了，用户手动点桌面图标进 App 也能直达目标页。
+    static func markPendingTabPip() {
+        var p = read()
+        p.pendingTabPip = Date().timeIntervalSince1970
+        write(p, keeping: UIPasteboard.general.string)
+    }
+
+    /// 主 App 出现时调用：10 分钟内的标记才生效，读到即消费，避免以后每次打开都跳页。
+    static func consumePendingTabPip() -> Bool {
+        var p = read()
+        guard let at = p.pendingTabPip,
+              Date().timeIntervalSince1970 - at < 600 else { return false }
+        p.pendingTabPip = nil
+        write(p, keeping: UIPasteboard.general.string)
         return true
     }
 

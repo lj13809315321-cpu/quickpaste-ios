@@ -158,6 +158,9 @@ final class KeyboardViewController: UIInputViewController {
         // 根视图必须透明才能融入系统玻璃底、和宿主 App 背景连成一片
         //（Apple 开发者论坛 thread 793686 的官方适配结论）。按钮/卡片自带底色不受影响。
         view.backgroundColor = .clear
+        // v1.8.26：设置页里那行 SwiftUI Link 需要挂在键盘 VC 上才有完整的
+        // openURL 环境，否则 Link 点击不会交给系统处理。
+        settings.hostController = self
 
         // v1.8.18：监听网络。断开 Wi-Fi（断网 / 只剩蜂窝）且开关开着 → 停止同步轮询；
         // 回到 Wi-Fi → 自动恢复并补拉一次。开关在 App 设置页与键盘设置页（共享通道）。
@@ -427,63 +430,107 @@ final class KeyboardViewController: UIInputViewController {
         openMainAppContinuous()
     }
 
-    /// 打开主 App 的连续复制页。键盘扩展编译期拿不到 UIApplication.shared，
-    /// 所以走运行时反射 + 响应链 + 官方扩展 API 三重兜底（各家输入法通用做法）。
+    /// v1.8.26：iOS 18 起系统把键盘扩展里的 `UIApplication.openURL(_:)`
+    /// 强制返回 false（KeyboardKit 2024-09-11 记录了系统日志：
+    /// "Force returning false (NO)"），v1.8.24/25 用的「运行时反射 + 响应链
+    /// openURL: + extensionContext」三条全是 iOS 17 时代的老办法，而且
+    /// 第一条 `return true` 还把后面所有尝试短路了 —— 所以必然跳不了。
+    /// 现在四条路径依次发起、绝不短路；另在设置页提供 SwiftUI Link 入口
+    /// （KeyboardKit 8.8.6 的官方 workaround，iOS 18+ 唯一被证实可用的方式）。
     private func openMainAppContinuous() {
-        guard let url = URL(string: "mozhi://tab/pip?from=keyboard-menu") else { return }
-        let tried = openURLFromKeyboard(url)
-        // 键盘还挂在窗口上 = 没跳走；真被主 App 盖住后本扩展会挂起，这段不会执行。
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+        guard let url = URL(string: "mozhi://tab/pip?from=keyboard-more") else { return }
+        // 兜底：哪怕系统把下面四条全拦了，用户手动点桌面图标进 App 也直达连续复制页
+        QPSharedHistory.markPendingTabPip()
+        var trace: [String] = []
+        let tried = openURLFromKeyboard(url, trace: &trace)
+        // 键盘还挂在窗口上 = 没跳走；真被主 App 盖住后本扩展会挂起，这段通常不执行。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
             guard let self = self, self.viewIfLoaded?.window != nil else { return }
+            let detail = trace.isEmpty ? "无可用路径" : trace.joined(separator: "+")
             self.showToast(tried
-                ? "若没有跳转，请手动点桌面「墨指」图标"
-                : "打不开主 App：请开启 设置 → 通用 → 键盘 → 墨指 → 允许完全访问")
+                ? "已试 \(detail)；若没跳转，点设置页「打开 墨指 主 App」或桌面图标"
+                : "跳转被系统拒绝（\(detail)）；请检查「允许完全访问」")
         }
     }
 
-    /// ① 运行时 UIApplication.shared → openURL:（成功率最高，不重复开）
-    /// ② 沿响应链找 openURL:
-    /// ③ extensionContext.open（键盘扩展常被系统拒绝，仅最后兜底）
-    @discardableResult
-    private func openURLFromKeyboard(_ url: URL) -> Bool {
-        let sel = NSSelectorFromString("openURL:")
-        if let app = sharedApplicationFromRuntime() {
-            if app.responds(to: sel) {
-                _ = app.perform(sel, with: url)
-                return true
+    /// 依次尝试 ① 官方扩展 API ② 响应链里真实 UIApplication 的现代 open
+    /// ③ LSApplicationWorkspace 按 bundle id 拉起（自用重签，无审核风险）
+    /// ④ 旧 openURL:（仅 iOS 17 及以前有效）。全部发起、不短路，成功发起的进 trace。
+    private func openURLFromKeyboard(_ url: URL, trace: inout [String]) -> Bool {
+        var tried = false
+
+        // ① NSExtensionContext.open：Apple 文档只承诺 Today widget，但新版系统的
+        //    开发者讨论里已有键盘扩展用它拉起 containing app 的实例。放第一位。
+        if let ctx = extensionContext {
+            ctx.open(url) { success in
+                if !success { NSLog("[Mozhi] extensionContext.open 被系统拒绝") }
             }
-            let sel3 = NSSelectorFromString("open:options:completionHandler:")
-            if app.responds(to: sel3), let imp = app.method(for: sel3) {
-                typealias OpenFn = @convention(c) (AnyObject, Selector, NSURL,
-                                                   NSDictionary,
-                                                   @convention(block) (Bool) -> Void) -> Void
-                let fn = unsafeBitCast(imp, to: OpenFn.self)
-                fn(app, sel3, url as NSURL, NSDictionary(), { _ in })
-                return true
-            }
+            trace.append("扩展API")
+            tried = true
         }
+
+        // ② 响应链末端的真实 UIApplication 实例 + open(_:options:completionHandler:)
+        //    iOS 18 的系统日志明确要求迁移到这个非废弃 API；用 IMP 直接调用，
+        //    绕开扩展里 UIApplication.shared 编译期不可用的限制。
+        if let app = uiApplicationFromResponderChain(), invokeModernOpen(app: app, url: url) {
+            trace.append("现代open")
+            tried = true
+        }
+
+        // ③ 私有 API：按 bundle id 让系统工作区直接拉起主 App。
+        //    本项目是手机端重签自用、不上 App Store，审核风险为零。
+        if openByBundleIDWorkspace() {
+            trace.append("工作区")
+            tried = true
+        }
+
+        // ④ 旧 selector 只留给 iOS 17 及以前；iOS 18+ 必然 false，但不再短路。
+        let old = NSSelectorFromString("openURL:")
         var responder: UIResponder? = self
         while let r = responder {
-            if r.responds(to: sel) {
-                _ = r.perform(sel, with: url)
-                return true
+            if r.responds(to: old) {
+                _ = r.perform(old, with: url)
+                trace.append("旧API")
+                tried = true
+                break
             }
             responder = r.next
         }
-        if let ctx = extensionContext {
-            ctx.open(url, completionHandler: nil)
-            return true
-        }
-        return false
+        return tried
     }
 
-    /// 扩展里不能直接写 UIApplication.shared（编译期标「扩展不可用」），
-    /// 运行期 NSClassFromString + perform 取实例是允许的。
-    private func sharedApplicationFromRuntime() -> NSObject? {
-        guard let cls = NSClassFromString("UIApplication") as? NSObject.Type else { return nil }
-        let sel = NSSelectorFromString("sharedApplication")
-        guard cls.responds(to: sel), let unmanaged = cls.perform(sel) else { return nil }
-        return unmanaged.takeUnretainedValue() as? NSObject
+    /// 沿响应链找真实的 UIApplication 实例（不是只判断 respondsToSelector 的代理对象）。
+    private func uiApplicationFromResponderChain() -> NSObject? {
+        guard let appClass = NSClassFromString("UIApplication") else { return nil }
+        var r: UIResponder? = self
+        while let cur = r {
+            if cur.isKind(of: appClass) { return cur }
+            r = cur.next
+        }
+        return nil
+    }
+
+    /// 用 IMP 调用 UIApplication 的 open(_:options:completionHandler:)。
+    private func invokeModernOpen(app: NSObject, url: URL) -> Bool {
+        let sel = NSSelectorFromString("open:options:completionHandler:")
+        guard app.responds(to: sel), let imp = app.method(for: sel) else { return false }
+        typealias OpenFn = @convention(c) (AnyObject, Selector, NSURL, NSDictionary,
+                                           @convention(block) (Bool) -> Void) -> Void
+        let fn = unsafeBitCast(imp, to: OpenFn.self)
+        fn(app, sel, url as NSURL, NSDictionary(), { _ in })
+        return true
+    }
+
+    /// LSApplicationWorkspace.defaultWorkspace().openApplicationWithBundleID:
+    /// 键盘扩展里可能被沙盒拒绝，失败就安静跳过（诊断里会显示没这一条）。
+    private func openByBundleIDWorkspace() -> Bool {
+        guard let cls = NSClassFromString("LSApplicationWorkspace") as? NSObject.Type,
+              let ws = cls.perform(NSSelectorFromString("defaultWorkspace"))?
+                          .takeUnretainedValue() as? NSObject else { return false }
+        let sel = NSSelectorFromString("openApplicationWithBundleID:")
+        guard ws.responds(to: sel) else { return false }
+        _ = ws.perform(sel, with: "app.mulberry6323.mozhi")
+        return true
     }
 
     private func syncCaptureState() {
@@ -1747,7 +1794,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.25 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.26 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)

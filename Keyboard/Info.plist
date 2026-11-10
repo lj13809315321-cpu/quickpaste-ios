@@ -22,6 +22,11 @@
     <string>23</string>
     <key>MinimumOSVersion</key>
     <string>16.0</string>
+    <!-- v1.8.26：打开主 App 的 mozhi:// scheme 需要声明查询白名单 -->
+    <key>LSApplicationQueriesSchemes</key>
+    <array>
+        <string>mozhi</string>
+    </array>
     <!-- 键盘扩展内 URLSession 访问 http://电脑IP:8787 必须允许明文 HTTP -->
     <key>NSAppTransportSecurity</key>
     <dict>

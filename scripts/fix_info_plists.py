@@ -48,8 +48,8 @@ MAIN_APP_PLIST = {
     "CFBundleName": "Mozhi",
     "CFBundlePackageType": "APPL",
     "CFBundleSignature": "????",
-    "CFBundleShortVersionString": "1.8.25",
-    "CFBundleVersion": "44",
+    "CFBundleShortVersionString": "1.8.26",
+    "CFBundleVersion": "45",
     "LSRequiresIPhoneOS": True,
     "MinimumOSVersion": "16.0",
     "NSAppTransportSecurity": dict(ATS),
@@ -64,6 +64,8 @@ MAIN_APP_PLIST = {
         "CFBundleURLName": APP_ID,
         "CFBundleURLSchemes": ["mozhi"],
     }],
+    # v1.8.26：声明要查询/打开的 scheme，缺它系统可能直接拒绝 URL 打开。
+    "LSApplicationQueriesSchemes": ["mozhi"],
     "CFBundleIconName": "AppIcon",
     "UIRequiredDeviceCapabilities": ["arm64"],
     "UISupportedInterfaceOrientations": ORIENTATIONS,
@@ -78,9 +80,11 @@ KEYBOARD_PLIST = {
     "CFBundleName": "Mozhi",
     "CFBundlePackageType": "XPC!",
     "CFBundleSignature": "????",
-    "CFBundleShortVersionString": "1.8.25",
-    "CFBundleVersion": "44",
+    "CFBundleShortVersionString": "1.8.26",
+    "CFBundleVersion": "45",
     "MinimumOSVersion": "16.0",
+    # v1.8.26：键盘扩展要打开主 App 的 mozhi:// scheme，系统要求声明查询白名单。
+    "LSApplicationQueriesSchemes": ["mozhi"],
     # 键盘扩展里跑 URLSession，这一份 ATS 例外同样不能少
     "NSAppTransportSecurity": dict(ATS),
     "NSLocalNetworkUsageDescription": LOCAL_DESC,
