@@ -826,6 +826,7 @@ struct PiPControlView: View {
                                     }
                                 } else {
                                     UIPasteboard.general.string = e.text
+                                    MozhiFeedback.copied()   // v1.8.23：点一下就复制，给个触感确认
                                     // v1.8.22「复制后移到最前」（两端共用）：
                                     // 用了旧条目也排到最前，键盘里同步跟随。
                                     if QPSharedHistory.moveUsedToTopOn() {
@@ -957,6 +958,7 @@ struct PiPControlView: View {
         let texts = selection.isEmpty ? filtered.map(\.text) : filtered.filter { selection.contains($0.text) }.map(\.text)
         guard !texts.isEmpty else { flash("没有可复制的内容"); return }
         UIPasteboard.general.string = texts.joined(separator: "\n\n————\n\n")
+        MozhiFeedback.copied()
         flash("已复制 \(texts.count) 条到剪贴板，去任何输入框粘贴即可")
     }
 

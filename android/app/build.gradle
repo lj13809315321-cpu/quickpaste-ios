@@ -10,8 +10,8 @@ android {
         applicationId 'app.mulberry6323.mozhi'
         minSdk 24
         targetSdk 34
-        versionCode 41
-        versionName '1.8.22-inputmethod'
+        versionCode 42
+        versionName '1.8.23-inputmethod'
     }
 
     // debug 构建使用 Android 自动生成的 debug keystore 签名，

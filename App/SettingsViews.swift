@@ -253,6 +253,7 @@ struct HistoryView: View {
                                     else { selection.insert(item.text) }
                                 } else {
                                     UIPasteboard.general.string = item.text
+                                    MozhiFeedback.copied()   // v1.8.23：复制成功轻震一下，别让人以为没复制上
                                     // v1.8.22「复制后移到最前」：两端共用开关，
                                     // 用了旧条目也把它排到列表最前，键盘里同样跟随。
                                     if QPSharedHistory.moveUsedToTopOn() {
@@ -362,6 +363,7 @@ struct HistoryView: View {
             : filtered.filter { selection.contains($0.text) }.map(\.text)
         guard !texts.isEmpty else { notice("没有可复制的内容"); return }
         UIPasteboard.general.string = texts.joined(separator: "\n\n————\n\n")
+        MozhiFeedback.copied()
         notice("已复制 \(texts.count) 条到剪贴板")
     }
 
@@ -492,6 +494,7 @@ struct CategoryView: View {
                     ForEach(filtered, id: \.self) { text in
                         Button {
                             UIPasteboard.general.string = text
+                            MozhiFeedback.copied()
                             flash("已复制这一条（\(text.utf8.count) 字节）")
                         } label: {
                             HStack {
@@ -569,7 +572,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("墨指 v1.8.22 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.23 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -629,6 +632,8 @@ struct SyncSettingsView: View {
     @State private var exportToPc = QPSharedHistory.exportToPcOn()
     /// v1.8.22「复制后移到最前」：点一条旧记录使用后自动排到列表最前。
     @State private var moveUsedToTop = QPSharedHistory.moveUsedToTopOn()
+    /// v1.8.23「复制成功震动」：两端共用开关，默认开。
+    @State private var copyHaptic = QPSharedHistory.copyHapticOn()
     @State private var draft = ""
     @State private var status = "未检测"
 
@@ -661,6 +666,12 @@ struct SyncSettingsView: View {
                     }
                 Text("开着时：在历史页或连续复制页点一条旧记录复制，这条会自动排到列表最前，键盘里的剪贴板列表也跟着排到最前；关掉则列表顺序不变。系统里复制新内容一直都会排到最前，不受这个开关影响。键盘设置里是同一个开关。")
                     .font(.footnote).foregroundColor(.secondary)
+                Toggle("复制成功震动", isOn: $copyHaptic)
+                    .onChange(of: copyHaptic) { on in
+                        QPSharedHistory.setCopyHaptic(on)
+                    }
+                Text("点条目后面的复制小图标、连续复制页点条目、复制所选、键盘长按菜单里的「复制」，成功后轻震一下，确认内容真的进了剪贴板。它和「按键震动」是两回事：那个管按下按键的手感，这个管复制结果。键盘设置里是同一个开关，默认开。")
+                    .font(.footnote).foregroundColor(.secondary)
             }
             Section("连接状态") {
                 HStack { Text("状态"); Spacer(); Text(status).foregroundColor(.secondary) }
@@ -673,6 +684,7 @@ struct SyncSettingsView: View {
                 Button("保存并复制到剪贴板") {
                     savedURL = draft
                     UIPasteboard.general.string = draft
+                    MozhiFeedback.copied()
                 }
                 Text("保存后切到 墨指 键盘，在「设置 → 局域网同步」里点「用剪贴板里的电脑地址」即可采用。")
                     .font(.footnote).foregroundColor(.secondary)
@@ -694,6 +706,7 @@ struct SyncSettingsView: View {
             netGuard = QPSharedHistory.netGuardOn() // v1.8.18：同上
             exportToPc = QPSharedHistory.exportToPcOn() // v1.8.20：同上
             moveUsedToTop = QPSharedHistory.moveUsedToTopOn() // v1.8.22：同上
+            copyHaptic = QPSharedHistory.copyHapticOn()       // v1.8.23：同上
         }
     }
 
@@ -954,7 +967,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("墨指 v1.8.22 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.23 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

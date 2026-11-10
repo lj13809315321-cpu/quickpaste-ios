@@ -256,7 +256,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             navRow("重新播放引导页") { [weak self] in self?.push(.onboarding) },
             navRow("关于本版本") { [weak self] in self?.push(.about) }
         ]))
-        body.addArrangedSubview(foot("墨指 v1.8.22 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
+        body.addArrangedSubview(foot("墨指 v1.8.23 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
     }
 
     // MARK: - 键盘设置（开关）
@@ -292,6 +292,13 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
                       isOn: prefs.cursorHaptic) { [weak self] v in
                 self?.prefs.cursorHaptic = v
                 QPHapticButton.hapticEnabled = v
+            },
+            // v1.8.23：复制成功的确认震动，与「按下按键就震」分开；两端共用同一个开关
+            switchRow("复制成功震动",
+                      sub: "复制成功后轻震一下，确认内容已经进剪贴板；主 App 设置 → 局域网同步里是同一个开关",
+                      isOn: QPSharedHistory.copyHapticOn()) { [weak self] v in
+                QPSharedHistory.setCopyHaptic(v)
+                self?.delegate?.settingsDidChange()
             },
             switchRow("发送后自动收起键盘", sub: "默认关闭，可连续发送",
                       isOn: prefs.autoCollapse) { [weak self] v in self?.prefs.autoCollapse = v },
@@ -559,7 +566,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
                 self?.delegate?.settingsClearAll()
             }
         ]))
-        body.addArrangedSubview(foot("电脑端需启动 墨指 同步服务（v1.8.22），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
+        body.addArrangedSubview(foot("电脑端需启动 墨指 同步服务（v1.8.23），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
     }
 
     // MARK: - 教程

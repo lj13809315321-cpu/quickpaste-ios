@@ -66,6 +66,10 @@ final class KeyboardViewController: UIInputViewController {
     private var cardBusy = false
     /// 交互中被推迟的刷新，松手后补上
     private var pendingListRefresh = false
+    /// v1.8.23：cardBusy 的超时兜底。首次弹起时系统「允许粘贴」弹窗会打断
+    /// 触摸序列，touchesEnded/Cancelled 可能永远不来，闸门会一直卡在 true，
+    /// 表现就是「第一次点排序没反应、第一次删除删不掉，收起再弹才好」。
+    private var cardBusyGuard: DispatchWorkItem?
     /// 还没成功推到电脑的文本（电脑没连上时先排队，连上就补发）
     private var pendingPush: [String] = []
     /// 最近已经推过的文本，避免同一条被反复 POST
@@ -217,6 +221,8 @@ final class KeyboardViewController: UIInputViewController {
         capturedCount = 0
         cardBusy = false            // 上次收起键盘时若正按着卡片，这里重置，别把刷新永久挡住
         pendingListRefresh = false
+        cardBusyGuard?.cancel()
+        cardBusyGuard = nil
         startPasteboardTimer()
         checkClipboard(force: true)
         refreshHead()
@@ -246,10 +252,18 @@ final class KeyboardViewController: UIInputViewController {
                 self?.checkClipboard(force: true)
             }
         }
+        // v1.8.23：等首轮布局与授权弹窗都落定后再刷一次列表，
+        // 第一屏就不会停在旧顺序 / 已删未刷的状态。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
+            self?.refreshList()
+        }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // 收起键盘就撤掉兜底任务，别让它在后台再刷一次列表
+        cardBusyGuard?.cancel()
+        cardBusyGuard = nil
         // 撤销栈只在同一个输入框会话内有效，收起键盘即作废
         kbBar?.clearHistory()
         stopPolling()
@@ -765,6 +779,10 @@ final class KeyboardViewController: UIInputViewController {
         collapse.setImage(kbHideIcon(QPColor.ink).withRenderingMode(.alwaysOriginal),
                           for: .normal)
         collapse.backgroundColor = .clear
+        // v1.8.23：与漏斗/常用语按钮同款保护 —— 首轮布局不许把它压窄，
+        // 否则冷启动第一次点会落空（toolButton 的宽度约束只有 999 优先级）。
+        collapse.widthAnchor.constraint(equalToConstant: QPTool.size).isActive = true
+        collapse.setContentCompressionResistancePriority(.required, for: .horizontal)
         collapse.addAction(UIAction { [weak self] _ in self?.dismissKeyboard() },
                            for: .touchUpInside)
         let holdCollapse = UILongPressGestureRecognizer(target: self,
@@ -811,6 +829,10 @@ final class KeyboardViewController: UIInputViewController {
                                  withConfiguration: toolIconConfig())?
                           .withRenderingMode(.alwaysTemplate), for: .normal)
         sortBtn.tintColor = QPColor.ink
+        // v1.8.23：排序按钮此前是工具条里唯一没有 required 宽度锁的图标，
+        // 首轮布局被 symScroll 挤压后就「点一下没反应」，收起再弹才恢复。
+        sortBtn.widthAnchor.constraint(equalToConstant: QPTool.size).isActive = true
+        sortBtn.setContentCompressionResistancePriority(.required, for: .horizontal)
         sortBtn.addAction(UIAction { [weak self] _ in self?.toggleSort() },
                           for: .touchUpInside)
         toolbar.addArrangedSubview(sortBtn)
@@ -858,6 +880,7 @@ final class KeyboardViewController: UIInputViewController {
         deleteKey.titleLabel?.font = .systemFont(ofSize: 19, weight: .medium)
         // 用户要求：删除键保留 76×38 横条，高度与其它工具键一致（38）
         deleteKey.widthAnchor.constraint(equalToConstant: 76).isActive = true
+        deleteKey.setContentCompressionResistancePriority(.required, for: .horizontal)
         deleteKey.contentHorizontalAlignment = .center
         deleteKey.contentEdgeInsets = .zero
         deleteKey.layer.cornerRadius = QPTool.radius
@@ -1032,13 +1055,20 @@ final class KeyboardViewController: UIInputViewController {
         root.addArrangedSubview(listScroll)
     }
 
-    private func refreshList() {
+    private func refreshList(force: Bool = false) {
         // ★ 手指还按在卡片上（正在左右滑 / 长按）时绝不重建列表：
         //   旧版每 3 秒拉一次电脑就整列删掉重建，滑动到一半卡片没了、长按中途被取消，
         //   表现就是「左右滑不出来、长按不弹菜单」。这里改成推迟到松手后再刷。
-        if cardBusy {
+        // ★ v1.8.23：用户主动点「排序 / 删除」时手指在按钮上、不在卡片上，
+        //   一律强制刷新；否则闸门一旦卡住，操作其实生效却看不到任何变化。
+        if cardBusy && !force {
             pendingListRefresh = true
             return
+        }
+        if force {
+            cardBusyGuard?.cancel()
+            cardBusyGuard = nil
+            cardBusy = false
         }
         pendingListRefresh = false
         listStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -1322,8 +1352,19 @@ final class KeyboardViewController: UIInputViewController {
         wrap.onBusyChange = { [weak self] busy in
             guard let self = self else { return }
             self.cardBusy = busy
-            // 松手后再刷，且放到下一轮事件循环 —— 别在手势收尾的动画里把卡片拆掉
-            if !busy, self.pendingListRefresh {
+            self.cardBusyGuard?.cancel()
+            if busy {
+                // 超时兜底：触摸序列若被系统弹窗/键盘切换打断而拿不到
+                // touchesEnded，2 秒后强制放开闸门并补一次刷新。
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self = self, self.cardBusy else { return }
+                    self.cardBusy = false
+                    self.refreshList()
+                }
+                self.cardBusyGuard = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
+            } else if self.pendingListRefresh {
+                // 松手后再刷，且放到下一轮事件循环 —— 别在手势收尾的动画里把卡片拆掉
                 DispatchQueue.main.async { self.refreshList() }
             }
         }
@@ -1630,7 +1671,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.22 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.23 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -1864,6 +1905,7 @@ final class KeyboardViewController: UIInputViewController {
             } else {
                 UIPasteboard.general.string = item.text
             }
+            MozhiFeedback.copied()      // v1.8.23：复制成功的确认震动（与「按键震动」分开）
             self.showToast("已复制")
         }
         if !item.isImage {
@@ -1982,10 +2024,10 @@ final class KeyboardViewController: UIInputViewController {
         prefs.mute([item.text])
         prefs.remove(item.text, from: "clip")
         if item.isLocal {
-            refreshList()
+            refreshList(force: true)
             showToast("已删除（可在设置 → 最近删除找回）")
         } else {
-            refreshList()
+            refreshList(force: true)
             deleteItem(id: item.id)
         }
     }
@@ -2719,7 +2761,7 @@ final class KeyboardViewController: UIInputViewController {
     private func toggleSort() {
         prefs.sortNewestTop.toggle()
         refreshSortIcon()
-        refreshList()
+        refreshList(force: true)
         showToast(prefs.sortNewestTop ? "已切到最新在上（↑）" : "已切到最旧在上（↓）")
     }
 

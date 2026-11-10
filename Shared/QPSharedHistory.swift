@@ -59,6 +59,11 @@ enum QPSharedHistory {
         /// 键盘与主 App 共用同一个开关，一处改另一端跟随。
         var moveUsedToTop: Bool? = nil
         var moveUsedToTopAt: Double? = nil
+        /// v1.8.23「复制成功震动」开关（true = 复制成功时轻震一下做确认反馈）。
+        /// 主 App（SwiftUI）与键盘（UIKit）共用这一个字段，两处设置页都能改。
+        /// 默认开；可选类型保证旧版本 JSON 照常解码。
+        var copyHaptic: Bool? = nil
+        var copyHapticAt: Double? = nil
         /// v1.8.22 快捷符号设置（主 App 与键盘共用一份）：符号列表 / 工具条显示几个 / 对齐。
         /// 放在这里而不是各自 UserDefaults，才能实现「App 里改了键盘立即生效」。
         var sharedSymbols: [String]? = nil
@@ -400,6 +405,54 @@ enum QPSharedHistory {
         return true
     }
 
+    // MARK: 「复制成功震动」开关（v1.8.23）—— 机制与上面几个共用开关相同
+
+    private static var _localCopyHaptic = true
+    private static var _localCopyHapticAt: Double = 0
+    private static var _copyInit = false
+    private static let udCopyHaptic = "qp.copyHaptic"
+    private static let udCopyHapticAt = "qp.copyHapticAt"
+
+    private static func ensureCopyInit() {
+        if _copyInit { return }
+        _copyInit = true
+        if UserDefaults.standard.object(forKey: udCopyHaptic) != nil {
+            _localCopyHaptic = UserDefaults.standard.bool(forKey: udCopyHaptic)
+        }
+        _localCopyHapticAt = UserDefaults.standard.double(forKey: udCopyHapticAt)
+    }
+
+    /// 读「复制成功震动」是否开启。优先认共享通道里更新的值；无记录时默认开。
+    static func copyHapticOn() -> Bool {
+        ensureCopyInit()
+        var p: Payload?
+        if let g = readGroup() { p = g }
+        else if let pb = readPasteboard() { p = pb }
+        if let p = p, let on = p.copyHaptic, let at = p.copyHapticAt, at > _localCopyHapticAt {
+            _localCopyHaptic = on
+            _localCopyHapticAt = at
+            UserDefaults.standard.set(on, forKey: udCopyHaptic)
+            UserDefaults.standard.set(at, forKey: udCopyHapticAt)
+        }
+        return _localCopyHaptic
+    }
+
+    /// 写「复制成功震动」开关：共享通道 + 本进程立即生效，另一端跟随。
+    @discardableResult
+    static func setCopyHaptic(_ on: Bool) -> Bool {
+        ensureCopyInit()
+        var p = read()
+        p.copyHaptic = on
+        p.copyHapticAt = Date().timeIntervalSince1970
+        _localCopyHaptic = on
+        _localCopyHapticAt = p.copyHapticAt ?? 0
+        UserDefaults.standard.set(on, forKey: udCopyHaptic)
+        UserDefaults.standard.set(_localCopyHapticAt, forKey: udCopyHapticAt)
+        write(p, keeping: UIPasteboard.general.string)
+        MozhiFeedback.noteSettingChanged(on)
+        return true
+    }
+
     // MARK: 「复制后移到最前」开关（v1.8.22）—— 机制与上面三个共用开关相同
 
     private static var _localMoveUsedToTop = true
@@ -607,5 +660,40 @@ enum QPPhraseStore {
         item[phrasePBType] = data
         pb.items = [item]
         return arr.count
+    }
+}
+
+/// v1.8.23「复制成功」确认反馈：主 App（SwiftUI）与键盘（UIKit）共用一份实现。
+/// iOS 16 只能用 UIKit 的反馈器 —— SwiftUI 的 `.sensoryFeedback` 要 iOS 17，
+/// 而本工程最低部署目标是 iOS 16；键盘里的 QPHapticButton 是 UIButton 子类，
+/// SwiftUI 的 Button 也走不到它，所以主 App 此前所有复制都没有触感。
+/// 静态复用一个反馈器、只预热一次，点击时不分配大对象，不影响流畅度。
+enum MozhiFeedback {
+    private static let generator = UINotificationFeedbackGenerator()
+    private static var prepared = false
+    /// ★ 不卡顿：共享通道里带着整份历史 JSON，不能每点一次复制就解码一遍。
+    /// 开关值在本进程缓存 2 秒；设置页一改就立刻同步缓存，不等待节流。
+    private static var cachedOn = true
+    private static var lastCheck: TimeInterval = 0
+
+    /// 设置页改过开关时调用：下一次复制立即按新值执行。
+    static func noteSettingChanged(_ on: Bool) {
+        cachedOn = on
+        lastCheck = Date().timeIntervalSince1970
+    }
+
+    /// 复制**成功**后调用（不是按下时）。节流后绝大多数调用只有一次时间比较。
+    static func copied() {
+        let now = Date().timeIntervalSince1970
+        if now - lastCheck > 2 {
+            cachedOn = QPSharedHistory.copyHapticOn()
+            lastCheck = now
+        }
+        guard cachedOn else { return }
+        if !prepared {
+            prepared = true
+            generator.prepare()
+        }
+        generator.notificationOccurred(.success)
     }
 }
