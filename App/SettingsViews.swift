@@ -715,7 +715,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("墨指 v1.8.36 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.37 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -1142,11 +1142,24 @@ struct BarCustomizeView: View {
 
     private func load() {
         let s = QPSharedHistory.sharedBarLayout()
-        toolbar = s.toolbar
-        menu = s.menu
+        if s.at > 0 {
+            toolbar = s.toolbar
+            menu = s.menu
+        } else if let t = decode(tbStored), let m = decode(mnStored) {
+            // v1.8.37：共享通道全被清空时用本 App 自己那份，界面不许回弹
+            toolbar = t
+            menu = m
+        }
         // 本地留一份，共享通道被系统临时清空时页面不会显示回弹
-        tbStored = encode(s.toolbar)
-        mnStored = encode(s.menu)
+        tbStored = encode(toolbar)
+        mnStored = encode(menu)
+    }
+
+    private func decode(_ s: String) -> [String]? {
+        guard let d = s.data(using: .utf8),
+              let a = (try? JSONSerialization.jsonObject(with: d, options: [])) as? [String]
+        else { return nil }
+        return QPBarCatalog.sanitize(a)
     }
 
     private func commit() {
@@ -1294,7 +1307,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("墨指 v1.8.36 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.37 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

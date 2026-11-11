@@ -892,43 +892,42 @@ enum QPSharedHistory {
         return try? JSONDecoder().decode(BarSettings.self, from: data)
     }
 
-    /// 取「目前已知」的完整配置：独立通道 > group 文件 > 本进程持久化缓存。
-    /// 缓存的作用：用户之后复制别的东西会把剪贴板自定义类型冲掉，有它就不会
-    /// 把版面弹回默认（v1.8.15 syncOff 踩过同一个坑）。
+    /// v1.8.37：三处来源一律按时间戳取最新，绝不能「剪贴板有就直接返回」。
+    /// 踩过的坑：两栏配置同时混在会被主 App 高频整份覆盖的 Payload 里，普通复制
+    /// 又会冲掉剪贴板自定义类型 —— 直接返回第一份读到的值，主 App 设置页重开
+    /// 就显示被回滚的旧版面（键盘进程有自己的缓存，所以功能看着还是好的）。
     private static func currentBarSettings() -> BarSettings {
-        if let s = readBarSettingsPB() { return s }
-        if let p = readGroup() {
-            return BarSettings(toolbar: p.barToolbar ?? QPBarCatalog.defaultToolbar,
-                               menu: p.barMenu ?? QPBarCatalog.defaultMenu,
-                               at: p.barAt ?? 0,
-                               sound: p.keySound, soundAt: p.keySoundAt)
-        }
-        if let d = UserDefaults.standard.data(forKey: barCacheKey),
-           let s = try? JSONDecoder().decode(BarSettings.self, from: d) { return s }
-        return BarSettings(toolbar: QPBarCatalog.defaultToolbar,
-                           menu: QPBarCatalog.defaultMenu, at: 0,
-                           sound: true, soundAt: 0)
-    }
-
-    /// 键盘读：独立通道 / group 文件 / 本进程缓存按时间戳取最新，最后才是默认版面。
-    static func sharedBarLayout() -> (toolbar: [String], menu: [String], at: Double) {
-        var best = currentBarSettings()
-        if let g = readGroup(), let a = g.barAt, a > best.at {
-            best = BarSettings(toolbar: g.barToolbar ?? best.toolbar,
-                               menu: g.barMenu ?? best.menu, at: a,
-                               sound: g.keySound ?? best.sound,
-                               soundAt: g.keySoundAt ?? best.soundAt)
-        }
+        var best = BarSettings(toolbar: QPBarCatalog.defaultToolbar,
+                               menu: QPBarCatalog.defaultMenu, at: 0,
+                               sound: true, soundAt: 0)
+        if let s = readBarSettingsPB(), s.at >= best.at { best = s }
+        let p = read()
+        let fromPayload = BarSettings(toolbar: p.barToolbar ?? best.toolbar,
+                                      menu: p.barMenu ?? best.menu,
+                                      at: p.barAt ?? 0,
+                                      sound: p.keySound ?? best.sound,
+                                      soundAt: p.keySoundAt ?? best.soundAt)
+        if fromPayload.at > best.at { best = fromPayload }
         if let d = UserDefaults.standard.data(forKey: barCacheKey),
            let c = try? JSONDecoder().decode(BarSettings.self, from: d), c.at > best.at {
             best = c
         }
+        return best
+    }
+
+    /// 本进程立即落盘最新配置：主 App 一写完就有，重开页面不再回弹。
+    private static func saveBarLocal(_ s: BarSettings) {
+        guard let d = try? JSONEncoder().encode(s) else { return }
+        UserDefaults.standard.set(d, forKey: barCacheKey)
+    }
+
+    /// 键盘 / 主 App 读：三处来源按时间戳取最新，最后才是默认版面。
+    static func sharedBarLayout() -> (toolbar: [String], menu: [String], at: Double) {
+        let best = currentBarSettings()
         guard best.at > 0 else {
             return (QPBarCatalog.defaultToolbar, QPBarCatalog.defaultMenu, 0)
         }
-        if let d = try? JSONEncoder().encode(best) {
-            UserDefaults.standard.set(d, forKey: barCacheKey)
-        }
+        saveBarLocal(best)
         return (QPBarCatalog.sanitize(best.toolbar),
                 QPBarCatalog.sanitize(best.menu), best.at)
     }
@@ -947,6 +946,7 @@ enum QPSharedHistory {
         s.menu = p.barMenu ?? QPBarCatalog.defaultMenu
         s.at = at
         publishBarSettings(s)
+        saveBarLocal(s)
         return at
     }
 
@@ -956,9 +956,9 @@ enum QPSharedHistory {
     }
 
     /// 按键声音（系统点击音）。nil = 默认开。
+    /// v1.8.37：同样按时间戳取最新，别被旧的剪贴板副本带回默认值。
     static func keySoundOn() -> Bool {
-        if let s = readBarSettingsPB(), let v = s.sound { return v }
-        return read().keySound ?? true
+        return currentBarSettings().sound ?? true
     }
 
     @discardableResult
@@ -971,8 +971,9 @@ enum QPSharedHistory {
         var s = currentBarSettings()
         s.sound = on
         s.soundAt = at
-        if s.at <= 0 { s.at = at }
+        s.at = at
         publishBarSettings(s)
+        saveBarLocal(s)
         return at
     }
 

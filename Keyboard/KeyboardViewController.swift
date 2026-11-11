@@ -140,6 +140,10 @@ final class KeyboardViewController: UIInputViewController {
     /// ✕ 键左滑逐字符退删的位移基准与已删步数（对齐空格滑光标的手感）
     private var deleteOriginX: CGFloat = 0
     private var deleteDeletedSteps = 0
+    /// v1.8.37：✕ 上滑/下滑统一判定用（垂直基准、已触发、最近一次垂直动作时刻）
+    private var deleteOriginY: CGFloat = 0
+    private var deleteVerticalFired = false
+    private var deleteVerticalAt: TimeInterval = 0
     /// 空格滑光标的离散步进震动：选择反馈器专用于「一次一格」的场景，
     /// 系统会自动节流，快速滑动不会震成一团。
     private var cursorFeedback: UISelectionFeedbackGenerator?
@@ -1186,25 +1190,26 @@ final class KeyboardViewController: UIInputViewController {
         deleteKey.layer.cornerRadius = QPTool.radius
         deleteKey.clipsToBounds = true
         deleteKey.addAction(UIAction { [weak self] _ in
-            self?.textDocumentProxy.deleteBackward()
+            guard let self = self else { return }
+            // v1.8.37：上滑/下滑已并入滑动手势，抬手时别再额外删一个字
+            // 用「距垂直动作 0.4 秒内」判定：手指滑出按钮外抬起也不会残留吞键
+            if Date().timeIntervalSince1970 - self.deleteVerticalAt < 0.4 {
+                self.deleteVerticalAt = 0
+                return
+            }
+            self.textDocumentProxy.deleteBackward()
         }, for: .touchUpInside)
-        let swipeUp = UISwipeGestureRecognizer(target: self, action: #selector(clearInput))
-        swipeUp.direction = .up
-        deleteKey.addGestureRecognizer(swipeUp)
-        let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(restoreInput))
-        swipeDown.direction = .down
-        deleteKey.addGestureRecognizer(swipeDown)
-        // 用户要求（对齐搜狗输入法）：按住 ✕ 往左滑，按滑动距离逐字符退删
-        //（每 10pt 删一个字，光标跟着回退）；上滑清空 / 下滑恢复 /
-        // 1 秒长按快捷菜单 / 单击删一个字全部保留。
+        // v1.8.37：原来挂在 ✕ 上的两个 UISwipeGestureRecognizer 会被 0.15s 的
+        //「原地长按」抢先识别挡掉（默认两个手势不能同时识别），表现就是
+        // 上滑清空 / 下滑恢复完全没反应、上滑时反而在逐字删。
+        // 现在统一交给一个手势：垂直滑动 = 清空/恢复，左滑 = 逐字删，
+        // 原地不动 = 连续逐字删，单击 = 删一个字，四者互不打架。
         let deleteSlide = UILongPressGestureRecognizer(target: self,
                                                        action: #selector(handleDeleteSlide(_:)))
-        deleteSlide.minimumPressDuration = 0.15
+        deleteSlide.minimumPressDuration = 0.06
         deleteSlide.allowableMovement = .greatestFiniteMagnitude
         deleteSlide.cancelsTouchesInView = false
         deleteKey.addGestureRecognizer(deleteSlide)
-        // v1.8.35：✕ 的「1 秒长按弹快捷菜单」取消 —— 菜单仍在左边「收起键盘」键长按，
-        // 这里把长按留给「原地连续逐字删」。滑动（左滑逐字删 / 上滑清空 / 下滑恢复）一行未动。
         deleteKey.accessibilityIdentifier = "clear"
         toolbar.addArrangedSubview(deleteKey)
 
@@ -2170,7 +2175,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.36 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.37 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -2926,21 +2931,34 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: - 交互
 
-    /// ✕ 键左滑逐字符退删（搜狗同款）：按住后向左滑，每 10pt 删一个字符，
-    /// 光标跟着回退；往右回滑不恢复（已删字符无法恢复）。
-    /// v1.8.35：与「原地长按连续逐字删」并存 —— 手指真在滑就停掉连删，
-    /// 滑动那套手感一行未改；上滑清空 / 下滑恢复 / 单击删一个字同样保留。
+    /// ✕ 键统一手势：原地长按连删 / 左滑逐字删 / 上滑清空 / 下滑恢复。
+    /// v1.8.37：垂直动作不再依赖 UISwipeGestureRecognizer（会被长按挡掉），
+    /// 改在同一个长按手势里按位移方向判定，一次手势只触发一次。
     @objc private func handleDeleteSlide(_ g: UILongPressGestureRecognizer) {
-        let x = g.location(in: view).x
+        let p = g.location(in: view)
         switch g.state {
         case .began:
-            deleteOriginX = x
+            deleteOriginX = p.x
+            deleteOriginY = p.y
             deleteDeletedSteps = 0
+            deleteVerticalFired = false
+            deleteVerticalAt = 0
             startDeleteHold()
         case .changed:
-            if abs(x - deleteOriginX) > 10 { stopDeleteHold() }
+            let dy = p.y - deleteOriginY
+            let dx = p.x - deleteOriginX
+            // 上滑清空 / 下滑恢复：垂直位移为主且超过 24pt，一次手势只触发一次
+            if !deleteVerticalFired, abs(dy) > 24, abs(dy) > abs(dx) {
+                deleteVerticalFired = true
+                deleteVerticalAt = Date().timeIntervalSince1970
+                stopDeleteHold()
+                if dy < 0 { clearInput() } else { restoreInput() }
+                return
+            }
+            if deleteVerticalFired { return }
+            if abs(dx) > 10 { stopDeleteHold() }
             // 只统计向左的净位移；一次changed最多补删 16 个字符防失控
-            let steps = max(0, Int((deleteOriginX - x) / 10))
+            let steps = max(0, Int((deleteOriginX - p.x) / 10))
             let delta = steps - deleteDeletedSteps
             if delta > 0 {
                 for _ in 0..<min(delta, 16) { textDocumentProxy.deleteBackward() }
@@ -2957,7 +2975,7 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
-    /// 原地长按 ✕：手势 0.15s 识别 + 0.30s 延迟 = 约 0.45s 起删，
+    /// 原地长按 ✕：手势 0.06s 识别 + 0.39s 延迟 = 约 0.45s 起删，
     /// 之后每 0.09s 删一个字符，每删一个轻震一下并出一下轻音。
     private func startDeleteHold() {
         stopDeleteHold()
@@ -2979,7 +2997,7 @@ final class KeyboardViewController: UIInputViewController {
             }
         }
         deleteHoldArmed = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.30, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.39, execute: work)
     }
 
     private func stopDeleteHold() {
