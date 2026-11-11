@@ -147,7 +147,11 @@ final class KeyboardViewController: UIInputViewController {
     /// 路线 E：底部快捷条（黄白风格：切换/关闭/粘贴/撤销/←/→）
     private var kbBar: KBKeyboardButtonBar?
     private let kbBarRow = UIView()
-    /// 键盘总高度 = 用户设定高度 + 底部快捷条高度
+    /// v1.8.36：底部菜单栏那一行的高度约束，挪空后要能真的收成 0
+    private var kbBarRowHeight: NSLayoutConstraint!
+    /// 键盘总高度 = 用户设定高度 + 底部快捷条预留高度（恒定 40）。
+    /// ★ v1.8.36：菜单栏挪空时这 40pt 不缩键盘，而是整块让给上方
+    ///   剪贴板列表 —— root 是 vertical stack，listScroll 是唯一可拉伸项。
     private var kbBarHeight: CGFloat { kbBar?.barHeight ?? 0 }
 
     // MARK: v1.8.35 定制栏 / 按键声音 / ✕ 长按连续删
@@ -973,14 +977,33 @@ final class KeyboardViewController: UIInputViewController {
 
         kbBarRow.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(kbBarRow)
+        let rowHeight = kbBarRow.heightAnchor.constraint(equalToConstant: bar.barHeight)
+        kbBarRowHeight = rowHeight
         NSLayoutConstraint.activate([
             kbBarRow.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             kbBarRow.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             kbBarRow.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            kbBarRow.heightAnchor.constraint(equalToConstant: bar.barHeight)
+            rowHeight
         ])
         bar.embed(inBottomRow: kbBarRow)
         kbBar = bar
+        // 首屏就按当前版面收/放行高，避免「先闪一帧 40pt 空白再收起」
+        syncBarRowHeight()
+    }
+
+    /// v1.8.36：定制菜单栏 / 工具栏清空后，那一行必须真的「不占位」。
+    /// 底部行高度收成 0（键盘总高仍是 prefs.height + 40 不变），root 于是
+    /// 自动向下多长 40pt，剪贴板列表随之变大；工具栏整行隐藏同理。
+    /// 重新加回功能时行高自动恢复，原有版面一行不动。
+    private func syncBarRowHeight() {
+        let menuEmpty = QPBarCatalog.sanitize(barLayout.menu).isEmpty
+        let toolbarEmpty = QPBarCatalog.sanitize(barLayout.toolbar).isEmpty
+        kbBar?.isHidden = menuEmpty
+        kbBarRow.isHidden = menuEmpty
+        if let c = kbBarRowHeight {
+            c.constant = menuEmpty ? 0 : (kbBar?.barHeight ?? 40)
+        }
+        toolbar.isHidden = toolbarEmpty
     }
 
     /// 路线 E：本键盘插入的文本统一走这里，底部「撤销」才有可回退记录
@@ -1192,10 +1215,12 @@ final class KeyboardViewController: UIInputViewController {
     /// v1.8.35：把主 App 下发的两栏配置应用到键盘（每次弹出 / 设置改完都调）。
     private func applyBarLayout() {
         let menuIDs = QPBarCatalog.sanitize(barLayout.menu)
-        kbBar?.isHidden = menuIDs.isEmpty
+        // v1.8.36：先按两栏是否为空收/放行高，再排按钮；空栏不再留空白
+        syncBarRowHeight()
         if let bar = kbBar, bar.actionIDs != menuIDs { bar.actionIDs = menuIDs }
         kbBar?.onAction = { [weak self] aid in self?.performBarAction(aid) }
         applyToolbarLayout()
+        view.setNeedsLayout()
     }
 
     /// 原生 7 项沿用原来的按钮（图标 / 手势 / 弱引用一行不动）；从菜单栏挪上来的
@@ -2145,7 +2170,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.35 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.36 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
