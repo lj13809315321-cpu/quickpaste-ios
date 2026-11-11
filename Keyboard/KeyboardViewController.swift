@@ -378,7 +378,7 @@ final class KeyboardViewController: UIInputViewController {
         //    在后台收的每一条都并进本机列表 —— 旧版只在 changeCount 变时才读，
         //    结果就是「弹起键盘只看到最后一条」。
         let shared = QPSharedHistory.read()
-        let live = shared.isAlive
+        let live = QPSharedHistory.livePipState()
         let blockedNow = shared.isBlocked
         if live != pipLive || blockedNow != pipBlocked {
             pipLive = live
@@ -462,7 +462,7 @@ final class KeyboardViewController: UIInputViewController {
     ///   没在抓 → 仍走 v1.8.27 那条已真机验证的开启链路，
     ///            openMainAppContinuous() 函数体一个字都没改。
     private func handleContinuousTap() {
-        if QPSharedHistory.read().isAlive {
+        if QPSharedHistory.livePipState() {
             stopContinuousInPlace()
         } else {
             // 开启前清掉可能残留的就地停止指令（上次降级 / 主 App 曾被挂起），
@@ -483,7 +483,7 @@ final class KeyboardViewController: UIInputViewController {
         QPSharedHistory.markPipStopCommand()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self = self else { return }
-            if QPSharedHistory.read().isAlive {
+            if QPSharedHistory.livePipState() {
                 QPSharedHistory.clearPipStopCommand()
                 self.showToast("后台未响应，已改用跳转关闭")
                 self.openMainAppContinuous()
@@ -1861,7 +1861,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.33 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.34 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)

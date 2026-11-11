@@ -129,6 +129,14 @@ enum QPSharedHistory {
     ///   tick() 里消费，让画中画真正停下来。
     private static let pipStopFile = "mozhi-pip-stop.json"
     private static let pipStopPBType = "app.mulberry6323.mozhi.pipstop"
+    /// v1.8.34：把「是否在跑」也单独发一份到剪贴板兜底（见下方 publishPipState）。
+    /// 未签名 IPA 经 Ad Hoc 重签后，很多环境里主 App 与键盘扩展的 App Group
+    /// 容器并不真互通（描述文件没带 application-groups 时 containerURL 不报错却各自独立），
+    /// 键盘读不到主 App 写进 group 文件的 pip/beatAt，图标就变不了蓝、关闭就仍走跳转。
+    /// 指令通道 consumePipCommand 之所以一直可用，正因为它同时读 group 与剪贴板；
+    /// 这里让运行状态也具备同样能力。
+    private static let pipStatePBType = "app.mulberry6323.mozhi.pipstate"
+    private struct PipState: Codable { var pip: Bool; var beatAt: Double }
 
     /// 没有 App Group 时是否允许用系统剪贴板兜底。
     /// 关闭后完全不动用户剪贴板（画中画抓到的东西键盘读不到，但绝不污染剪贴板）。
@@ -190,6 +198,47 @@ enum QPSharedHistory {
         guard groupURL() == nil, pasteboardFallbackEnabled else { return nil }
         guard let data = UIPasteboard.general.data(forPasteboardType: pbType) else { return nil }
         return try? JSONDecoder().decode(Payload.self, from: data)
+    }
+
+    // MARK: - v1.8.34：「是否在跑」剪贴板兜底（跨 App 一定可用）
+
+    /// 把当前运行状态单独写一份到剪贴板自定义类型。保留用户剪贴板正文，
+    /// 只覆盖自己的 pipstate key，不会把用户复制的东西冲掉、不触发粘贴授权。
+    static func publishPipState(_ on: Bool) {
+        guard pasteboardFallbackEnabled else { return }
+        let s = PipState(pip: on, beatAt: Date().timeIntervalSince1970)
+        guard let data = try? JSONEncoder().encode(s) else { return }
+        let pb = UIPasteboard.general
+        var item: [String: Any] = [:]
+        if let first = pb.items.first {
+            for (k, v) in first where k != "public.utf8-plain-text" && k != "public.text" {
+                item[k] = v
+            }
+        }
+        if let body = pb.string, !body.isEmpty {
+            item["public.utf8-plain-text"] = body
+            item["public.text"] = body
+        }
+        item[pipStatePBType] = data
+        pb.items = [item]
+    }
+
+    private static func readPipStatePB() -> PipState? {
+        guard pasteboardFallbackEnabled else { return nil }
+        guard let data = UIPasteboard.general.data(forPasteboardType: pipStatePBType) else { return nil }
+        return try? JSONDecoder().decode(PipState.self, from: data)
+    }
+
+    /// 键盘判定「连续复制在跑吗」。优先认剪贴板兜底的 pipstate（主 App 后台
+    /// 每 5 秒心跳刷新，跨 App 一定可用）；仅当 group 文件心跳新鲜（说明真共享）
+    /// 才额外信它。键盘扩展若独享容器，group 里的 pip/beatAt 永不被主 App 更新，
+    /// 必须靠剪贴板这路，否则图标不变蓝、关闭仍跳转。
+    static func livePipState() -> Bool {
+        if let s = readPipStatePB(), s.pip,
+           Date().timeIntervalSince1970 - s.beatAt < 25 { return true }
+        if let p = readGroup(), let b = p.beatAt, b > 0,
+           Date().timeIntervalSince1970 - b < 25, p.pip { return true }
+        return false
     }
 
     // MARK: - 写（主 App 的 PiP 管理器；setWant 由键盘调用）
@@ -262,6 +311,7 @@ enum QPSharedHistory {
         guard p.pip != on else { return }
         p.pip = on
         if on, groupURL() != nil { p.beatAt = Date().timeIntervalSince1970 }
+        publishPipState(on)
         write(p, keeping: nil)
     }
 
@@ -334,12 +384,13 @@ enum QPSharedHistory {
         return true
     }
 
-    /// 后台心跳。只有拿得到 App Group 文件时才写。
+    /// 后台心跳：刷新「在跑」状态。group 文件（若真共享）照写，同时把运行状态
+    /// 发到剪贴板兜底（v1.8.34）—— 不依赖 App Group 是否真互通。
     static func beat() {
-        guard groupURL() != nil else { return }
         var p = read()
         p.beatAt = Date().timeIntervalSince1970
-        write(p, keeping: nil)
+        if groupURL() != nil { write(p, keeping: nil) }
+        publishPipState(p.pip)
     }
 
     // MARK: 「断网自动暂停」开关（v1.8.18）—— 机制与 syncOff 相同
