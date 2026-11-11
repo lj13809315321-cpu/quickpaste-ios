@@ -6,7 +6,6 @@ import android.os.Bundle
 import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.ComponentActivity
-import androidx.annotation.SuppressLint
 
 /** 接收系统“分享/发送”的内容，把文字或文件投进胶囊（对齐 iOS 的拖文件入口）。 */
 class ShareReceiverActivity : ComponentActivity() {
@@ -16,7 +15,6 @@ class ShareReceiverActivity : ComponentActivity() {
         finish()
     }
 
-    @SuppressLint("Range")
     private fun fileName(uri: Uri): String {
         val c = contentResolver.query(
             uri,
@@ -38,7 +36,7 @@ class ShareReceiverActivity : ComponentActivity() {
         return m.startsWith("image/")
     }
 
-    @Suppress("DEPRECATION", "Range")
+    @Suppress("DEPRECATION")
     private fun handleIntent() {
         val i = intent
         when (i.action) {
