@@ -1,17 +1,17 @@
-# 墨指 Mozhi v1.8.34 真·同步输入法：一次编译产出「安卓 APK + iOS IPA」。
+# 墨指 Mozhi v1.8.34 同步工具：一次编译产出「安卓 APK（悬浮胶囊）+ iOS IPA（键盘扩展）」。
 #
-# 与之前的 WebView 壳完全不同：
-#   安卓 = InputMethodService（BIND_INPUT_METHOD / android.view.im）
-#   iOS  = Keyboard Extension（.appex / com.apple.keyboard-service）
-# 两端都是原生键盘 UI，界面 1:1 对齐 quickpaste-ios-prototype.html，
-# 数据源是电脑端 sync/server.js 的局域网同步服务。
+# 与早期 WebView 壳 / 安卓输入法完全不同：
+#   安卓 = 悬浮胶囊前台服务（TYPE_APPLICATION_OVERLAY 可拖拽球）+ 透明 Compose 面板
+#          + 无障碍服务后台抓剪贴板 + 系统分享接收（对齐 iOS 拖文件）。
+#   iOS  = Keyboard Extension（.appex / com.apple.keyboard-service），原生键盘 UI。
+# 两端数据源都是电脑端 sync/server.js 的局域网同步服务。
 #
 # 1) push 自动触发，不需要 token / 手动点 Run。
 # 2) 产物由 publish job 提交回仓库 out/，本机 git pull 即可取回。
 # 3) iOS 只交付【未签名 IPA】，供手机端签名工具直接导入；构造对齐用户
 #    提供的未签名 IPA 参照样本。ad-hoc 预签名只作为编译中间步骤，不交付。
 
-name: 编译同步输入法 (APK + IPA)
+name: 编译同步工具 (APK + IPA)
 
 on:
   push:
@@ -79,11 +79,15 @@ jobs:
           def has(s):
               return (s.encode() in axml) or (s.encode('utf-16le') in axml)
           print('[诊断] zip 条目数 =', len(names))
-          print('[诊断] AXML MozhiIME =', has('MozhiIME'))
-          print('[诊断] AXML BIND_INPUT_METHOD =', has('BIND_INPUT_METHOD'))
-          print('[诊断] AXML android.view.im =', has('android.view.im'))
-          for key in (b'SyncClient', b'/api/items', b'/api/image', b'commitText', b'MozhiIME'):
-              print('[诊断] dex %-14s = %s' % (key.decode(), key in dex))
+          print('[诊断] AXML SYSTEM_ALERT_WINDOW =', has('SYSTEM_ALERT_WINDOW'))
+          print('[诊断] AXML FOREGROUND_SERVICE =', has('FOREGROUND_SERVICE'))
+          print('[诊断] AXML SPECIAL_USE =', has('FOREGROUND_SERVICE_SPECIAL_USE'))
+          print('[诊断] AXML BIND_ACCESSIBILITY_SERVICE =', has('BIND_ACCESSIBILITY_SERVICE'))
+          print('[诊断] AXML 悬浮胶囊 subtype =', has('display_floating_clipboard_capsule'))
+          for key in (b'FloatingService', b'ClipboardCapture', b'ShareReceiverActivity',
+                      b'HistoryStore', b'SyncClient', b'TYPE_APPLICATION_OVERLAY',
+                      b'PanelActivity', b'/api/items', b'/api/image'):
+              print('[诊断] dex %-26s = %s' % (key.decode(), key in dex))
           print('[诊断] dex 含 WebView 类型 =', b'Landroid/webkit/WebView;' in dex)
           print('[诊断] dex 字节数 =', len(dex))
           PY
@@ -257,8 +261,9 @@ jobs:
           git rm -f --ignore-unmatch out/QuickPaste-Sync-iOS.ipa || true
           rm -f out/QuickPaste-Sync-iOS.ipa
           {
-            echo "墨指 v1.8.34 同步输入法 手机安装包"
-            echo "形态：安卓 IME / iOS 键盘扩展（原生键盘，非 WebView 壳）"
+            echo "墨指 v1.8.34 同步工具 手机安装包"
+            echo "形态：安卓悬浮胶囊（前台服务+无障碍抓剪贴板，非输入法/非 WebView 壳）/ iOS 键盘扩展（原生键盘，非 WebView 壳）"
+            echo "安卓交付：debug 签名 APK（开启悬浮窗/无障碍后直接用）"
             echo "苹果交付：未签名 IPA（手机端签名工具直接导入）"
             echo "构建时间 (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
             echo "commit: ${GITHUB_SHA}"
@@ -268,6 +273,6 @@ jobs:
           git config user.name "mozhi-bot"
           git config user.email "mozhi-bot@users.noreply.github.com"
           git add -f out/QuickPaste-Sync-Android.apk out/QuickPaste-Sync-iOS-unsigned.ipa out/BUILD_INFO.txt
-          git commit -m "chore: 自动回传同步输入法 APK + IPA [skip ci]" || echo "无变更，跳过提交"
+          git commit -m "chore: 自动回传同步工具 APK + IPA [skip ci]" || echo "无变更，跳过提交"
           git pull --rebase origin main || true
           git push origin HEAD:main

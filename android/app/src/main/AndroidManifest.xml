@@ -1,12 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 局域网 HTTP 同步需要联网权限；Android 9+ 默认禁明文，需显式开启 -->
+    <!-- 局域网 HTTP 同步需要联网；Android 9+ 默认禁明文，需显式开启 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- 悬浮窗（画中画胶囊球）需要 SYSTEM_ALERT_WINDOW -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- 前台服务（让胶囊常驻屏幕边缘）+ Android 14 特殊用途前台服务类型 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Android 13+ 前台通知 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
+        android:name=".MozhiApp"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
@@ -14,11 +23,12 @@
         android:usesCleartextTraffic="true"
         android:supportsRtl="true">
 
+        <!-- 主界面：引导开启权限 + 设置 + 常用语 + 局域网同步配置 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Mozhi"
             android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -26,26 +36,61 @@
             </intent-filter>
         </activity>
 
-        <!-- 真正的系统输入法：BIND_INPUT_METHOD + android.view.im 元数据 -->
+        <!-- 透明面板：点击胶囊球后弹出的剪贴板历史面板（Compose）-->
+        <activity
+            android:name=".PanelActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Mozhi.Transparent"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout" />
+
+        <!-- 悬浮胶囊前台服务（常驻屏幕边缘的可拖拽球）-->
         <service
-            android:name=".MozhiIME"
-            android:exported="true"
-            android:label="@string/ime_name"
-            android:permission="android.permission.BIND_INPUT_METHOD">
-            <intent-filter>
-                <action android:name="android.view.InputMethod" />
-            </intent-filter>
-            <meta-data
-                android:name="android.view.im"
-                android:resource="@xml/method" />
+            android:name=".FloatingService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="display_floating_clipboard_capsule" />
         </service>
 
-        <!-- 暴露一张图片给支持 commitContent 的输入框（微信/Telegram 等） -->
-        <provider
-            android:name=".QpImageProvider"
-            android:authorities="${applicationId}.images"
+        <!-- 无障碍服务：Android 10+ 后台连续抓取剪贴板（用户需手动开启）-->
+        <service
+            android:name=".ClipboardCapture"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:label="@string/accessibility_label">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_config" />
+        </service>
+
+        <!-- 接收系统“分享/发送”的内容，把文字或文件投进胶囊（对齐 iOS 拖文件）-->
+        <activity
+            android:name=".ShareReceiverActivity"
             android:exported="true"
-            android:grantUriPermissions="true" />
+            android:label="@string/app_name"
+            android:theme="@style/Theme.Mozhi.Transparent">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
     </application>
 
 </manifest>

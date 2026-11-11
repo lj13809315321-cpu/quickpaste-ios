@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">墨指 同步键盘</string>
-    <string name="ime_name">墨指 同步键盘</string>
+    <string name="app_name">墨指</string>
+    <string name="accessibility_label">墨指 剪贴板捕获</string>
+    <string name="accessibility_desc">墨指需要“无障碍”权限以在后台连续抓取剪贴板内容（Android 10+ 限制后台读取，开启后复制文字会即时收入胶囊历史）。开启路径：系统设置 → 无障碍 → 已下载的应用 → 墨指 → 开启。本服务不会收集任何不上屏的信息，仅读取你复制的文本。</string>
+    <string name="floating_channel_name">墨指悬浮胶囊</string>
+    <string name="floating_channel_desc">常驻屏幕边缘的剪贴板胶囊</string>
+    <string name="floating_notification">墨指胶囊运行中 · 点按胶囊查看/复制历史</string>
 </resources>
