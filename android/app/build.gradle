@@ -1,6 +1,8 @@
 plugins {
     id 'com.android.application'
     // Kotlin 2.0 起 Compose 编译器已内置进 Kotlin 插件，规避 1.9.x 后端内联 CompositionLocal 崩溃
+    // 注意：compose 插件只是编译器插件，必须在同模块同时应用 kotlin-android 才能拿到 kotlin{} DSL 与 Kotlin 编译器
+    id 'org.jetbrains.kotlin.android' version '2.0.21'
     id 'org.jetbrains.kotlin.plugin.compose' version '2.0.21'
 }
 
