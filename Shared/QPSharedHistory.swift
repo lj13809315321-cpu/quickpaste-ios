@@ -82,6 +82,14 @@ enum QPSharedHistory {
         var sharedSymbolCount: Int? = nil
         var sharedAlign: String? = nil
         var sharedSymbolsAt: Double? = nil
+        /// v1.8.35 定制工具栏 / 定制菜单栏（主 App 与键盘共用一份，带时间戳）。
+        /// 可选类型：旧版本写下的 JSON 没有这些字段，照常解码、不丢历史。
+        var barToolbar: [String]? = nil
+        var barMenu: [String]? = nil
+        var barAt: Double? = nil
+        /// v1.8.35 按键声音（系统点击音），两端共用，默认开。
+        var keySound: Bool? = nil
+        var keySoundAt: Double? = nil
 
         var isBlocked: Bool { blocked == true }
         var isWanted: Bool { want == true }
@@ -840,6 +848,44 @@ enum QPSharedHistory {
 
     /// 清空共享记录。没有 App Group 时**不写系统剪贴板**：
     /// 写一次就会改 changeCount，反而会让键盘把刚清掉的内容又当成「新复制」抓回来。
+    // MARK: v1.8.35 定制工具栏 / 定制菜单栏（两端共用一份）
+
+    /// 键盘读：没人在 App 里设置过就用与 v1.8.34 真机验证一致的默认版面。
+    static func sharedBarLayout() -> (toolbar: [String], menu: [String], at: Double) {
+        let p = read()
+        return (QPBarCatalog.sanitize(p.barToolbar ?? QPBarCatalog.defaultToolbar),
+                QPBarCatalog.sanitize(p.barMenu ?? QPBarCatalog.defaultMenu),
+                p.barAt ?? 0)
+    }
+
+    /// 主 App 设置页写：时间戳比本地新的一端说了算（与快捷符号同一套机制）。
+    @discardableResult
+    static func setSharedBarLayout(toolbar: [String], menu: [String]) -> Double {
+        let at = Date().timeIntervalSince1970
+        var p = read()
+        p.barToolbar = QPBarCatalog.sanitize(toolbar)
+        p.barMenu = QPBarCatalog.sanitize(menu)
+        p.barAt = at
+        write(p, keeping: UIPasteboard.general.string)
+        return at
+    }
+
+    /// 按键声音（系统点击音）。nil = 默认开。
+    static func keySoundOn() -> Bool {
+        let p = read()
+        return p.keySound ?? true
+    }
+
+    @discardableResult
+    static func setKeySound(_ on: Bool) -> Double {
+        let at = Date().timeIntervalSince1970
+        var p = read()
+        p.keySound = on
+        p.keySoundAt = at
+        write(p, keeping: UIPasteboard.general.string)
+        return at
+    }
+
     static func clear() {
         guard groupURL() != nil else { return }
         var p = read()

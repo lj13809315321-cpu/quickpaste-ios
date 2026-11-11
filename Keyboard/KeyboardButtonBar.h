@@ -62,6 +62,20 @@ typedef NS_ENUM(NSInteger, KBKeyboardAction) {
 /// （黄白默认四按钮里的「截图」在扩展里不可实现，用光标右移补位）。
 @property (nonatomic, copy) NSArray<NSNumber *> *buttonActions;
 
+/// v1.8.35 定制菜单栏：按功能 id 渲染（id 定义在 Shared/QPBarCatalog.swift）。
+/// 设置后 kb_rebuildButtons 走 id 分支，点击统一回调 onAction 交给 Swift 分发；
+/// 老的 buttonActions 路径保留给「没有配置」的兜底，一行不动。
+@property (nonatomic, copy) NSArray<NSString *> *actionIDs;
+@property (nonatomic, copy, nullable) void (^onAction)(NSString *actionID);
+
+/// 按 id 执行已有的动作（切换/关闭/撤销/光标/复制/剪切/粘贴/全选/删除）。
+/// 返回 YES = 已由本类处理；NO = 新动作，交给 Swift 侧 performBarAction。
+- (BOOL)performActionForID:(NSString *)actionID;
+/// v1.8.35 新增：重做（撤销的反操作，共用同一份插入历史）。
+- (void)performRedo;
+/// v1.8.35「中文转译」：ICU 简↔繁转换（键盘扩展没有系统翻译接口，用最接近的行为实现，不砍项）。
++ (NSString *)kb_translateChinese:(NSString *)text traditional:(BOOL)traditional;
+
 /// 按钮之间的间距，默认 10（pt）。
 @property (nonatomic, assign) CGFloat buttonSpacing;
 

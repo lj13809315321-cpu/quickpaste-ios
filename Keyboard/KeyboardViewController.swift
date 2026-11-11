@@ -2,6 +2,7 @@ import UIKit
 import ImageIO
 import NaturalLanguage
 import Network
+import UIKit.UIGestureRecognizerSubclass
 
 /// 墨指 v1.8.17 真·系统键盘（iOS Keyboard Extension）。
 ///
@@ -149,14 +150,41 @@ final class KeyboardViewController: UIInputViewController {
     /// 键盘总高度 = 用户设定高度 + 底部快捷条高度
     private var kbBarHeight: CGFloat { kbBar?.barHeight ?? 0 }
 
+    // MARK: v1.8.35 定制栏 / 按键声音 / ✕ 长按连续删
+    /// 两栏的功能 id 顺序（主 App 设置页写共享通道，键盘每次弹出重读）
+    private var barLayout: (toolbar: [String], menu: [String]) =
+        (QPBarCatalog.defaultToolbar, QPBarCatalog.defaultMenu)
+    private var keySoundEnabled = true
+    private var traditionalMode = false
+    /// ✕ 原地长按：约 0.45 秒起删，之后每 0.09 秒删一个字符，
+    /// 每删一个轻震一下 + 出一下轻音；滑动时立即让位给原有的滑动逐字删。
+    private var deleteHoldArmed: DispatchWorkItem?
+    private var deleteHoldTimer: Timer?
+    private var deleteHoldFeedback: UISelectionFeedbackGenerator?
+    private var deleteHoldActive = false
+    /// 「快捷符号」被挪到菜单栏时的符号选择浮层
+    private let symbolPicker = UIView()
+
     private var client: SyncClient {
         SyncClient(url: prefs.syncURL, pair: prefs.syncPair)
     }
 
     // MARK: - 生命周期
 
+    /// 系统键盘点击音：inputView 遵循 UIInputViewAudioFeedback 后
+    /// UIDevice.playInputClick() 才会真的出声（跟随系统键盘反馈设置与静音键）。
+    override func loadView() {
+        view = QPKeyboardInputView(frame: .zero, inputViewStyle: .keyboard)
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
+        // v1.8.35：两栏配置与按键声音开关（共享通道，主 App 改完键盘下次弹出即生效）
+        let initialLayout = QPSharedHistory.sharedBarLayout()
+        barLayout = (initialLayout.toolbar, initialLayout.menu)
+        keySoundEnabled = QPSharedHistory.keySoundOn()
+        QPHapticButton.soundEnabled = keySoundEnabled
+        QPHapticButton.hapticEnabled = prefs.cursorHaptic
         // iOS 26 起系统给键盘画整体圆角玻璃底（键盘顶部那截灰带就是它），
         // 根视图必须透明才能融入系统玻璃底、和宿主 App 背景连成一片
         //（Apple 开发者论坛 thread 793686 的官方适配结论）。按钮/卡片自带底色不受影响。
@@ -207,6 +235,13 @@ final class KeyboardViewController: UIInputViewController {
         tap.delegate = self
         view.addGestureRecognizer(tap)
 
+        // v1.8.35：按键声音覆盖键盘里所有按钮/卡片，不吞触摸、不改手势状态
+        let soundTap = QPKeySoundRecognizer()
+        soundTap.cancelsTouchesInView = false
+        soundTap.delaysTouchesBegan = false
+        soundTap.delaysTouchesEnded = false
+        view.addGestureRecognizer(soundTap)
+
         refreshHead()
         refreshTabBar()
         refreshCopyButton()
@@ -245,6 +280,12 @@ final class KeyboardViewController: UIInputViewController {
         applyNetGuard()
         syncCaptureState()
         QPHapticButton.hapticEnabled = prefs.cursorHaptic
+        // v1.8.35：每次弹出重读两栏配置与声音开关，并立即应用版面
+        let layout = QPSharedHistory.sharedBarLayout()
+        barLayout = (layout.toolbar, layout.menu)
+        keySoundEnabled = QPSharedHistory.keySoundOn()
+        QPHapticButton.soundEnabled = keySoundEnabled
+        applyBarLayout()
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -891,6 +932,10 @@ final class KeyboardViewController: UIInputViewController {
         let bar = KBKeyboardButtonBar(inputViewController: self)
         bar.buttonActions = KBKeyboardButtonBar.actions(fromNames:
             ["nextKeyboard", "dismiss", "paste", "undo", "selectAll"])
+        // v1.8.35：默认版面仍是 切换/关闭/粘贴/撤销/全选，具体项与顺序由
+        // 主 App「定制菜单栏」下发的 id 数组决定；点击统一回调 performBarAction。
+        bar.actionIDs = barLayout.menu
+        bar.onAction = { [weak self] aid in self?.performBarAction(aid) }
         // 底栏动作的提示文字（全选/复制/粘贴结果）走键盘统一 toast
         bar.onFeedback = { [weak self] msg in
             DispatchQueue.main.async { self?.showToast(msg as String) }
@@ -938,6 +983,7 @@ final class KeyboardViewController: UIInputViewController {
             dot.heightAnchor.constraint(equalToConstant: 9)
         ])
         statusDot = dot
+        holder.accessibilityIdentifier = "status"
         holder.isUserInteractionEnabled = true
         holder.addGestureRecognizer(UITapGestureRecognizer(target: self,
                                                           action: #selector(headTapped)))
@@ -988,6 +1034,7 @@ final class KeyboardViewController: UIInputViewController {
                                                         action: #selector(handleMenuPress(_:)))
         holdCollapse.minimumPressDuration = 1.0
         collapse.addGestureRecognizer(holdCollapse)
+        collapse.accessibilityIdentifier = "collapse"
         toolbar.addArrangedSubview(collapse)
 
         // v1.8.9：地球键整键删掉（用户要求）——不切换输入法，
@@ -1018,6 +1065,7 @@ final class KeyboardViewController: UIInputViewController {
                                                       action: #selector(handleExportPress(_:)))
         holdFilter.minimumPressDuration = 0.6
         filterBtn.addGestureRecognizer(holdFilter)
+        filterBtn.accessibilityIdentifier = "filter"
         toolbar.addArrangedSubview(filterBtn)
         filterButton = filterBtn
 
@@ -1034,6 +1082,7 @@ final class KeyboardViewController: UIInputViewController {
         sortBtn.setContentCompressionResistancePriority(.required, for: .horizontal)
         sortBtn.addAction(UIAction { [weak self] _ in self?.toggleSort() },
                           for: .touchUpInside)
+        sortBtn.accessibilityIdentifier = "sort"
         toolbar.addArrangedSubview(sortBtn)
         sortButton = sortBtn
 
@@ -1048,6 +1097,7 @@ final class KeyboardViewController: UIInputViewController {
         phraseBtn.setContentCompressionResistancePriority(.required, for: .horizontal)
         phraseBtn.addAction(UIAction { [weak self] _ in self?.openPhrasePanel() },
                             for: .touchUpInside)
+        phraseBtn.accessibilityIdentifier = "phrase"
         toolbar.addArrangedSubview(phraseBtn)
 
         symScroll.showsHorizontalScrollIndicator = false
@@ -1066,6 +1116,7 @@ final class KeyboardViewController: UIInputViewController {
         ])
         symScroll.setContentHuggingPriority(.defaultLow, for: .horizontal)
         symScroll.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        symScroll.accessibilityIdentifier = "symbols"
         toolbar.addArrangedSubview(symScroll)
 
         // 连接状态小圆点：位置就在「连续复制」图标和最右边黑色 ✕ 的中间
@@ -1102,14 +1153,210 @@ final class KeyboardViewController: UIInputViewController {
         deleteSlide.allowableMovement = .greatestFiniteMagnitude
         deleteSlide.cancelsTouchesInView = false
         deleteKey.addGestureRecognizer(deleteSlide)
-        let holdDelete = UILongPressGestureRecognizer(target: self,
-                                                      action: #selector(handleMenuPress(_:)))
-        holdDelete.minimumPressDuration = 1.0
-        deleteKey.addGestureRecognizer(holdDelete)
+        // v1.8.35：✕ 的「1 秒长按弹快捷菜单」取消 —— 菜单仍在左边「收起键盘」键长按，
+        // 这里把长按留给「原地连续逐字删」。滑动（左滑逐字删 / 上滑清空 / 下滑恢复）一行未动。
+        deleteKey.accessibilityIdentifier = "clear"
         toolbar.addArrangedSubview(deleteKey)
 
+        applyToolbarLayout()
         root.addArrangedSubview(toolbar)
     }
+
+    /// v1.8.35：把主 App 下发的两栏配置应用到键盘（每次弹出 / 设置改完都调）。
+    private func applyBarLayout() {
+        kbBar?.actionIDs = barLayout.menu
+        kbBar?.onAction = { [weak self] aid in self?.performBarAction(aid) }
+        applyToolbarLayout()
+    }
+
+    /// 原生 7 项沿用原来的按钮（图标 / 手势 / 弱引用一行不动）；从菜单栏挪上来的
+    /// 功能临时生成一个同尺寸图标按钮，点击统一走 performBarAction。
+    private static let nativeToolIDs: Set<String> =
+        ["collapse", "filter", "sort", "phrase", "symbols", "status", "clear"]
+
+    private func applyToolbarLayout() {
+        let ids = QPBarCatalog.sanitize(barLayout.toolbar.isEmpty
+                                        ? QPBarCatalog.defaultToolbar : barLayout.toolbar)
+        for id in ids where !Self.nativeToolIDs.contains(id) {
+            if toolbar.arrangedSubviews.contains(where: { $0.accessibilityIdentifier == id }) {
+                continue
+            }
+            let b = UIButton(type: .system)
+            b.accessibilityIdentifier = id
+            b.setImage(UIImage(systemName: QPBarCatalog.symbol(id),
+                               withConfiguration: toolIconConfig())?
+                        .withRenderingMode(.alwaysTemplate), for: .normal)
+            b.tintColor = QPColor.ink
+            b.backgroundColor = .clear
+            b.translatesAutoresizingMaskIntoConstraints = false
+            b.widthAnchor.constraint(equalToConstant: QPTool.size).isActive = true
+            b.heightAnchor.constraint(equalToConstant: QPTool.size).isActive = true
+            b.setContentCompressionResistancePriority(.required, for: .horizontal)
+            b.addAction(UIAction { [weak self] _ in
+                guard let self = self else { return }
+                if self.prefs.cursorHaptic {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }
+                self.performBarAction(id)
+            }, for: .touchUpInside)
+            toolbar.addArrangedSubview(b)
+        }
+
+        var ordered: [UIView] = []
+        for id in ids {
+            if let v = toolbar.arrangedSubviews.first(where: { $0.accessibilityIdentifier == id }) {
+                ordered.append(v)
+            }
+        }
+        for v in toolbar.arrangedSubviews {
+            v.isHidden = !ordered.contains(v)
+        }
+        for (i, v) in ordered.enumerated() {
+            toolbar.removeArrangedSubview(v)
+            toolbar.insertArrangedSubview(v, at: min(i, toolbar.arrangedSubviews.count))
+        }
+    }
+
+    // MARK: - v1.8.35 按键声音 / 定制栏统一动作分发
+
+    private func playKeySoundIfNeeded() {
+        QPKeySound.play()
+    }
+
+    /// 两栏所有功能点下去都走这里：先出声，再由底栏类执行已有的 10 个动作，
+    /// 其余（工具栏专有 / 新增动作）在本文件实现，一个 id 只有一处行为。
+    private func performBarAction(_ id: String) {
+        playKeySoundIfNeeded()
+        if kbBar?.performActionForID(id) == true { return }
+        switch id {
+        case "collapse", "dismiss", "closeKeyboard":
+            dismissKeyboard()
+        case "nextKeyboard":
+            advanceToNextInputMode()
+        case "filter":
+            openFilterMenu(anchor: toolbar)
+        case "sort":
+            toggleSort()
+        case "phrase":
+            openPhrasePanel()
+        case "symbols":
+            openSymbolPicker()
+        case "status":
+            pull(showConnecting: true, force: true)
+            showToast(syncState == "online" ? "已连接电脑" : "未连接电脑 · 正在重试")
+        case "clear":
+            textDocumentProxy.deleteBackward()
+        case "redo":
+            kbBar?.performRedo()
+        case "moveStart":
+            let n = (textDocumentProxy.documentContextBeforeInput as NSString?)?.length ?? 0
+            if n > 0 { textDocumentProxy.adjustTextPosition(byCharacterOffset: -n) }
+        case "moveEnd":
+            let n = (textDocumentProxy.documentContextAfterInput as NSString?)?.length ?? 0
+            if n > 0 { textDocumentProxy.adjustTextPosition(byCharacterOffset: n) }
+        case "translate":
+            translateInput()
+        case "screenshot":
+            snapshotInput()
+        default:
+            break
+        }
+    }
+
+    /// 中文转译（ICU 简↔繁）：把输入框全文转换后写回，再点一次切回去。
+    /// 键盘扩展没有系统翻译接口，这是能做到、且用户能直接用上的最接近行为。
+    private func translateInput() {
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        let after = textDocumentProxy.documentContextAfterInput ?? ""
+        let all = before + after
+        guard !all.isEmpty else { showToast("输入框是空的"); return }
+        let converted = KBKeyboardButtonBar.kb_translateChinese(all,
+                                                                traditional: !traditionalMode)
+        if !after.isEmpty {
+            textDocumentProxy.adjustTextPosition(byCharacterOffset: (after as NSString).length)
+        }
+        for _ in 0..<(all as NSString).length { textDocumentProxy.deleteBackward() }
+        insertText(converted)
+        traditionalMode.toggle()
+        showToast(traditionalMode ? "已转为繁体" : "已转为简体")
+    }
+
+    /// 截图：iOS 键盘扩展看不到宿主窗口层级，无法真截屏。
+    /// 近似实现 = 把输入框全文渲染成文字快照图片写入剪贴板，可长按粘贴，不砍项。
+    private func snapshotInput() {
+        guard hasFullAccess else { showToast("需要开启「允许完全访问」"); return }
+        let all = (textDocumentProxy.documentContextBeforeInput ?? "") +
+                  (textDocumentProxy.documentContextAfterInput ?? "")
+        guard !all.isEmpty else { showToast("输入框是空的，没有可截的内容"); return }
+        let lines = max(1, Int(ceil(CGFloat(all.count) / 18.0)))
+        let h = min(560, max(80, 28 + 22 * lines))
+        let size = CGSize(width: 320, height: CGFloat(h))
+        let fmt = UIGraphicsImageRendererFormat()
+        fmt.scale = 2
+        let img = UIGraphicsImageRenderer(size: size, format: fmt).image { ctx in
+            UIColor.systemBackground.setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+            (all as NSString).draw(
+                in: CGRect(x: 14, y: 12, width: size.width - 28, height: size.height - 24),
+                withAttributes: [.font: UIFont.systemFont(ofSize: 15),
+                                 .foregroundColor: UIColor.label])
+        }
+        if let png = img.pngData() {
+            UIPasteboard.general.setData(png, forPasteboardType: "public.png")
+            showToast("已生成输入框文字快照图片，可长按粘贴")
+        } else {
+            UIPasteboard.general.string = all
+            showToast("已复制输入框全文")
+        }
+    }
+
+    /// 「快捷符号」被挪到菜单栏 / 工具条外来时：弹横向符号条，点一个直接上屏。
+    private func openSymbolPicker() {
+        symbolPicker.subviews.forEach { $0.removeFromSuperview() }
+        symbolPicker.gestureRecognizers?.forEach { symbolPicker.removeGestureRecognizer($0) }
+        symbolPicker.frame = view.bounds
+        symbolPicker.backgroundColor = UIColor(white: 0, alpha: 0.22)
+        symbolPicker.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+
+        let box = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
+        box.frame = CGRect(x: 12, y: 8, width: view.bounds.width - 24, height: 60)
+        box.layer.cornerRadius = 12
+        box.clipsToBounds = true
+        box.autoresizingMask = [.flexibleWidth]
+
+        let scroll = UIScrollView(frame: CGRect(x: 6, y: 6,
+                                                width: box.bounds.width - 12, height: 48))
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.autoresizingMask = [.flexibleWidth]
+        let s = QPSharedHistory.sharedSymbolSettings()
+        let syms: [String] = s.symbols.isEmpty
+            ? ["。", "，", "？", "！", "：", "；", "、", "…", "～", "「", "」", "（", "）", "·", "—"]
+            : s.symbols
+        var x: CGFloat = 0
+        for sym in syms {
+            let b = UIButton(type: .system)
+            b.frame = CGRect(x: x, y: 4, width: 40, height: 40)
+            b.setTitle(sym, for: .normal)
+            b.titleLabel?.font = .systemFont(ofSize: 20)
+            b.addAction(UIAction { [weak self] _ in
+                guard let self = self else { return }
+                self.playKeySoundIfNeeded()
+                self.insertText(sym)
+                self.symbolPicker.removeFromSuperview()
+            }, for: .touchUpInside)
+            scroll.addSubview(b)
+            x += 42
+        }
+        scroll.contentSize = CGSize(width: x, height: 48)
+        box.contentView.addSubview(scroll)
+        symbolPicker.addSubview(box)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(closeSymbolPicker))
+        tap.cancelsTouchesInView = false
+        symbolPicker.addGestureRecognizer(tap)
+        view.addSubview(symbolPicker)
+    }
+
+    @objc private func closeSymbolPicker() { symbolPicker.removeFromSuperview() }
 
     /// v1.8.33：开＝蓝色（QPColor.blue），关＝本色（QPColor.ink）。
     /// 颜色只由 pipLive 决定 —— 表示「主 App 的画中画确实在抓」；
@@ -1861,7 +2108,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.34 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.35 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -2619,14 +2866,17 @@ final class KeyboardViewController: UIInputViewController {
 
     /// ✕ 键左滑逐字符退删（搜狗同款）：按住后向左滑，每 10pt 删一个字符，
     /// 光标跟着回退；往右回滑不恢复（已删字符无法恢复）。
-    /// 与「上滑清空 / 下滑恢复 / 1 秒长按菜单 / 单击删一个字」并存。
+    /// v1.8.35：与「原地长按连续逐字删」并存 —— 手指真在滑就停掉连删，
+    /// 滑动那套手感一行未改；上滑清空 / 下滑恢复 / 单击删一个字同样保留。
     @objc private func handleDeleteSlide(_ g: UILongPressGestureRecognizer) {
         let x = g.location(in: view).x
         switch g.state {
         case .began:
             deleteOriginX = x
             deleteDeletedSteps = 0
+            startDeleteHold()
         case .changed:
+            if abs(x - deleteOriginX) > 10 { stopDeleteHold() }
             // 只统计向左的净位移；一次changed最多补删 16 个字符防失控
             let steps = max(0, Int((deleteOriginX - x) / 10))
             let delta = steps - deleteDeletedSteps
@@ -2638,9 +2888,45 @@ final class KeyboardViewController: UIInputViewController {
                     for _ in 0..<min(delta, 4) { f.selectionChanged() }
                 }
             }
+        case .ended, .cancelled, .failed:
+            stopDeleteHold()
         default:
             break
         }
+    }
+
+    /// 原地长按 ✕：手势 0.15s 识别 + 0.30s 延迟 = 约 0.45s 起删，
+    /// 之后每 0.09s 删一个字符，每删一个轻震一下并出一下轻音。
+    private func startDeleteHold() {
+        stopDeleteHold()
+        deleteHoldActive = true
+        let f = UISelectionFeedbackGenerator()
+        f.prepare()
+        deleteHoldFeedback = f
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.deleteHoldActive else { return }
+            self.deleteHoldTimer = Timer.scheduledTimer(withTimeInterval: 0.09,
+                                                        repeats: true) { [weak self] _ in
+                guard let self = self, self.deleteHoldActive else { return }
+                self.textDocumentProxy.deleteBackward()
+                if self.prefs.cursorHaptic {
+                    self.deleteHoldFeedback?.selectionChanged()
+                    self.deleteHoldFeedback?.prepare()
+                }
+                self.playKeySoundIfNeeded()
+            }
+        }
+        deleteHoldArmed = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.30, execute: work)
+    }
+
+    private func stopDeleteHold() {
+        deleteHoldActive = false
+        deleteHoldArmed?.cancel()
+        deleteHoldArmed = nil
+        deleteHoldTimer?.invalidate()
+        deleteHoldTimer = nil
+        deleteHoldFeedback = nil
     }
 
     @objc private func handleSpace(_ g: UILongPressGestureRecognizer) {
@@ -3557,6 +3843,12 @@ final class KeyboardViewController: UIInputViewController {
     // MARK: - 设置界面联动：所有开关即时作用到键盘
 
     private func applySettings() {
+        // v1.8.35：键盘内「按键声音」开关改完立刻生效，并顺手重读两栏配置
+        keySoundEnabled = QPSharedHistory.keySoundOn()
+        QPHapticButton.soundEnabled = keySoundEnabled
+        let layout = QPSharedHistory.sharedBarLayout()
+        barLayout = (layout.toolbar, layout.menu)
+        applyBarLayout()
         imageCloseButton?.isHidden = !prefs.floatClose
         // refreshSymbols 内部会按 prefs.align 重排工具条符号区
         refreshSymbols()
@@ -3702,14 +3994,67 @@ extension KeyboardViewController: KeyboardSettingsDelegate {
 /// 开关沿用「按键震动」（qp.cursorHaptic，默认开），关掉后所有按钮都不震。
 /// ★ v1.8.12 卡顿修复：开关值缓存进静态变量（键盘出现 / 设置页切换时刷新），
 ///   之前每次触摸都读一次 UserDefaults，高频打字时白白加主线程开销。
+/// v1.8.35：键盘内所有按键共用的声音开关与节流器。
+/// 50ms 内只出一声 —— QPHapticButton、全局触摸识别器、动作分发、长按连删
+/// 可能在同一帧里都请求出声，节流保证「按一下 = 一声」，绝不双响。
+enum QPKeySound {
+    static var enabled = true
+    private static var last: TimeInterval = 0
+    static func play() {
+        guard enabled else { return }
+        let now = Date().timeIntervalSince1970
+        guard now - last > 0.05 else { return }
+        last = now
+        UIDevice.current.playInputClick()
+    }
+}
+
+/// 挂在键盘根视图：任何按钮 / 剪贴板卡片被按下就出声，覆盖工具条、菜单栏、
+/// 底行、计算键盘、各浮层、符号区、键盘内设置页等所有地方。
+/// 不设 delegate、不吞触摸、不改变 state，纯粹旁听一次 touchesBegan，不卡交互。
+final class QPKeySoundRecognizer: UIGestureRecognizer {
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesBegan(touches, with: event)
+        guard let t = touches.first else { return }
+        var v: UIView? = t.view
+        while let cur = v, !(cur is UIButton), !(cur is QPSwipeCard) {
+            v = cur.superview
+        }
+        guard v != nil else { return }
+        QPKeySound.play()
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesEnded(touches, with: event)
+        state = .failed
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesCancelled(touches, with: event)
+        state = .failed
+    }
+}
+
+/// v1.8.35：自定义键盘要让 UIDevice.playInputClick() 出声，inputView 必须
+/// 遵循 UIInputViewAudioFeedback 并返回 true（Apple 官方做法，不加音频文件）。
+final class QPKeyboardInputView: UIInputView, UIInputViewAudioFeedback {
+    var enableInputClicksWhenVisible: Bool { true }
+}
+
 final class QPHapticButton: UIButton {
     private static let feedback = UIImpactFeedbackGenerator(style: .light)
     static var hapticEnabled = true
+    /// 按键声音（系统点击音）：转发到全局开关，主 App / 键盘内任一处改都同步。
+    static var soundEnabled: Bool {
+        get { QPKeySound.enabled }
+        set { QPKeySound.enabled = newValue }
+    }
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         super.touchesBegan(touches, with: event)
         if Self.hapticEnabled {
             Self.feedback.impactOccurred()
         }
+        QPKeySound.play()
     }
 }
 

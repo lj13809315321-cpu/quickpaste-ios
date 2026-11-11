@@ -715,7 +715,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("墨指 v1.8.34 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.35 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -729,6 +729,8 @@ struct SettingsView: View {
                     NavigationLink("局域网同步（CopyQ）") { SyncSettingsView() }
                     NavigationLink("键盘设置") { KbdSettingsView() }
                     NavigationLink("快捷符号") { SymSettingsView() }
+                    NavigationLink("定制工具栏") { BarCustomizeView(isToolbar: true) }
+                    NavigationLink("定制菜单栏") { BarCustomizeView(isToolbar: false) }
                     NavigationLink("使用教程") { TutorialListView() }
                 }
 
@@ -869,8 +871,15 @@ struct SyncSettingsView: View {
 // MARK: - 设置详情：键盘设置
 
 struct KbdSettingsView: View {
+    @State private var keySound = true
     var body: some View {
         Form {
+            Section("声音与反馈") {
+                Toggle("按键声音", isOn: $keySound)
+                    .onChange(of: keySound) { v in _ = QPSharedHistory.setKeySound(v) }
+                Text("按下任意按键播放系统键盘点击音，跟随系统「键盘反馈 → 声音」与静音键；关掉后只保留震动。键盘内「设置 → 键盘设置」里是同一个开关。")
+                    .font(.footnote).foregroundColor(.secondary)
+            }
             // v1.8.21：全工程唯一的系统设置入口，放在「设置 → 键盘设置」页顶部。
             // 原「连接」页两处 + 设置主表一处已全部删掉，不再四处重复。
             Section("打开系统设置") {
@@ -911,6 +920,7 @@ struct KbdSettingsView: View {
             }
         }
         .navigationTitle("键盘设置")
+        .onAppear { keySound = QPSharedHistory.keySoundOn() }
     }
 }
 
@@ -1025,6 +1035,177 @@ struct SymSettingsView: View {
     }
 }
 
+// MARK: - 设置详情：定制工具栏 / 定制菜单栏（v1.8.35）
+
+/// 两栏共用同一个功能池：可增删、拖动排序、把一项从工具栏挪到菜单栏（或反过来）。
+/// 写入 QPSharedHistory 共享通道，键盘下次弹出即生效 —— 与「快捷符号」同一套机制。
+struct BarCustomizeView: View {
+    let isToolbar: Bool
+
+    @AppStorage("qp.app.barToolbar") private var tbStored: String = ""
+    @AppStorage("qp.app.barMenu") private var mnStored: String = ""
+    @AppStorage("qp.app.barAt") private var localAt: Double = 0
+    @State private var toolbar: [String] = QPBarCatalog.defaultToolbar
+    @State private var menu: [String] = QPBarCatalog.defaultMenu
+    @State private var editMode: EditMode = .inactive
+
+    private var mine: [String] { isToolbar ? toolbar : menu }
+    private var otherIDs: [String] { isToolbar ? menu : toolbar }
+
+    /// 功能池里还没进本栏的项（含另一栏的项，点添加就是「挪过来」）。
+    private var available: [QPBarCatalog.Item] {
+        QPBarCatalog.all.filter { !mine.contains($0.id) }
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(mine, id: \.self) { id in
+                    HStack(spacing: 10) {
+                        Image(systemName: QPBarCatalog.symbol(id))
+                            .frame(width: 22)
+                            .foregroundColor(.blue)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(QPBarCatalog.name(id))
+                            Text(isToolbar
+                                 ? "显示为工具条图标"
+                                 : "显示为菜单栏文字 · \(QPBarCatalog.title(id))")
+                                .font(.caption2).foregroundColor(.secondary)
+                        }
+                        Spacer(minLength: 4)
+                        Button { moveToOther(id) } label: {
+                            Image(systemName: isToolbar ? "arrow.down.to.line" : "arrow.up.to.line")
+                                .foregroundColor(.blue)
+                        }
+                        Button { remove(id) } label: {
+                            Image(systemName: "minus.circle.fill").foregroundColor(.red)
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .onMove { src, dst in moveWithin(src, dst) }
+            } header: {
+                Text("\(isToolbar ? "定制工具栏" : "定制菜单栏")（\(mine.count) 项）")
+            } footer: {
+                Text("点右上角「编辑」拖三横线调顺序；红色减号移除；蓝色箭头把这一项挪到另一栏。")
+            }
+
+            Section("添加功能（功能池 · \(available.count)）") {
+                ForEach(available, id: \.id) { it in
+                    Button { add(it.id) } label: {
+                        HStack {
+                            Image(systemName: it.symbol).frame(width: 22)
+                            Text(it.name)
+                            Spacer()
+                            if otherIDs.contains(it.id) {
+                                Text("从另一栏挪来")
+                                    .font(.caption2).foregroundColor(.secondary)
+                            }
+                            Image(systemName: "plus.circle.fill").foregroundColor(.green)
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+
+            Section {
+                Button("恢复默认版面") {
+                    toolbar = QPBarCatalog.defaultToolbar
+                    menu = QPBarCatalog.defaultMenu
+                    commit()
+                }
+                Button("立即同步到键盘") { commit() }
+                Text("两栏共用同一份配置：在 App 里改完，切到 墨指 键盘（或收起再弹出）立即生效。默认版面写死在源码里，配置坏了随时一键恢复。")
+                    .font(.footnote).foregroundColor(.secondary)
+            }
+        }
+        .navigationTitle(isToolbar ? "定制工具栏" : "定制菜单栏")
+        .environment(\.editMode, $editMode)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) { EditButton() }
+        }
+        .onAppear(perform: load)
+    }
+
+    private func load() {
+        let s = QPSharedHistory.sharedBarLayout()
+        if s.at > localAt {
+            toolbar = s.toolbar
+            menu = s.menu
+            localAt = s.at
+        } else {
+            toolbar = decode(tbStored, fallback: QPBarCatalog.defaultToolbar)
+            menu = decode(mnStored, fallback: QPBarCatalog.defaultMenu)
+        }
+    }
+
+    private func commit() {
+        let t = QPBarCatalog.sanitize(toolbar)
+        let m = QPBarCatalog.sanitize(menu)
+        toolbar = t
+        menu = m
+        tbStored = encode(t)
+        mnStored = encode(m)
+        localAt = QPSharedHistory.setSharedBarLayout(toolbar: t, menu: m)
+    }
+
+    private func encode(_ a: [String]) -> String {
+        guard let d = try? JSONSerialization.data(withJSONObject: a, options: []) else { return "" }
+        return String(data: d, encoding: .utf8) ?? ""
+    }
+
+    private func decode(_ s: String, fallback: [String]) -> [String] {
+        guard let d = s.data(using: .utf8),
+              let a = (try? JSONSerialization.jsonObject(with: d)) as? [String] else { return fallback }
+        let v = QPBarCatalog.sanitize(a)
+        return v.isEmpty ? fallback : v
+    }
+
+    private func setMine(_ a: [String]) {
+        if isToolbar { toolbar = a } else { menu = a }
+    }
+
+    private func setOther(_ a: [String]) {
+        if isToolbar { menu = a } else { toolbar = a }
+    }
+
+    private func moveWithin(_ src: IndexSet, _ dst: Int) {
+        var a = mine
+        a.move(fromOffsets: src, toOffset: dst)
+        setMine(a)
+        commit()
+    }
+
+    private func remove(_ id: String) {
+        var a = mine
+        a.removeAll { $0 == id }
+        setMine(a)
+        commit()
+    }
+
+    private func add(_ id: String) {
+        var a = mine
+        guard !a.contains(id) else { return }
+        a.append(id)
+        setMine(a)
+        // 从另一栏挪过来 = 另一栏里删掉，保证一个功能只在一栏出现
+        var other = otherIDs
+        other.removeAll { $0 == id }
+        setOther(other)
+        commit()
+    }
+
+    private func moveToOther(_ id: String) {
+        var a = mine
+        a.removeAll { $0 == id }
+        setMine(a)
+        var other = otherIDs
+        if !other.contains(id) { other.append(id) }
+        setOther(other)
+        commit()
+    }
+}
+
 // MARK: - 设置详情：连续复制
 
 struct ContinuousView: View {
@@ -1110,7 +1291,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("墨指 v1.8.34 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.35 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

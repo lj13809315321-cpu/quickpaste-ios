@@ -14,8 +14,8 @@ android {
         applicationId 'app.mulberry6323.mozhi'
         minSdk 24
         targetSdk 34
-        versionCode 53
-        versionName '1.8.34-float'
+        versionCode 54
+        versionName '1.8.35-float'
     }
 
     buildTypes {

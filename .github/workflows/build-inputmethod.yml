@@ -1,4 +1,4 @@
-# 墨指 Mozhi v1.8.34 同步工具：一次编译产出「安卓 APK（悬浮胶囊）+ iOS IPA（键盘扩展）」。
+# 墨指 Mozhi v1.8.35 同步工具：一次编译产出「安卓 APK（悬浮胶囊）+ iOS IPA（键盘扩展）」。
 #
 # 与早期 WebView 壳 / 安卓输入法完全不同：
 #   安卓 = 悬浮胶囊前台服务（TYPE_APPLICATION_OVERLAY 可拖拽球）+ 透明 Compose 面板
@@ -261,7 +261,7 @@ jobs:
           git rm -f --ignore-unmatch out/QuickPaste-Sync-iOS.ipa || true
           rm -f out/QuickPaste-Sync-iOS.ipa
           {
-            echo "墨指 v1.8.34 同步工具 手机安装包"
+            echo "墨指 v1.8.35 同步工具 手机安装包"
             echo "形态：安卓悬浮胶囊（前台服务+无障碍抓剪贴板，非输入法/非 WebView 壳）/ iOS 键盘扩展（原生键盘，非 WebView 壳）"
             echo "安卓交付：debug 签名 APK（开启悬浮窗/无障碍后直接用）"
             echo "苹果交付：未签名 IPA（手机端签名工具直接导入）"

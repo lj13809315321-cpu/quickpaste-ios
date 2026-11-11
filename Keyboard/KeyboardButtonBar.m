@@ -4,6 +4,8 @@
 //
 
 #import "KeyboardButtonBar.h"
+// v1.8.35「中文转译」用 ICU 的简↔繁转换，CFStringTransform 声明在这个头里。
+#import <CoreFoundation/CoreFoundation.h>
 
 static NSInteger const kKBBarTagBase = 0x4B420100;
 static NSUInteger const kKBBarMaxHistory = 50;
@@ -43,16 +45,45 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
             @"paste":        @(KBKeyboardActionPaste),
             @"nextKeyboard": @(KBKeyboardActionNextKeyboard),
             @"selectAll":    @(KBKeyboardActionSelectAll),
+            @"delete":       @(KBKeyboardActionBackspace),
+            @"collapse":     @(KBKeyboardActionDismiss),
+            @"closeKeyboard":@(KBKeyboardActionDismiss),
         };
     });
     return map;
+}
+
+/// v1.8.35 功能 id 的显示名（与 Shared/QPBarCatalog.swift 的 title 一致）。
+static NSString *KBBarTitleForID(NSString *aid) {
+    static NSDictionary<NSString *, NSString *> *titles = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        titles = @{
+            @"nextKeyboard": @"切换", @"dismiss": @"关闭", @"translate": @"转译",
+            @"screenshot": @"截图", @"undo": @"撤销", @"cursorLeft": @"←",
+            @"cursorRight": @"→", @"selectAll": @"全选", @"cut": @"剪切",
+            @"copy": @"复制", @"paste": @"粘贴", @"redo": @"重做",
+            @"delete": @"删除", @"moveStart": @"开头", @"moveEnd": @"结尾",
+            @"collapse": @"收起", @"filter": @"筛选", @"sort": @"排序",
+            @"phrase": @"常用语", @"symbols": @"符号", @"status": @"状态",
+            @"clear": @"清除"
+        };
+    });
+    return titles[aid] ?: aid;
+}
+
+static BOOL KBBarNeedsFullAccessForID(NSString *aid) {
+    return [@[@"copy", @"cut", @"paste", @"selectAll", @"translate", @"screenshot"]
+            containsObject:aid];
 }
 
 @interface KBKeyboardButtonBar ()
 @property (nonatomic, weak) UIInputViewController *hostController;
 @property (nonatomic, strong) NSMutableArray<UIButton *> *buttons;
 @property (nonatomic, strong) NSMutableArray<NSString *> *insertHistory;
+@property (nonatomic, strong) NSMutableArray<NSString *> *redoHistory;
 + (NSString *)kb_titleForAction:(KBKeyboardAction)action;
+- (void)kb_buttonTappedID:(UIButton *)sender;
 + (BOOL)kb_requiresFullAccessForAction:(KBKeyboardAction)action;
 - (void)kb_rebuildButtons;
 - (void)kb_buttonTapped:(UIButton *)sender;
@@ -65,6 +96,9 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
 @end
 
 @implementation KBKeyboardButtonBar
+
+// 只手写了 setter，显式 synthesize 保证 _actionIDs ivar 一定存在。
+@synthesize actionIDs = _actionIDs;
 
 #pragma mark - 构造与配置
 
@@ -79,6 +113,7 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
         _barHeight = 44;
         _buttons = [NSMutableArray array];
         _insertHistory = [NSMutableArray array];
+        _redoHistory = [NSMutableArray array];
         _buttonActions = @[@(KBKeyboardActionDismiss), @(KBKeyboardActionUndo),
                            @(KBKeyboardActionCursorLeft), @(KBKeyboardActionCursorRight)];
         self.backgroundColor = [UIColor clearColor];
@@ -156,6 +191,11 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
     [self setNeedsLayout];
 }
 
+- (void)setActionIDs:(NSArray<NSString *> *)actionIDs {
+    _actionIDs = [actionIDs copy] ?: @[];
+    [self kb_rebuildButtons];
+}
+
 - (void)setButtonActions:(NSArray<NSNumber *> *)buttonActions {
     _buttonActions = [buttonActions copy] ?: @[];
     [self kb_rebuildButtons];
@@ -202,6 +242,34 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
         [button removeFromSuperview];
     }
     [self.buttons removeAllObjects];
+
+    // v1.8.35 定制菜单栏：按功能 id 建按钮，点击统一回调 Swift 分发。
+    if (self.actionIDs.count > 0) {
+        NSUInteger idx = 0;
+        for (NSString *aid in self.actionIDs) {
+            UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+            button.tag = kKBBarTagBase + (NSInteger)idx;
+            UIColor *ink = [UIColor colorWithDynamicProvider:^UIColor * (UITraitCollection *trait) {
+                return trait.userInterfaceStyle == UIUserInterfaceStyleDark
+                    ? [UIColor colorWithRed:240.0 / 255.0 green:241.0 / 255.0 blue:245.0 / 255.0 alpha:1]
+                    : [UIColor colorWithRed:17.0 / 255.0 green:17.0 / 255.0 blue:17.0 / 255.0 alpha:1];
+            }];
+            button.tintColor = ink;
+            [button setTitleColor:ink forState:UIControlStateNormal];
+            [button setTitle:KBBarTitleForID(aid) forState:UIControlStateNormal];
+            button.titleLabel.font = [UIFont systemFontOfSize:15];
+            button.titleLabel.adjustsFontSizeToFitWidth = YES;
+            button.titleLabel.minimumScaleFactor = 0.7;
+            [button addTarget:self action:@selector(kb_buttonTappedID:)
+              forControlEvents:UIControlEventTouchUpInside];
+            [self addSubview:button];
+            [self.buttons addObject:button];
+            idx += 1;
+        }
+        [self setNeedsLayout];
+        [self refreshAccessState];
+        return;
+    }
 
     for (NSNumber *value in self.buttonActions) {
         KBKeyboardAction action = (KBKeyboardAction)value.integerValue;
@@ -251,6 +319,17 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
 
 - (void)refreshAccessState {
     BOOL fullAccess = [self kb_hasFullAccess];
+    if (self.actionIDs.count > 0) {
+        for (UIButton *button in self.buttons) {
+            NSInteger idx = button.tag - kKBBarTagBase;
+            NSString *aid = (idx >= 0 && idx < (NSInteger)self.actionIDs.count)
+                ? self.actionIDs[idx] : @"";
+            BOOL allowed = !KBBarNeedsFullAccessForID(aid) || fullAccess;
+            button.enabled = allowed;
+            button.alpha = allowed ? 1.0 : 0.4;
+        }
+        return;
+    }
     for (UIButton *button in self.buttons) {
         KBKeyboardAction action = (KBKeyboardAction)(button.tag - kKBBarTagBase);
         BOOL allowed = ![KBKeyboardButtonBar kb_requiresFullAccessForAction:action] || fullAccess;
@@ -288,6 +367,45 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
         [self kb_performAction:action];
     }
     [self refreshAccessState];
+}
+
+- (void)kb_buttonTappedID:(UIButton *)sender {
+    // 与老按钮一样的按下轻震（声音由 Swift 侧统一播，避免双响）
+    NSNumber *hapticPref = [[NSUserDefaults standardUserDefaults] objectForKey:@"qp.cursorHaptic"];
+    if (hapticPref == nil || hapticPref.boolValue) {
+        static UIImpactFeedbackGenerator *gen = nil;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            gen = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+        });
+        [gen impactOccurred];
+    }
+    NSInteger idx = sender.tag - kKBBarTagBase;
+    if (idx >= 0 && idx < (NSInteger)self.actionIDs.count && self.onAction) {
+        self.onAction(self.actionIDs[idx]);
+    }
+    [self refreshAccessState];
+}
+
+/// 老动作由本类现成实现执行；返回 NO 的交给 Swift 侧 performBarAction。
+- (BOOL)performActionForID:(NSString *)actionID {
+    NSNumber *value = KBBarActionMap()[actionID];
+    if (!value) {
+        return NO;
+    }
+    [self kb_performAction:(KBKeyboardAction)value.integerValue];
+    return YES;
+}
+
+- (void)performRedo {
+    NSString *last = self.redoHistory.lastObject;
+    if (last.length == 0) {
+        [self.hostController.textDocumentProxy deleteBackward];
+        return;
+    }
+    [self.redoHistory removeLastObject];
+    [self.hostController.textDocumentProxy insertText:last];
+    [self recordInsertedText:last];
 }
 
 - (void)kb_performAction:(KBKeyboardAction)action {
@@ -339,6 +457,7 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
         return;
     }
     [self.insertHistory addObject:[text copy]];
+    [self.redoHistory removeAllObjects];
     if (self.insertHistory.count > kKBBarMaxHistory) {
         [self.insertHistory removeObjectAtIndex:0];
     }
@@ -355,6 +474,10 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
         return;
     }
     [self.insertHistory removeLastObject];
+    [self.redoHistory addObject:[last copy]];
+    if (self.redoHistory.count > kKBBarMaxHistory) {
+        [self.redoHistory removeObjectAtIndex:0];
+    }
 
     NSString *before = proxy.documentContextBeforeInput ?: @"";
     if ([before hasSuffix:last]) {
@@ -457,6 +580,20 @@ static NSDictionary<NSString *, NSNumber *> *KBBarActionMap(void) {
             self.onFeedback(@"未能读取输入框内容（该输入框限制了上下文读取）");
         }
     }
+}
+
++ (NSString *)kb_translateChinese:(NSString *)text traditional:(BOOL)traditional {
+    if (text.length == 0) {
+        return text;
+    }
+    NSMutableString *s = [text mutableCopy];
+    CFStringRef transform = traditional
+        ? CFSTR("Simplified-Traditional") : CFSTR("Traditional-Simplified");
+    Boolean ok = CFStringTransform((CFMutableStringRef)s, NULL, transform, false);
+    if (!ok) {
+        return text;
+    }
+    return [s copy] ?: text;
 }
 
 @end

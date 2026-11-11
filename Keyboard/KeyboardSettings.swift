@@ -329,7 +329,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
             navRow("重新播放引导页") { [weak self] in self?.push(.onboarding) },
             navRow("关于本版本") { [weak self] in self?.push(.about) }
         ]))
-        body.addArrangedSubview(foot("墨指 v1.8.34 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
+        body.addArrangedSubview(foot("墨指 v1.8.35 · 真·系统输入法 · 数据仅在同一 WiFi 内传输"))
     }
 
     // MARK: - 键盘设置（开关）
@@ -366,6 +366,13 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
                 self?.prefs.cursorHaptic = v
                 QPHapticButton.hapticEnabled = v
             },
+            // v1.8.35：按键声音（系统点击音），两端共用同一个开关
+            switchRow("按键声音",
+                      sub: "按下任意按键播放系统键盘点击音，跟随系统键盘反馈与静音键；主 App 设置 → 键盘设置里是同一个开关",
+                      isOn: QPSharedHistory.keySoundOn()) { [weak self] v in
+                QPSharedHistory.setKeySound(v)
+                self?.delegate?.settingsDidChange()
+            },
             // v1.8.23：复制成功的确认震动，与「按下按键就震」分开；两端共用同一个开关
             switchRow("复制成功震动",
                       sub: "复制成功后轻震一下，确认内容已经进剪贴板；主 App 设置 → 局域网同步里是同一个开关",
@@ -395,7 +402,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
 
         body.addArrangedSubview(groupTitle("✕ 键删除手势"))
         body.addArrangedSubview(card([
-            info("轻点删除光标前一个字；上滑清空输入框；下滑逐步恢复；长按 2 秒打开剪贴板／常用语菜单。"),
+            info("轻点删除光标前一个字；原地长按连续逐字删、每删一个轻震并出轻音；上滑清空、下滑恢复、按住左滑逐字删全部保留。快捷菜单在左边「收起键盘」键长按。"),
             info("※ 这些手势在真键盘里已实现，不需要额外开关。")
         ]))
 
@@ -639,7 +646,7 @@ final class KeyboardSettings: NSObject, UITextFieldDelegate {
                 self?.delegate?.settingsClearAll()
             }
         ]))
-        body.addArrangedSubview(foot("电脑端需启动 墨指 同步服务（v1.8.34），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
+        body.addArrangedSubview(foot("电脑端需启动 墨指 同步服务（v1.8.35），手机与电脑连同一 WiFi。图片以 HTTP 二进制直传，不经公网。"))
     }
 
     // MARK: - 教程
