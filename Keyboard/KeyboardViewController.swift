@@ -1227,7 +1227,8 @@ final class KeyboardViewController: UIInputViewController {
     /// 其余（工具栏专有 / 新增动作）在本文件实现，一个 id 只有一处行为。
     private func performBarAction(_ id: String) {
         playKeySoundIfNeeded()
-        if kbBar?.performActionForID(id) == true { return }
+        // ObjC 的 -performActionForID: 被 Swift 导入成 performAction(forID:)
+        if kbBar?.performAction(forID: id) == true { return }
         switch id {
         case "collapse", "dismiss", "closeKeyboard":
             dismissKeyboard()
