@@ -850,15 +850,90 @@ enum QPSharedHistory {
     /// 写一次就会改 changeCount，反而会让键盘把刚清掉的内容又当成「新复制」抓回来。
     // MARK: v1.8.35 定制工具栏 / 定制菜单栏（两端共用一份）
 
-    /// 键盘读：没人在 App 里设置过就用与 v1.8.34 真机验证一致的默认版面。
-    static func sharedBarLayout() -> (toolbar: [String], menu: [String], at: Double) {
-        let p = read()
-        return (QPBarCatalog.sanitize(p.barToolbar ?? QPBarCatalog.defaultToolbar),
-                QPBarCatalog.sanitize(p.barMenu ?? QPBarCatalog.defaultMenu),
-                p.barAt ?? 0)
+    /// ★ v1.8.35 build55：两栏配置与按键声音的**独立跨进程通道**。
+    /// 为什么必须有：主 App 与键盘扩展是两个进程；手机端 Ad Hoc 重签常不带
+    /// application-groups，containerURL() 不报错却各返回独立容器 —— 只写 group
+    /// 文件的表现就是「App 里怎么改、键盘都读默认版面」。与 v1.8.34 的 pipstate
+    /// 一样走系统剪贴板自定义类型，零 entitlement、跨进程一定通。
+    private static let barPBType = "app.mulberry6323.mozhi.barlayout"
+    private static let barCacheKey = "qp.kb.barlayout.cache"
+
+    private struct BarSettings: Codable {
+        var toolbar: [String]
+        var menu: [String]
+        var at: Double
+        var sound: Bool? = nil
+        var soundAt: Double? = nil
     }
 
-    /// 主 App 设置页写：时间戳比本地新的一端说了算（与快捷符号同一套机制）。
+    /// 保留用户剪贴板正文与同一 item 里的其它自定义类型，只覆盖自己的 key。
+    /// 单 item 是硬约束：多 item 会让 UIPasteboard.string 读不到正文。
+    private static func publishBarSettings(_ s: BarSettings) {
+        guard pasteboardFallbackEnabled,
+              let data = try? JSONEncoder().encode(s) else { return }
+        let pb = UIPasteboard.general
+        var item: [String: Any] = [:]
+        if let first = pb.items.first {
+            for (k, v) in first where k != "public.utf8-plain-text" && k != "public.text" {
+                item[k] = v
+            }
+        }
+        if let body = pb.string, !body.isEmpty {
+            item["public.utf8-plain-text"] = body
+            item["public.text"] = body
+        }
+        item[barPBType] = data
+        pb.items = [item]
+    }
+
+    private static func readBarSettingsPB() -> BarSettings? {
+        guard pasteboardFallbackEnabled,
+              let data = UIPasteboard.general.data(forPasteboardType: barPBType) else { return nil }
+        return try? JSONDecoder().decode(BarSettings.self, from: data)
+    }
+
+    /// 取「目前已知」的完整配置：独立通道 > group 文件 > 本进程持久化缓存。
+    /// 缓存的作用：用户之后复制别的东西会把剪贴板自定义类型冲掉，有它就不会
+    /// 把版面弹回默认（v1.8.15 syncOff 踩过同一个坑）。
+    private static func currentBarSettings() -> BarSettings {
+        if let s = readBarSettingsPB() { return s }
+        if let p = readGroup() {
+            return BarSettings(toolbar: p.barToolbar ?? QPBarCatalog.defaultToolbar,
+                               menu: p.barMenu ?? QPBarCatalog.defaultMenu,
+                               at: p.barAt ?? 0,
+                               sound: p.keySound, soundAt: p.keySoundAt)
+        }
+        if let d = UserDefaults.standard.data(forKey: barCacheKey),
+           let s = try? JSONDecoder().decode(BarSettings.self, from: d) { return s }
+        return BarSettings(toolbar: QPBarCatalog.defaultToolbar,
+                           menu: QPBarCatalog.defaultMenu, at: 0,
+                           sound: true, soundAt: 0)
+    }
+
+    /// 键盘读：独立通道 / group 文件 / 本进程缓存按时间戳取最新，最后才是默认版面。
+    static func sharedBarLayout() -> (toolbar: [String], menu: [String], at: Double) {
+        var best = currentBarSettings()
+        if let g = readGroup(), let a = g.barAt, a > best.at {
+            best = BarSettings(toolbar: g.barToolbar ?? best.toolbar,
+                               menu: g.barMenu ?? best.menu, at: a,
+                               sound: g.keySound ?? best.sound,
+                               soundAt: g.keySoundAt ?? best.soundAt)
+        }
+        if let d = UserDefaults.standard.data(forKey: barCacheKey),
+           let c = try? JSONDecoder().decode(BarSettings.self, from: d), c.at > best.at {
+            best = c
+        }
+        guard best.at > 0 else {
+            return (QPBarCatalog.defaultToolbar, QPBarCatalog.defaultMenu, 0)
+        }
+        if let d = try? JSONEncoder().encode(best) {
+            UserDefaults.standard.set(d, forKey: barCacheKey)
+        }
+        return (QPBarCatalog.sanitize(best.toolbar),
+                QPBarCatalog.sanitize(best.menu), best.at)
+    }
+
+    /// 主 App 设置页写：group（若真互通）+ 独立通道（一定通）各写一份。
     @discardableResult
     static func setSharedBarLayout(toolbar: [String], menu: [String]) -> Double {
         let at = Date().timeIntervalSince1970
@@ -867,13 +942,23 @@ enum QPSharedHistory {
         p.barMenu = QPBarCatalog.sanitize(menu)
         p.barAt = at
         write(p, keeping: UIPasteboard.general.string)
+        var s = currentBarSettings()
+        s.toolbar = p.barToolbar ?? QPBarCatalog.defaultToolbar
+        s.menu = p.barMenu ?? QPBarCatalog.defaultMenu
+        s.at = at
+        publishBarSettings(s)
         return at
+    }
+
+    /// 设置页出现时重新发布一次：用户切回 App 再回键盘，通道一定是新鲜的。
+    static func republishBarSettings() {
+        publishBarSettings(currentBarSettings())
     }
 
     /// 按键声音（系统点击音）。nil = 默认开。
     static func keySoundOn() -> Bool {
-        let p = read()
-        return p.keySound ?? true
+        if let s = readBarSettingsPB(), let v = s.sound { return v }
+        return read().keySound ?? true
     }
 
     @discardableResult
@@ -883,6 +968,11 @@ enum QPSharedHistory {
         p.keySound = on
         p.keySoundAt = at
         write(p, keeping: UIPasteboard.general.string)
+        var s = currentBarSettings()
+        s.sound = on
+        s.soundAt = at
+        if s.at <= 0 { s.at = at }
+        publishBarSettings(s)
         return at
     }
 

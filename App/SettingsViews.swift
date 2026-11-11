@@ -1044,7 +1044,6 @@ struct BarCustomizeView: View {
 
     @AppStorage("qp.app.barToolbar") private var tbStored: String = ""
     @AppStorage("qp.app.barMenu") private var mnStored: String = ""
-    @AppStorage("qp.app.barAt") private var localAt: Double = 0
     @State private var toolbar: [String] = QPBarCatalog.defaultToolbar
     @State private var menu: [String] = QPBarCatalog.defaultMenu
     @State private var editMode: EditMode = .inactive
@@ -1052,26 +1051,24 @@ struct BarCustomizeView: View {
     private var mine: [String] { isToolbar ? toolbar : menu }
     private var otherIDs: [String] { isToolbar ? menu : toolbar }
 
-    /// 功能池里还没进本栏的项（含另一栏的项，点添加就是「挪过来」）。
-    private var available: [QPBarCatalog.Item] {
-        QPBarCatalog.all.filter { !mine.contains($0.id) }
+    /// 两栏都没用的功能
+    private var unused: [QPBarCatalog.Item] {
+        QPBarCatalog.all.filter { !mine.contains($0.id) && !otherIDs.contains($0.id) }
+    }
+    /// 在另一栏里的功能（点 + 就是挪过来）
+    private var inOther: [QPBarCatalog.Item] {
+        QPBarCatalog.all.filter { otherIDs.contains($0.id) }
     }
 
     var body: some View {
         Form {
             Section {
                 ForEach(mine, id: \.self) { id in
-                    HStack(spacing: 10) {
+                    HStack(spacing: 12) {
                         Image(systemName: QPBarCatalog.symbol(id))
                             .frame(width: 22)
                             .foregroundColor(.blue)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(QPBarCatalog.name(id))
-                            Text(isToolbar
-                                 ? "显示为工具条图标"
-                                 : "显示为菜单栏文字 · \(QPBarCatalog.title(id))")
-                                .font(.caption2).foregroundColor(.secondary)
-                        }
+                        Text(QPBarCatalog.name(id))
                         Spacer(minLength: 4)
                         Button { moveToOther(id) } label: {
                             Image(systemName: isToolbar ? "arrow.down.to.line" : "arrow.up.to.line")
@@ -1085,26 +1082,25 @@ struct BarCustomizeView: View {
                 }
                 .onMove { src, dst in moveWithin(src, dst) }
             } header: {
-                Text("\(isToolbar ? "定制工具栏" : "定制菜单栏")（\(mine.count) 项）")
+                Text("\(isToolbar ? "工具栏显示" : "菜单栏显示")（\(mine.count) 项）")
             } footer: {
-                Text("点右上角「编辑」拖三横线调顺序；红色减号移除；蓝色箭头把这一项挪到另一栏。")
+                Text("点右上角「编辑」可拖动排序；蓝色箭头把这一项挪到另一栏；红色减号移除。改完即时生效，切回键盘即可看到。")
             }
 
-            Section("添加功能（功能池 · \(available.count)）") {
-                ForEach(available, id: \.id) { it in
-                    Button { add(it.id) } label: {
-                        HStack {
-                            Image(systemName: it.symbol).frame(width: 22)
-                            Text(it.name)
-                            Spacer()
-                            if otherIDs.contains(it.id) {
-                                Text("从另一栏挪来")
-                                    .font(.caption2).foregroundColor(.secondary)
-                            }
-                            Image(systemName: "plus.circle.fill").foregroundColor(.green)
-                        }
+            if !inOther.isEmpty {
+                Section("从\(isToolbar ? "菜单栏" : "工具栏")移过来") {
+                    ForEach(inOther, id: \.id) { it in
+                        addRow(it, hint: "点 + 挪过来")
                     }
-                    .buttonStyle(.borderless)
+                }
+            }
+
+            if !unused.isEmpty {
+                Section("可用功能（\(unused.count)）") {
+                    ForEach(unused, id: \.id) { it in
+                        addRow(it, hint: QPBarCatalog.needsFullAccess(it.id)
+                               ? "需完全访问" : "")
+                    }
                 }
             }
 
@@ -1114,9 +1110,6 @@ struct BarCustomizeView: View {
                     menu = QPBarCatalog.defaultMenu
                     commit()
                 }
-                Button("立即同步到键盘") { commit() }
-                Text("两栏共用同一份配置：在 App 里改完，切到 墨指 键盘（或收起再弹出）立即生效。默认版面写死在源码里，配置坏了随时一键恢复。")
-                    .font(.footnote).foregroundColor(.secondary)
             }
         }
         .navigationTitle(isToolbar ? "定制工具栏" : "定制菜单栏")
@@ -1124,19 +1117,36 @@ struct BarCustomizeView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) { EditButton() }
         }
-        .onAppear(perform: load)
+        .onAppear {
+            load()
+            // 通道可能被一次普通复制冲掉，进页面顺手重新发布，保证切回键盘时新鲜。
+            QPSharedHistory.republishBarSettings()
+        }
+    }
+
+    @ViewBuilder
+    private func addRow(_ it: QPBarCatalog.Item, hint: String) -> some View {
+        Button { add(it.id) } label: {
+            HStack {
+                Image(systemName: it.symbol).frame(width: 22)
+                Text(it.name)
+                Spacer()
+                if !hint.isEmpty {
+                    Text(hint).font(.caption2).foregroundColor(.secondary)
+                }
+                Image(systemName: "plus.circle.fill").foregroundColor(.green)
+            }
+        }
+        .buttonStyle(.borderless)
     }
 
     private func load() {
         let s = QPSharedHistory.sharedBarLayout()
-        if s.at > localAt {
-            toolbar = s.toolbar
-            menu = s.menu
-            localAt = s.at
-        } else {
-            toolbar = decode(tbStored, fallback: QPBarCatalog.defaultToolbar)
-            menu = decode(mnStored, fallback: QPBarCatalog.defaultMenu)
-        }
+        toolbar = s.toolbar
+        menu = s.menu
+        // 本地留一份，共享通道被系统临时清空时页面不会显示回弹
+        tbStored = encode(s.toolbar)
+        mnStored = encode(s.menu)
     }
 
     private func commit() {
@@ -1146,19 +1156,12 @@ struct BarCustomizeView: View {
         menu = m
         tbStored = encode(t)
         mnStored = encode(m)
-        localAt = QPSharedHistory.setSharedBarLayout(toolbar: t, menu: m)
+        _ = QPSharedHistory.setSharedBarLayout(toolbar: t, menu: m)
     }
 
     private func encode(_ a: [String]) -> String {
         guard let d = try? JSONSerialization.data(withJSONObject: a, options: []) else { return "" }
         return String(data: d, encoding: .utf8) ?? ""
-    }
-
-    private func decode(_ s: String, fallback: [String]) -> [String] {
-        guard let d = s.data(using: .utf8),
-              let a = (try? JSONSerialization.jsonObject(with: d)) as? [String] else { return fallback }
-        let v = QPBarCatalog.sanitize(a)
-        return v.isEmpty ? fallback : v
     }
 
     private func setMine(_ a: [String]) {

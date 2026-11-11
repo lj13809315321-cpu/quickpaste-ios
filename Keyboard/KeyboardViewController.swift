@@ -182,6 +182,7 @@ final class KeyboardViewController: UIInputViewController {
         // v1.8.35：两栏配置与按键声音开关（共享通道，主 App 改完键盘下次弹出即生效）
         let initialLayout = QPSharedHistory.sharedBarLayout()
         barLayout = (initialLayout.toolbar, initialLayout.menu)
+        appliedBarAt = initialLayout.at
         keySoundEnabled = QPSharedHistory.keySoundOn()
         QPHapticButton.soundEnabled = keySoundEnabled
         QPHapticButton.hapticEnabled = prefs.cursorHaptic
@@ -283,6 +284,7 @@ final class KeyboardViewController: UIInputViewController {
         // v1.8.35：每次弹出重读两栏配置与声音开关，并立即应用版面
         let layout = QPSharedHistory.sharedBarLayout()
         barLayout = (layout.toolbar, layout.menu)
+        appliedBarAt = layout.at
         keySoundEnabled = QPSharedHistory.keySoundOn()
         QPHapticButton.soundEnabled = keySoundEnabled
         applyBarLayout()
@@ -395,6 +397,31 @@ final class KeyboardViewController: UIInputViewController {
     //   复制新内容后 changeCount 必然变化，点按照样能立刻收录，行为不丢。
     @objc private func userDidInteract() {
         checkClipboard()
+        refreshBarLayoutIfNeeded()
+    }
+
+    // MARK: v1.8.35 build55：设置改动即时生效
+    // 键盘扩展进程会被系统复用，从主 App 切回来时 viewWillAppear 不一定触发；
+    // 每次点按顺手做一次 0.6s 节流的轻量重读，配置 at 或内容真变了才重画。
+    private var lastBarCheck: TimeInterval = 0
+    private var appliedBarAt: Double = -1
+
+    private func refreshBarLayoutIfNeeded() {
+        let now = Date().timeIntervalSince1970
+        guard now - lastBarCheck > 0.6 else { return }
+        lastBarCheck = now
+        let layout = QPSharedHistory.sharedBarLayout()
+        let sound = QPSharedHistory.keySoundOn()
+        if sound != keySoundEnabled {
+            keySoundEnabled = sound
+            QPHapticButton.soundEnabled = sound
+        }
+        guard layout.at != appliedBarAt ||
+              layout.toolbar != barLayout.toolbar ||
+              layout.menu != barLayout.menu else { return }
+        appliedBarAt = layout.at
+        barLayout = (layout.toolbar, layout.menu)
+        applyBarLayout()
     }
 
     /// ★ 只有 changeCount 真的变了才读正文。
@@ -1164,7 +1191,9 @@ final class KeyboardViewController: UIInputViewController {
 
     /// v1.8.35：把主 App 下发的两栏配置应用到键盘（每次弹出 / 设置改完都调）。
     private func applyBarLayout() {
-        kbBar?.actionIDs = barLayout.menu
+        let menuIDs = QPBarCatalog.sanitize(barLayout.menu)
+        kbBar?.isHidden = menuIDs.isEmpty
+        if let bar = kbBar, bar.actionIDs != menuIDs { bar.actionIDs = menuIDs }
         kbBar?.onAction = { [weak self] aid in self?.performBarAction(aid) }
         applyToolbarLayout()
     }
@@ -1175,8 +1204,8 @@ final class KeyboardViewController: UIInputViewController {
         ["collapse", "filter", "sort", "phrase", "symbols", "status", "clear"]
 
     private func applyToolbarLayout() {
-        let ids = QPBarCatalog.sanitize(barLayout.toolbar.isEmpty
-                                        ? QPBarCatalog.defaultToolbar : barLayout.toolbar)
+        // 允许真的删空：删空就该是空栏，不能悄悄弹回默认 7 项。
+        let ids = QPBarCatalog.sanitize(barLayout.toolbar)
         for id in ids where !Self.nativeToolIDs.contains(id) {
             if toolbar.arrangedSubviews.contains(where: { $0.accessibilityIdentifier == id }) {
                 continue
@@ -1209,7 +1238,14 @@ final class KeyboardViewController: UIInputViewController {
             }
         }
         for v in toolbar.arrangedSubviews {
-            v.isHidden = !ordered.contains(v)
+            guard !ordered.contains(v) else { v.isHidden = false; continue }
+            // 从菜单栏挪上来的临时按钮：不在配置里就直接移除，别越堆越多。
+            if let id = v.accessibilityIdentifier, !Self.nativeToolIDs.contains(id) {
+                toolbar.removeArrangedSubview(v)
+                v.removeFromSuperview()
+            } else {
+                v.isHidden = true
+            }
         }
         for (i, v) in ordered.enumerated() {
             toolbar.removeArrangedSubview(v)
