@@ -18,6 +18,7 @@ class KeyboardViewController: UIInputViewController {
     private let contentHost = UIView()
     private let keyStack = UIStackView()
     private let modeBar = UIStackView()
+    private let bufferLabel = UILabel()
 
     private var engine = PinyinEngine.shared
 
@@ -31,6 +32,7 @@ class KeyboardViewController: UIInputViewController {
     }
 
     private func setupUI() {
+        // 候选条
         candidateStack.axis = .horizontal
         candidateStack.spacing = 8
         candidateStack.alignment = .center
@@ -39,17 +41,33 @@ class KeyboardViewController: UIInputViewController {
         candidateScroll.addSubview(candidateStack)
         candidateScroll.translatesAutoresizingMaskIntoConstraints = false
         candidateScroll.showsHorizontalScrollIndicator = false
+        candidateScroll.backgroundColor = UIColor(red: 0.97, green: 0.97, blue: 0.98, alpha: 1)
         view.addSubview(candidateScroll)
 
+        // 缓冲提示（证明按键已响应）
+        bufferLabel.font = UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)
+        bufferLabel.textColor = .systemBlue
+        bufferLabel.setContentHuggingPriority(.required, for: .horizontal)
+        bufferLabel.isHidden = true
+
+        // 键盘区域（自适应填充，不溢出）
         keyStack.axis = .vertical
         keyStack.spacing = 6
+        keyStack.distribution = .fillEqually        // 各行均分高度，绝不重叠
         keyStack.translatesAutoresizingMaskIntoConstraints = false
-
         contentHost.translatesAutoresizingMaskIntoConstraints = false
+        contentHost.addSubview(keyStack)
+        NSLayoutConstraint.activate([
+            keyStack.topAnchor.constraint(equalTo: contentHost.topAnchor, constant: 4),
+            keyStack.leadingAnchor.constraint(equalTo: contentHost.leadingAnchor, constant: 6),
+            keyStack.trailingAnchor.constraint(equalTo: contentHost.trailingAnchor, constant: -6),
+            keyStack.bottomAnchor.constraint(equalTo: contentHost.bottomAnchor, constant: -4),
+        ])
         keyArea.addSubview(contentHost)
         keyArea.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(keyArea)
 
+        // 模式栏
         modeBar.axis = .horizontal
         modeBar.spacing = 4
         modeBar.distribution = .fillEqually
@@ -74,10 +92,16 @@ class KeyboardViewController: UIInputViewController {
             contentHost.trailingAnchor.constraint(equalTo: keyArea.trailingAnchor),
             contentHost.bottomAnchor.constraint(equalTo: keyArea.bottomAnchor),
 
+            // 关键：keyStack 上下都钉住，行均分 keyArea 高度
+            keyStack.topAnchor.constraint(equalTo: contentHost.topAnchor, constant: 4),
+            keyStack.leadingAnchor.constraint(equalTo: contentHost.leadingAnchor, constant: 6),
+            keyStack.trailingAnchor.constraint(equalTo: contentHost.trailingAnchor, constant: -6),
+            keyStack.bottomAnchor.constraint(equalTo: contentHost.bottomAnchor, constant: -4),
+
             modeBar.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
             modeBar.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
             modeBar.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
-            modeBar.heightAnchor.constraint(equalToConstant: 38),
+            modeBar.heightAnchor.constraint(equalToConstant: 40),
         ])
         NSLayoutConstraint.activate([
             candidateStack.topAnchor.constraint(equalTo: candidateScroll.topAnchor),
@@ -143,6 +167,14 @@ class KeyboardViewController: UIInputViewController {
             b.addAction(UIAction { [weak self] _ in self?.commit(c) }, for: .touchUpInside)
             candidateStack.addArrangedSubview(b)
         }
+        // 缓冲提示：证明按键已响应（9键/26键）
+        if isComposeMode && !compose.isEmpty {
+            bufferLabel.isHidden = false
+            bufferLabel.text = "  ⟨\(compose)⟩  "
+        } else {
+            bufferLabel.isHidden = true
+        }
+        if !bufferLabel.isHidden { candidateStack.insertArrangedSubview(bufferLabel, at: 0) }
         candidateScroll.layoutIfNeeded()
     }
 
@@ -168,14 +200,22 @@ class KeyboardViewController: UIInputViewController {
     private func confirm() {
         if let first = displayCandidates.first {
             commit(first)
+        } else if isComposeMode && !compose.isEmpty {
+            // 没匹配到词：直接提交当前拼音字母（9键提交数字串/26键提交字母）
+            textDocumentProxy.insertText(compose)
+            lastCommitted = compose
+            compose = ""
+            refresh()
         } else {
             textDocumentProxy.insertText(" ")
         }
     }
 
-    // MARK: - 键盘区域（按模式重建）
+    // MARK: - 键盘区域（按模式重建，先清空避免行累积）
     private func updateKeyArea() {
-        contentHost.subviews.forEach { $0.removeFromSuperview() }
+        // 移除旧的剪贴板滚动层（保留 keyStack 及其约束）
+        contentHost.subviews.forEach { if $0 !== keyStack { $0.removeFromSuperview() } }
+        keyStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let rows: [UIStackView]
         switch mode {
         case .chinese9:  rows = nineKeys()
@@ -194,12 +234,6 @@ class KeyboardViewController: UIInputViewController {
             ])
             return
         }
-        contentHost.addSubview(keyStack)
-        NSLayoutConstraint.activate([
-            keyStack.topAnchor.constraint(equalTo: contentHost.topAnchor),
-            keyStack.leadingAnchor.constraint(equalTo: contentHost.leadingAnchor, constant: 6),
-            keyStack.trailingAnchor.constraint(equalTo: contentHost.trailingAnchor, constant: -6),
-        ])
         for r in rows { keyStack.addArrangedSubview(r) }
     }
 
@@ -212,7 +246,9 @@ class KeyboardViewController: UIInputViewController {
         b.layer.cornerRadius = 6
         b.titleLabel?.font = UIFont.systemFont(ofSize: 17)
         b.titleLabel?.numberOfLines = 0
-        b.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        b.titleLabel?.textAlignment = .center
+        b.contentVerticalAlignment = .center
+        b.contentHorizontalAlignment = .center
         b.addAction(UIAction { _ in action() }, for: .touchUpInside)
         return b
     }
@@ -320,7 +356,7 @@ class KeyboardViewController: UIInputViewController {
         return rows
     }
 
-    // MARK: - 剪贴板
+    // MARK: - 剪贴板（需完全访问；无访问时安全降级）
     private func clipboardScroll() -> UIScrollView {
         let scroll = UIScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
@@ -333,7 +369,7 @@ class KeyboardViewController: UIInputViewController {
         scroll.addSubview(stack)
 
         var items: [String] = []
-        if let cur = UIPasteboard.general.string, !cur.isEmpty { items.append(cur) }
+        if let cur = safePasteboardString(), !cur.isEmpty { items.append(cur) }
         if let hist = UserDefaults.standard.stringArray(forKey: "kb_clip") { items.append(contentsOf: hist) }
 
         if items.isEmpty {
@@ -373,5 +409,12 @@ class KeyboardViewController: UIInputViewController {
             stack.widthAnchor.constraint(equalTo: scroll.widthAnchor),
         ])
         return scroll
+    }
+
+    /// 安全读取剪贴板：无完全访问时返回 nil，绝不崩溃
+    private func safePasteboardString() -> String? {
+        let pb = UIPasteboard.general
+        guard pb.hasStrings else { return nil }
+        return pb.string
     }
 }
