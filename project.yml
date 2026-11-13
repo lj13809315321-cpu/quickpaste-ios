@@ -1,0 +1,39 @@
+# XcodeGen 工程定义：双 target（主 App + 键盘扩展）
+# 云端构建：xcodegen generate → xcodebuild(不签名) → fix_info_plists → make_unsigned_ipa
+name: PinyinKeyboard
+options:
+  bundleIdPrefix: app.mulberry6323.mozhi
+settings:
+  base:
+    MARKETING_VERSION: 1.0
+    CURRENT_PROJECT_VERSION: 1
+    DEPLOYMENT_TARGET_IOS: 16.0
+    SWIFT_VERSION: 5.9
+    GENERATE_INFOPLIST_FILE: NO
+    TARGETED_DEVICE_FAMILY: "1,2"
+    # 关键：禁止 Xcode 自动生成 plist，否则会丢 CFBundleIdentifier / NSExtension / ATS
+targets:
+  PinyinKeyboard:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+    info:
+      path: App/Info.plist
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: app.mulberry6323.mozhi.pinyinkeyboard
+      PRODUCT_NAME: PinyinKeyboard
+    dependencies:
+      - target: PinyinKeyboardKeyboard
+        embed: true
+
+  PinyinKeyboardKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Keyboard
+    info:
+      path: Keyboard/Info.plist
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: app.mulberry6323.mozhi.pinyinkeyboard.keyboard
+      PRODUCT_NAME: PinyinKeyboardKeyboard

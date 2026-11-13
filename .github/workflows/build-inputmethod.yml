@@ -1,0 +1,43 @@
+name: build-inputmethod
+
+on:
+  push:
+    branches: [inputmethod]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (no signing)
+        run: |
+          xcodebuild \
+            -scheme PinyinKeyboard \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
+
+      - name: Fix Info.plists (force critical keys)
+        run: python3 scripts/fix_info_plists.py build
+
+      - name: Make unsigned IPA
+        run: python3 scripts/make_unsigned_ipa.py build
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinyin-ipa
+          path: out/*.ipa
+          retention-days: 3

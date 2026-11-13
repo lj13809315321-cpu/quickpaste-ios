@@ -1,0 +1,13 @@
+# 开发期词库源与脚本，不进分支（词库已预生成在 Keyboard/ 内）
+assets/
+build_dict.py
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 本地/云端构建产物
+build/
+out/
+build.log
+.DS_Store
