@@ -73,6 +73,7 @@ def main():
 
     if os.path.exists(DST):
         os.remove(DST)
+    os.makedirs(os.path.dirname(DST) or ".", exist_ok=True)
     zout = zipfile.ZipFile(DST, "w", zipfile.ZIP_DEFLATED)
     skipped = []
     for info in zin.infolist():
