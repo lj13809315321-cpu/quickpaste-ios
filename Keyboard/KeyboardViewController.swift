@@ -289,9 +289,9 @@ class KeyboardViewController: UIInputViewController {
 
     // MARK: - 数字
     private func numberKeys() -> [UIStackView] {
-        let r1 = row((1...3).map { key("\($0)") { [weak self] in self?.textDocumentProxy.insertText("\($0)") } })
-        let r2 = row((4...6).map { key("\($0)") { [weak self] in self?.textDocumentProxy.insertText("\($0)") } })
-        let r3 = row((7...9).map { key("\($0)") { [weak self] in self?.textDocumentProxy.insertText("\($0)") } })
+        let r1 = row((1...3).map { n in key("\(n)") { [weak self] in self?.textDocumentProxy.insertText("\(n)") } })
+        let r2 = row((4...6).map { n in key("\(n)") { [weak self] in self?.textDocumentProxy.insertText("\(n)") } })
+        let r3 = row((7...9).map { n in key("\(n)") { [weak self] in self?.textDocumentProxy.insertText("\(n)") } })
         let r4 = row([
             key("⌫") { [weak self] in self?.textDocumentProxy.deleteBackward() },
             key("0") { [weak self] in self?.textDocumentProxy.insertText("0") },
@@ -310,7 +310,7 @@ class KeyboardViewController: UIInputViewController {
         ]
         var rows: [UIStackView] = []
         for set in sets {
-            rows.append(row(set.map { key($0) { [weak self] in self?.textDocumentProxy.insertText($0) } }))
+            rows.append(row(set.map { ch in key(ch) { [weak self] in self?.textDocumentProxy.insertText(ch) } }))
         }
         rows.append(row([
             key("⌫") { [weak self] in self?.textDocumentProxy.deleteBackward() },

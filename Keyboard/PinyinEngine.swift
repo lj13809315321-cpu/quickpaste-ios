@@ -2,7 +2,7 @@ import Foundation
 
 /// 拼音输入法核心引擎：候选生成、9键(T9)展开、语境联想、个人学习、细胞词库。
 /// 全部本地运行，不依赖网络。
-struct PinyinEngine {
+final class PinyinEngine {
     static let shared = PinyinEngine()
 
     // 基础词库
@@ -30,7 +30,7 @@ struct PinyinEngine {
     private init() { load() }
 
     // MARK: - 加载
-    mutating func load() {
+    func load() {
         guard let c = Bundle.main.url(forResource: "pinyin_chars", withExtension: "json"),
               let p = Bundle.main.url(forResource: "pinyin_phrases", withExtension: "json"),
               let a = Bundle.main.url(forResource: "pinyin_assoc", withExtension: "json") else { return }
@@ -65,7 +65,7 @@ struct PinyinEngine {
     }
 
     /// 合并一个细胞词库（key="ni hao" -> [短语]），可被多个领域词库反复调用
-    mutating func mergeCategory(_ dict: [String: [String]]) {
+    func mergeCategory(_ dict: [String: [String]]) {
         for (k, vals) in dict {
             var arr = phraseMap[k] ?? []
             for v in vals where !arr.contains(v) { arr.append(v) }
@@ -172,7 +172,7 @@ struct PinyinEngine {
 
     // MARK: - 个人学习
     /// 提交一个词/短语时调用，记入个人词库并按词频累加。
-    mutating func learn(_ text: String) {
+    func learn(_ text: String) {
         guard let key = pinyinKey(of: text) else { return }
         var inner = userByPinyin[key] ?? [:]
         inner[text, default: 0] += 1
