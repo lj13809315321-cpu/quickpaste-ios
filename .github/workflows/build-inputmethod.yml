@@ -1,10 +1,14 @@
-# 墨指 Mozhi v1.8.35 同步工具：一次编译产出「安卓 APK（悬浮胶囊）+ iOS IPA（键盘扩展）」。
+# 墨指 Mozhi 同步工具构建工作流
 #
-# 与早期 WebView 壳 / 安卓输入法完全不同：
+# 形态说明（与早期 WebView 壳 / 安卓输入法完全不同）：
 #   安卓 = 悬浮胶囊前台服务（TYPE_APPLICATION_OVERLAY 可拖拽球）+ 透明 Compose 面板
-#          + 无障碍服务后台抓剪贴板 + 系统分享接收（对齐 iOS 拖文件）。
+#          + 无障碍服务后台抓剪贴板 + 系统分享接收（独立在 android/ 目录）。
 #   iOS  = Keyboard Extension（.appex / com.apple.keyboard-service），原生键盘 UI。
 # 两端数据源都是电脑端 sync/server.js 的局域网同步服务。
+#
+# 【安卓按需构建】：只有 android/ 目录被改动时才编译安卓 APK；
+#   未改动时整段 apk 任务跳过（不分配 ubuntu runner、不跑 gradle/setup），
+#   回传时沿用仓库内上一版 APK（源码未变，字节一致），并在 BUILD_INFO 标注。
 #
 # 1) push 自动触发，不需要 token / 手动点 Run。
 # 2) 产物由 publish job 提交回仓库 out/，本机 git pull 即可取回。
@@ -25,7 +29,24 @@ permissions:
   contents: write
 
 jobs:
+  # ── 改动探测：本次 push 是否动了 android/ 目录 ──
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      android: ${{ steps.filter.outputs.android }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            android:
+              - 'android/**'
+
   apk:
+    needs: detect
+    # 只有 android/ 真改动才编译安卓；否则整 job 跳过（省 ubuntu runner + gradle 时间）
+    if: needs.detect.outputs.android == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -234,13 +255,16 @@ jobs:
 
   publish:
     needs: [apk, ipa]
+    # 关键：apk 可能因「安卓未改动」被跳过（skipped），默认下游会跟着跳过；
+    # 这里显式改成「只要 iOS 成功就跑」，skipped 也放行。
+    if: ${{ always() && needs.ipa.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
 
-      - name: 下载两个产物
+      - name: 下载产物（安卓未改动时只有 qp-ipa，qp-apk 不存在则沿用仓库旧 APK）
         uses: actions/download-artifact@v4
         with:
           pattern: qp-*
@@ -255,8 +279,20 @@ jobs:
           ls -lh out/
           APK=out/QuickPaste-Sync-Android.apk
           UIPA=out/QuickPaste-Sync-iOS-unsigned.ipa
-          [ -f "$APK" ] || { echo "::error::缺 APK"; exit 1; }
           [ -f "$UIPA" ] || { echo "::error::缺未签名 IPA"; exit 1; }
+
+          # 安卓构建失败 → 不回传 APK（避免拿旧包冒充新包掩盖错误）
+          if [ "${{ needs.apk.result }}" = "failure" ]; then
+            echo "::error::安卓 APK 构建失败，本次不回传 APK"; exit 1
+          fi
+          # 安卓未改动 → apk 任务被跳过，APK 沿用仓库内上一版（字节一致）
+          if [ "${{ needs.apk.result }}" = "skipped" ]; then
+            APK_NOTE="（安卓源码未改动，沿用上一版，未重新编译）"
+          else
+            APK_NOTE=""
+          fi
+          [ -f "$APK" ] || { echo "::error::缺 APK 且仓库无上一版可沿用"; exit 1; }
+
           # 旧的 ad-hoc 预签名包不再交付，从仓库移除
           git rm -f --ignore-unmatch out/QuickPaste-Sync-iOS.ipa || true
           rm -f out/QuickPaste-Sync-iOS.ipa
@@ -267,7 +303,7 @@ jobs:
             echo "苹果交付：未签名 IPA（手机端签名工具直接导入）"
             echo "构建时间 (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
             echo "commit: ${GITHUB_SHA}"
-            echo "APK: $(stat -c%s "$APK") bytes"
+            echo "APK: $(stat -c%s "$APK") bytes $APK_NOTE"
             echo "IPA(未签名): $(stat -c%s "$UIPA") bytes"
           } > out/BUILD_INFO.txt
           git config user.name "mozhi-bot"
