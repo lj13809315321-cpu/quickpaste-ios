@@ -48,24 +48,35 @@ final class StopContinuousCopyIntent: AppIntent {
 }
 
 /// 切换连续复制：在开 / 关之间翻转。
-/// ★ 关键点：关闭时无需切前台（走与「关闭」意图完全一致的静默停止指令，
-///   后台主 App 自行消费并停掉画中画），所以 openAppWhenRun 按「当前是否在跑」
-///   动态决定——在跑就 false（不拉前台、静默关），没跑才 true（拉前台开启）。
-///   这避开了旧写法「拉前台 → startIfWanted 又把 PiP 重启」导致关闭不生效的竞态。
+/// ★ 关键点：iOS 18 SDK 要求 `openAppWhenRun` 必须是【静态编译期常量】，
+///   不能是「按当前是否在跑动态计算」的属性——否则编译直接报错
+///   （The property 'openAppWhenRun' must have a compile-time static value）。
+///   因此这里统一设 true（拉起 App 到前台），由 perform() 内部按实时状态分流：
+///     · 当前在跑 → 关闭：App 已在前台、与运行中的 PiPManager 同一实例，
+///       直接 stop() 立刻停掉画中画，并清掉「下次进 App 自动开」，
+///       不会被 startIfWanted 再拉起；随后跳回来源 App。
+///     · 当前没跑 → 开启：start() 拉起画中画（必须前台窗口），随后跳回来源 App。
+///   两个分支都走已验证的「跳回来源 App」逻辑，用户在哪点快捷指令就回哪。
+///   （若要「关闭且不切前台」，请用独立的「关闭连续复制」动作，那是静默通道。）
 final class ToggleContinuousCopyIntent: AppIntent {
     static var title: LocalizedStringResource = "切换连续复制"
     static var description: LocalizedStringResource =
-        "在开 / 关之间翻转连续复制（开启时会短暂切到墨指前台，随后自动跳回来源 App）。"
-    static var openAppWhenRun: Bool {
-        // 当前正在跑 → 这次是要关 → 不用拉前台；没跑 → 这次是要开 → 必须拉前台。
-        // 用共享判活（而非进程内 running），在扩展/后台进程里也读得准。
-        !QPSharedHistory.livePipState()
-    }
+        "在开 / 关之间翻转连续复制（开启或关闭后都会自动跳回来源 App）。"
+    static var openAppWhenRun: Bool = true
 
     func perform() async throws -> some IntentResult {
         if QPSharedHistory.livePipState() {
-            // 当前在跑 → 关闭：与「关闭」意图同一套静默停止指令，真生效、不拉前台。
-            QPSharedHistory.markPipStopCommand()
+            // 当前在跑 → 关闭：App 已拉到前台，与运行中的 PiPManager 同一实例，
+            // 直接停掉画中画（stop 内含「清下次自动开」），不会再被 startIfWanted 拉起。
+            await MainActor.run {
+                PiPManager.shared.stop()
+                // 关闭后同样跳回来源 App（与开启一致的体验），拿不到来源就不跳。
+                let host = QPSharedHistory.cachedHostBundleId()
+                    ?? QPSharedHistory.defaultReturnBundleId()
+                if let target = host, !target.isEmpty, target != "none" {
+                    AppRootView.openHostApp(target)
+                }
+            }
         } else {
             // 当前没跑 → 开启：需前台窗口，启动后自动跳回来源 App。
             await MainActor.run {
