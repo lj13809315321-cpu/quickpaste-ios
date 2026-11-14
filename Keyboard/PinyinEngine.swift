@@ -339,6 +339,28 @@ final class PinyinEngine {
         return scored.sorted { $0.1 > $1.1 }.prefix(10).map { $0.0 }
     }
 
+    /// 9 键左列音节候选（带该音节对应的数字位数）。
+    /// 搜狗式交互：左侧竖排 4 个常用音节，点选即锁定 —— 该音节确定下来，
+    /// 继续打的数字与它组词（gui 锁定后再打 64 → 闺蜜），这才是「连贯」。
+    /// 任何拼音音节的每个字母恰好对应一位数字，所以位数 == 音节字母数。
+    func t9SyllableOptions(_ buf: String) -> [(String, Int)] {
+        let chars = Array(buf)
+        guard !chars.isEmpty else { return [] }
+        let maxL = min(6, chars.count)
+        guard maxL >= 2 else { return [] }
+        var seen = Set<String>()
+        var scored: [(String, Int, Int)] = []
+        for l in stride(from: maxL, through: 2, by: -1) {
+            let sub = String(chars[(chars.count - l)..<chars.count])
+            for s in t9Map[sub] ?? [] {
+                guard seen.insert(s).inserted else { continue }
+                let f = topChar(s).flatMap { charFreq[$0] } ?? 1
+                scored.append((s, f + l * 24, l))
+            }
+        }
+        return scored.sorted { $0.1 > $1.1 }.prefix(8).map { ($0.0, $0.2) }
+    }
+
     /// 数字串 1 次误触变体：相邻键替换 / 漏按 / 多按。9 键模糊纠错用。
     private let t9Neighbors: [Character: String] = [
         "1": "24", "2": "135", "3": "265", "4": "175", "5": "2468",
@@ -379,24 +401,30 @@ final class PinyinEngine {
     }
 
     // MARK: - 对外入口
-    func decode(_ buffer: String, is9Key: Bool, context: String = "") -> DecodeResult {
+    /// - locked: 用户已通过左列音节候选 / 分词键锁定的音节（搜狗式连贯输入）。
+    ///   锁定音节与新数字串在词图里拼接打分：gui + mi 可以成词「闺蜜」，
+    ///   点一下音节继续打字，正是竞品「越打越顺」的关键交互。
+    func decode(_ buffer: String, is9Key: Bool, context: String = "", locked: [String] = []) -> DecodeResult {
         let buf = buffer.lowercased()
-        guard !buf.isEmpty else { return DecodeResult(display: "", candidates: [], key: "") }
-        // 自定义短语优先级最高（地址 / 电话 / 固定话术，敲缩写直接上屏）
-        if let text = customPhrases[buf], !text.isEmpty {
-            return DecodeResult(display: "短语·" + buf, candidates: [text], key: "")
+        guard !buf.isEmpty || !locked.isEmpty else { return DecodeResult(display: "", candidates: [], key: "") }
+        if locked.isEmpty {
+            // 自定义短语优先级最高（地址 / 电话 / 固定话术，敲缩写直接上屏）
+            if let text = customPhrases[buf], !text.isEmpty {
+                return DecodeResult(display: "短语·" + buf, candidates: [text], key: "")
+            }
+            // 系统文本替换（UILexicon）同级优先：用户在 设置›键盘›文本替换 里配的
+            if let text = appleShortcuts[buf], !text.isEmpty {
+                return DecodeResult(display: "替换·" + buf, candidates: [text], key: "")
+            }
+            // U/V 模式（26 键）
+            if !is9Key, buf.count >= 2, let first = buf.first, (first == "u" || first == "v"),
+               let r = specialMode(buf) { return r }
         }
-        // 系统文本替换（UILexicon）同级优先：用户在 设置›键盘›文本替换 里配的
-        if let text = appleShortcuts[buf], !text.isEmpty {
-            return DecodeResult(display: "替换·" + buf, candidates: [text], key: "")
-        }
-        // U/V 模式（26 键）
-        if !is9Key, buf.count >= 2, let first = buf.first, (first == "u" || first == "v"),
-           let r = specialMode(buf) { return r }
         let ckey = String(context.suffix(2))
-        let ck = (is9Key ? "9|" : "26|") + buf + "|c=" + ckey
+        let lk = locked.joined(separator: " ")
+        let ck = (is9Key ? "9|" : "26|") + buf + "|c=" + ckey + "|L=" + lk
         if let hit = decodeCache[ck] { return hit }
-        var result = computeDecode(buf, is9Key: is9Key)
+        var result = computeDecode(buf, is9Key: is9Key, locked: locked)
         result = DecodeResult(display: result.display,
                               candidates: rerankByContext(result.candidates, context: ckey),
                               key: result.key, alternates: result.alternates)
@@ -463,7 +491,7 @@ final class PinyinEngine {
         decodeCache.removeAll()
     }
 
-    private func computeDecode(_ buf: String, is9Key: Bool) -> DecodeResult {
+    private func computeDecode(_ buf: String, is9Key: Bool, locked: [String] = []) -> DecodeResult {
         var lats = syllableLattices(buf, is9Key: is9Key, level: 0)
         // 9 键模糊纠错：精确切分若没有任何「完整切完」的路径，
         // 允许数字串 1 次误触（相邻键按错 / 漏按 / 多按）再切一次。
@@ -481,6 +509,19 @@ final class PinyinEngine {
             }
         }
         guard !lats.isEmpty else {
+            if !locked.isEmpty {
+                // 新串还没打成音节（或为空）：锁定部分自己出词 + 常用字兜底
+                let lk = locked.joined(separator: " ")
+                let d = locked.joined(separator: "'") + (buf.isEmpty ? "" : "'" + (is9Key ? t9Display(buf) : buf))
+                var out: [String] = []
+                var seen = Set<String>()
+                for w in words(forPinyinKey: lk).prefix(10) where seen.insert(w).inserted { out.append(w) }
+                for syl in locked {
+                    if let cs = charMap[syl] { for c in cs.prefix(6) where seen.insert(c).inserted { out.append(c) } }
+                }
+                return DecodeResult(display: d, candidates: out.isEmpty ? [d] : Array(out.prefix(20)),
+                                    key: lk, alternates: is9Key && !buf.isEmpty ? t9Alternates(buf) : [])
+            }
             let d = is9Key ? t9Display(buf) : buf
             return DecodeResult(display: d,
                                 candidates: prefixCandidates(buf, is9Key: is9Key, fallback: d),
@@ -490,8 +531,10 @@ final class PinyinEngine {
         // 关键：音节格的贪心分不作为最终排序，改由词格 viterbi 的整句分决定
         var ranked: [(Lattice, String, Double)] = []
         for lat in lats.prefix(18) {
-            let (text, sc) = composeSentenceWithScore(lat.seq)
-            let key = lat.seq.joined(separator: " ")
+            // 锁定音节拼在词图最前面统一打分（gui + mi 跨边界成词「闺蜜」）
+            let full = locked + lat.seq
+            let (text, sc) = composeSentenceWithScore(full)
+            let key = full.joined(separator: " ")
             let whole: Double = (words(forPinyinKey: key).first).map { isTrusted($0) ? 200.0 : 0.0 } ?? 0
             // 9 键必须优先「数字串完整切完」的路径。旧版让 mi'mi'mi'64 靠
             // 重复「秘密」刷分压过 ming'ming，于是出现「你也哦哦鄂哦此」。
@@ -503,7 +546,7 @@ final class PinyinEngine {
             let lengthCost: Double = Double(lat.seq.count) * (is9Key ? 30 : 12)
             let finalScore = sc - lengthCost + whole
                              + completeBonus + lat.score * 0.05
-            ranked.append((lat, text, finalScore))
+            ranked.append((Lattice(seq: full, tail: lat.tail, score: sc), text, finalScore))
         }
         ranked.sort { $0.2 > $1.2 }
         let ordered = ranked.map { $0.0 }
@@ -562,6 +605,10 @@ final class PinyinEngine {
         else if let w = words(forPinyinKey: bestKey).first, isTrusted(w) { push(w) }
         // 3) 整句候选
         for s in sentences.prefix(3) { push(s) }
+        // 3.5) 锁定音节自身的词（点音节后候选立刻联动，不用等新键）
+        if !locked.isEmpty {
+            for w in words(forPinyinKey: locked.joined(separator: " ")).prefix(4) { push(w) }
+        }
         // 4) 整串精确词 / 模糊音词
         for lat in ordered.prefix(3) {
             let key = lat.seq.joined(separator: " ")

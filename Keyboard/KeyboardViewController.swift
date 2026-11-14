@@ -49,7 +49,8 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         return v < 0.34 ? impactSoft : (v < 0.67 ? impactLight : impactMedium)
     }
 
-    private var pinnedSyllable: String? = nil      // 点选搜狗式音节候选后锁定
+    private var lockedSylls: [String] = []         // 已锁定的音节（左列点选 / 分词键），连贯组词
+    private var sylButtons: [UIButton] = []        // 9 键左列音节候选按钮（动态刷新）
     private let engine = PinyinEngine.shared
 
     // MARK: - 设置项
@@ -308,7 +309,7 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         lastCommitted = ""
         didBackspace = false
         shiftOn = false
-        pinnedSyllable = nil
+        lockedSylls = []
         updateModeBarTitles()
         updateKeyArea()
         refresh()
@@ -316,22 +317,43 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
 
     private var isComposeMode: Bool { mode == .chinese9 || mode == .chinese26 }
 
+    // MARK: - 音节锁定（搜狗式连贯输入的核心）
+    /// 点左列音节候选 / 蓝色音节块：锁定该音节，剩余数字继续输入，跨音节组词。
+    private func lockSyllable(_ syl: String) {
+        guard isComposeMode else { return }
+        lockedSylls.append(syl)
+        let n = min(syl.count, compose.count)
+        compose = String(compose.dropFirst(n))   // 音节字母数 == 消耗的数字/字母数
+        refresh()
+    }
+
+    /// 分词键：锁定当前最佳切分的第一个音节（xian → 锁 xi 继续打 an = 西安）
+    private func lockFirstSyllable() {
+        guard isComposeMode, !compose.isEmpty else { return }
+        let first = currentDecode.key.split(separator: " ").map(String.init).first
+        guard let syl = first, !syl.isEmpty else { return }
+        lockSyllable(syl)
+    }
+
+    /// 拼音音节 → 9 键数字串（退格还原锁定音节用）
+    private func t9Digits(_ syl: String) -> String {
+        let map: [Character: Character] = [
+            "a":"2","b":"2","c":"2","d":"3","e":"3","f":"3","g":"4","h":"4","i":"4",
+            "j":"5","k":"5","l":"5","m":"6","n":"6","o":"6","p":"7","q":"7","r":"7",
+            "s":"7","t":"8","u":"8","v":"8","w":"9","x":"9","y":"9","z":"9",
+        ]
+        return String(syl.map { map[$0] ?? "2" })
+    }
+
     // MARK: - 候选刷新（按钮复用，不重建）
     private func refresh() {
-        // 点选了搜狗式音节候选（ming / ning / min / nin）后锁定该音节，
-        // 候选栏直接给它的常用字词 —— 按错数字也能一键改回来。
-        if let pin = pinnedSyllable {
-            currentDecode = DecodeResult(display: pin, candidates: [], key: "")
-            displayCandidates = engine.candidates(forSyllable: pin)
-            pinyinBar.text = pin + " · 选字上屏，再按数字键重新输入"
-            updateCandidateButtons()
-            return
-        }
-        if isComposeMode, !compose.isEmpty {
-            let r = engine.decode(compose, is9Key: mode == .chinese9, context: lastCommitted)
+        if isComposeMode, (!compose.isEmpty || !lockedSylls.isEmpty) {
+            let r = engine.decode(compose, is9Key: mode == .chinese9,
+                                  context: lastCommitted, locked: lockedSylls)
             currentDecode = r
             displayCandidates = r.candidates
-            pinyinBar.text = r.display.isEmpty ? compose : r.display
+            let lockedPart = lockedSylls.isEmpty ? "" : lockedSylls.joined(separator: "'") + "'"
+            pinyinBar.text = lockedPart + (r.display.isEmpty ? compose : r.display)
             if !engine.isLoaded { pinyinBar.text = "⚠ 词库未加载 · " + (pinyinBar.text ?? "") }
         } else {
             currentDecode = DecodeResult(display: "", candidates: [], key: "")
@@ -339,6 +361,7 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
             pinyinBar.text = isComposeMode && !engine.isLoaded ? "⚠ 词库未加载，请重装" : ""
         }
         updateCandidateButtons()
+        updateSyllableColumn()
     }
 
     private func makeCandidateButton() -> UIButton {
@@ -356,13 +379,11 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         b.addAction(UIAction { [weak self] a in
             guard let self = self, let btn = a.sender as? UIButton else { return }
             let t = btn.tag
-            if t >= 1000 {                    // 音节候选（蓝色）
+            if t >= 1000 {                    // 音节候选（蓝色）：锁定后继续打字组词
                 let alts = self.currentDecode.alternates
                 let idx = t - 1000
                 guard idx < alts.count else { return }
-                self.pinnedSyllable = alts[idx]
-                self.compose = ""
-                self.refresh()
+                self.lockSyllable(alts[idx])
                 return
             }
             if t < self.displayCandidates.count { self.commit(self.displayCandidates[t]) }
@@ -375,7 +396,7 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         // 音节候选（hao/gao/han…）是 9 键纠错的辅助入口，放最后、只留 4 个，
         // 向左滑到底才看得到，对应搜狗把它放侧栏的做法。
         let words = Array(displayCandidates.prefix(20))
-        let alts: [String] = (mode == .chinese9 && pinnedSyllable == nil && words.count >= 4)
+        let alts: [String] = (mode == .chinese9 && words.count >= 4)
             ? Array(currentDecode.alternates.prefix(4)) : []
         let items: [(String, Bool)] = words.map { ($0, false) } + alts.map { ($0, true) }
         for i in 0..<items.count {
@@ -405,7 +426,7 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
 
     private func commit(_ text: String) {
         textDocumentProxy.insertText(text)
-        pinnedSyllable = nil
+        lockedSylls = []
         if isComposeMode {
             engine.learn(text, pinyinKey: currentDecode.key, boost: didBackspace ? 3 : 1)
             lastCommitted = text
@@ -416,9 +437,13 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
     }
 
     private func backspace() {
-        pinnedSyllable = nil
-        if isComposeMode && !compose.isEmpty {
-            compose.removeLast()
+        if isComposeMode {
+            if !compose.isEmpty {
+                compose.removeLast()
+            } else if let last = lockedSylls.popLast() {
+                // 锁定的音节先退回数字串（可以重选音节）
+                compose = (mode == .chinese9 ? t9Digits(last) : last) + compose
+            }
             didBackspace = true
             refresh()
         } else {
@@ -527,23 +552,18 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         return s
     }
 
-    // MARK: - 9键（T9拼音）—— 搜狗式布局
-    // 左侧竖排标点列（，。？！打字中随手够到）＋ 3×3 纯字母大键 ＋
-    // 右侧功能列（⌫ / 清空 / 换行竖跨两行）。对标搜狗/百度/讯飞/豆包的通用 9 键结构。
+    // MARK: - 9键（T9拼音）—— 竞品通用布局（搜狗/百度/讯飞/豆包）
+    // 左列：4 个常用音节候选（动态，点选锁定，搜狗官方帮助文档同款交互）；
+    // 中间：3×3 大字母格，首行「分词 | ABC | DEF」，底行「123 | 空格 | 中英」；
+    // 右列：⌫ / 清空 / 符号 / 确认（蓝底白字，讯飞式）。
     private func nineKeys() -> [UIStackView] {
         func letterKey(_ n: String, _ l: String) -> UIButton {
             let b = key(l, height: 50) { [weak self] in
                 guard let self = self else { return }
-                self.pinnedSyllable = nil
                 self.compose += n
                 self.refresh()
             }
             b.titleLabel?.font = UIFont.systemFont(ofSize: 19, weight: .medium)
-            return b
-        }
-        func punct(_ p: String) -> UIButton {
-            let b = key(p, height: 50) { [weak self] in self?.punctuationCommit(p) }
-            b.titleLabel?.font = UIFont.systemFont(ofSize: 20)
             return b
         }
         func funcKey(_ t: String, height: CGFloat = 50, _ a: @escaping () -> Void) -> UIButton {
@@ -558,15 +578,33 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
             return b
         }
 
-        // 左标点列
-        let leftCol = UIStackView(arrangedSubviews: [punct("，"), punct("。"), punct("？"), punct("！")])
-        leftCol.axis = .vertical; leftCol.spacing = 6; leftCol.alignment = .fill
+        // 左列：音节候选（refresh() 里动态刷新，这里先建空槽）
+        var sylBtns: [UIButton] = []
+        for _ in 0..<4 {
+            let b = UIButton(type: .system)
+            b.setTitle(" ", for: .normal)
+            b.setTitleColor(.label, for: .normal)
+            b.backgroundColor = .tertiarySystemFill
+            b.layer.cornerRadius = 8
+            b.titleLabel?.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .medium)
+            b.isEnabled = false
+            b.translatesAutoresizingMaskIntoConstraints = false
+            b.addAction(UIAction { [weak self] a in
+                guard let self = self, let btn = a.sender as? UIButton,
+                      let s = btn.accessibilityIdentifier, !s.isEmpty else { return }
+                self.lockSyllable(s)
+            }, for: .touchUpInside)
+            sylBtns.append(b)
+        }
+        sylButtons = sylBtns
+        let leftCol = UIStackView(arrangedSubviews: sylBtns)
+        leftCol.axis = .vertical; leftCol.spacing = 6; leftCol.distribution = .fillEqually
         leftCol.translatesAutoresizingMaskIntoConstraints = false
         leftCol.widthAnchor.constraint(equalToConstant: 44).isActive = true
 
         // 中间字母区
-        let g1 = row([letterKey("2", "ABC"), letterKey("3", "DEF"),
-                      funcKey("符") { [weak self] in self?.switchMode(.symbol) }])
+        let fen = funcKey("分词") { [weak self] in self?.lockFirstSyllable() }
+        let g1 = row([fen, letterKey("2", "ABC"), letterKey("3", "DEF")])
         let g2 = row([letterKey("4", "GHI"), letterKey("5", "JKL"), letterKey("6", "MNO")])
         let g3 = row([letterKey("7", "PQRS"), letterKey("8", "TUV"), letterKey("9", "WXYZ")])
         let g4 = row([
@@ -583,26 +621,50 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         let mainCol = UIStackView(arrangedSubviews: [g1, g2, g3, g4])
         mainCol.axis = .vertical; mainCol.spacing = 6
 
-        // 右功能列：⌫ / 清空 / 换行（竖跨两行高度）
+        // 右功能列：⌫ / 清空 / 符号 / 确认（蓝色，竞品同款）
         let bk = funcKey("⌫") { [weak self] in self?.backspace() }
         bk.titleLabel?.font = UIFont.systemFont(ofSize: 18)
         let clear = funcKey("清空") { [weak self] in
             guard let self = self else { return }
-            self.pinnedSyllable = nil
+            self.lockedSylls = []
             self.compose = ""
             self.refresh()
         }
-        let ret = funcKey("换\n行", height: 106) { [weak self] in
-            self?.textDocumentProxy.insertText("\n")
-        }
-        let rightCol = UIStackView(arrangedSubviews: [bk, clear, ret])
-        rightCol.axis = .vertical; rightCol.spacing = 6; rightCol.alignment = .fill
+        let sym = funcKey("符号") { [weak self] in self?.switchMode(.symbol) }
+        let ok = funcKey("确认") { [weak self] in self?.confirm() }
+        ok.backgroundColor = .systemBlue
+        ok.setTitleColor(.white, for: .normal)
+        ok.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .medium)
+        let rightCol = UIStackView(arrangedSubviews: [bk, clear, sym, ok])
+        rightCol.axis = .vertical; rightCol.spacing = 6; rightCol.distribution = .fillEqually
         rightCol.translatesAutoresizingMaskIntoConstraints = false
         rightCol.widthAnchor.constraint(equalToConstant: 62).isActive = true
 
         let panel = UIStackView(arrangedSubviews: [leftCol, mainCol, rightCol])
         panel.axis = .horizontal; panel.spacing = 6; panel.alignment = .fill
         return [panel]
+    }
+
+    /// 左列音节候选刷新：跟随当前数字串实时变化（竞品同款）。
+    private func updateSyllableColumn() {
+        guard mode == .chinese9, sylButtons.count == 4 else { return }
+        let opts = (engine.isLoaded && !compose.isEmpty)
+            ? Array(engine.t9SyllableOptions(compose).prefix(4)) : []
+        for i in 0..<sylButtons.count {
+            let b = sylButtons[i]
+            if i < opts.count {
+                b.isEnabled = true
+                b.accessibilityIdentifier = opts[i].0
+                b.setTitle(opts[i].0, for: .normal)
+                b.setTitleColor(.label, for: .normal)
+                b.backgroundColor = .tertiarySystemFill
+            } else {
+                b.isEnabled = false
+                b.accessibilityIdentifier = nil
+                b.setTitle(" ", for: .normal)
+                b.backgroundColor = .clear
+            }
+        }
     }
 
     // MARK: - QWERTY（中文26 / 英文26）
@@ -666,13 +728,19 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
     // MARK: - 符号
     private func symbolKeys() -> [UIStackView] {
         let sets = [
+            // 中文标点常驻首行：9 键面板不再有标点列，聊天常用标点必须一键直达
+            ["，", "。", "？", "！", "、", "：", "；", "…", "—"],
             ["@", "#", "&", "*", "(", ")", "_", "-", "+"],
             [",", ".", "?", "!", "\"", "'", ":", ";"],
             ["/", "\\", "|", "~", "`", "%", "^", "="],
         ]
         var rows: [UIStackView] = []
-        for set in sets {
-            rows.append(row(set.map { ch in key(ch) { [weak self] in self?.textDocumentProxy.insertText(ch) } }))
+        for (i, set) in sets.enumerated() {
+            rows.append(row(set.map { ch in
+                let b = key(ch) { [weak self] in self?.textDocumentProxy.insertText(ch) }
+                if i == 0 { b.titleLabel?.font = UIFont.systemFont(ofSize: 19) }
+                return b
+            }))
         }
         rows.append(row([
             key("⌫") { [weak self] in self?.textDocumentProxy.deleteBackward() },
