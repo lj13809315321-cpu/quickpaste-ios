@@ -372,7 +372,7 @@ final class PinyinEngine {
                 }
             }
         }
-        let res = out.filter { $0 != s && ($0.count >= 2) }
+        let res = Array(out.filter { $0 != s && ($0.count >= 2) })
         if t9VariantCache.count > 256 { t9VariantCache.removeAll() }
         t9VariantCache[s] = res
         return res

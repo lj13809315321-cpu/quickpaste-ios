@@ -132,7 +132,7 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
                 // 这是苹果唯一开放给第三方键盘的官方词库接口；异步获取，不占启动时间。
                 self.requestSupplementaryLexicon { [weak self] lexicon in
                     let entries = lexicon.entries.map {
-                        (input: $0.userInput, document: $0.document)
+                        (input: $0.userInput, document: $0.documentText)
                     }
                     self?.engine.ingestAppleLexicon(entries)
                     self?.mark("5:lexicon")
