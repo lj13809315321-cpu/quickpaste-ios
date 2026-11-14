@@ -67,19 +67,38 @@ bigram = load("pinyin_bigram.json")
 t9Map = load("pinyin_t9.json")
 english = set(load("pinyin_english.json"))
 
+_wordsForCache = {}
 def words_for(key):
-    """与 Swift words(forPinyinKey:) 同序：mmap 词库优先，JSON 词表补充。"""
+    """与 Swift words(forPinyinKey:) 同序：mmap 词库优先，JSON 词表补充。
+    hot JSON 的人工精选顺序保持原序（稳定排序给 -inf）——
+    「gui mi」精选序是 闺蜜>归你，词频重排反而会翻车；
+    其余语料词按真实词频降序（订单 77 > 定单 53）。结果缓存（viterbi 高频调用）。"""
+    hit = _wordsForCache.get(key)
+    if hit is not None:
+        return hit
+    def rank(x):
+        if x in wordFreq:
+            return -1e9
+        return -(wf(x) or 0)
     w = lex.get(key)
+    res = None
     if w:
         pm = phraseMap.get(key)
         if not pm:
-            return w
-        all_ = list(pm)
-        for x in w:
-            if x not in all_:
-                all_.append(x)
-        return all_
-    return phraseMap.get(key) or []
+            res = sorted(w, key=rank)
+        else:
+            all_ = list(pm)
+            for x in w:
+                if x not in all_:
+                    all_.append(x)
+            res = sorted(all_, key=rank)
+    else:
+        pm = phraseMap.get(key) or []
+        res = sorted(pm, key=rank) if pm else pm
+    if len(_wordsForCache) > 4096:
+        _wordsForCache.clear()
+    _wordsForCache[key] = res
+    return res
 
 valid = set(charMap) | {s for k in phraseMap for s in k.split()} | {s for v in t9Map.values() for s in v}
 sylPrefixes = set()
@@ -92,6 +111,12 @@ for k in t9Map:
         t9Prefixes.add(k[:i])
 
 digitLetters = {"2":"abc","3":"def","4":"ghi","5":"jkl","6":"mno","7":"pqrs","8":"tuv","9":"wxyz"}
+# 9 键数字相邻键（按 3x4 键盘物理布局）—— 整串「按错一键」纠错用
+t9DigitNeighbors = {
+    "2": "13", "3": "246", "4": "357",
+    "5": "468", "6": "359", "7": "48",
+    "8": "579", "9": "68", "1": "2", "0": "8",
+}
 neighbors = {
  "q":"wa","w":"qea","e":"wrs","r":"etd","t":"ryf","y":"tug","u":"yih","i":"uoj","o":"ipk","p":"ol",
  "a":"qwsz","s":"qweadz","d":"wersfcx","f":"ertdgcv","g":"rtyfhbv","h":"tyujgbn","j":"yuikhnm",
@@ -161,7 +186,7 @@ def latticeBonus(seq):
             s += 130 if trusted(w[0]) else 35
     return s
 
-def trimBeamBucket(arr, per=6):
+def trimBeamBucket(arr, per=8):
     buckets = defaultdict(list)
     for node in arr:
         buckets[len(node[0])].append(node)
@@ -171,7 +196,7 @@ def trimBeamBucket(arr, per=6):
     return out
 
 def syllableLattices(buf, is9, level=0):
-    n, W = len(buf), 8
+    n, W = len(buf), 10
     beam = {0: [((), 0.0, "")]}
     finished = []
     for i in range(n):
@@ -251,6 +276,12 @@ def composeSentence(seq):
                 elif trusted(w):
                     b = raw / 2.0 + f + 40
                     bonus = (l - 1) * 70
+                elif f > 0 and l >= 3:
+                    # 语料 3+ 字词（洗手间/订单号/优惠券）是搜狗整词输出主体。
+                    # 双字保持保守（防 rime 虚高词：按户/你你），长词字频系数
+                    # 提到 raw/2 + 180/音节，整词压过碎片组合。
+                    b = f + raw / 2.0
+                    bonus = (l - 1) * 180
                 elif f > 0:
                     b = f + raw / 10.0
                     bonus = (l - 1) * 18
@@ -261,9 +292,21 @@ def composeSentence(seq):
                 opts.append((w, b + bonus + redu - 25 - idx * 10))
             if l == 1:
                 for idx, c in enumerate(charMap.get(seq[i], [])[:8]):
-                    opts.append((c, charFreq.get(c,1)/4.0 - 25 - idx*6))
+                    # 超高频单字（一/在/我 ~8000 字频）封顶，防止单字巨分
+                    # 碾压整词（「一杯」输给 一+北 的根源）
+                    sc = min(charFreq.get(c, 1), 1200) / 4.0 - 25 - idx * 6
+                    # 句末语气词加成：口语整句的收尾几乎都是 呀/吗/吧/啦/呢/啊，
+                    # 「去呀」被「去要」压过就是因为要(2000频)碾压呀(200频)。
+                    # 竞品靠 n-gram 知道句末分布，我们用句末位置先验补。
+                    if i + l == n and c in ("呀", "嘛", "吧", "啦", "哦", "呢", "啊", "吗", "哈", "哟"):
+                        sc += 460
+                    opts.append((c, sc))
             for w, ws in opts:
                 trans = bigramBonus(last, w[0]) if last else 0
+                # 词级搭配（今天→天气）：viterbi 转移处命中联想表给大加分，
+                # 这是搜狗整句里「洗手间→在哪」「订单→号」衔接的真实信号
+                if lastw and w in assocNext.get(lastw, ()):
+                    trans += 150
                 total = cur + ws + trans - (560 if w == lastw else 0)
                 node = (total, text + w, w[-1], w)
                 if dp[i+l] is None or total > dp[i+l][0]:
@@ -339,7 +382,34 @@ def decode(buf, is9, locked=()):
     lats = syllableLattices(buf, is9, 0)
     if is9 and not any(not lat[1] for lat in lats):
         l1 = syllableLattices(buf, True, 1)
-        if any(not lat[1] for lat in l1): lats = l1
+        if any(not lat[1] for lat in l1):
+            lats = l1
+        else:
+            # 多按一键/按错相邻键纠错。长串只试尾位（打字中按错几乎都在
+            # 最后一键，全位扫描会让逐键耗时爆炸：17键句从 3ms/键 → 30ms/键）。
+            rescue = []
+            positions = range(len(buf)) if len(buf) <= 8 else (len(buf) - 1,)
+            for i in positions:
+                cand = buf[:i] + buf[i+1:]
+                if len(cand) >= 2:
+                    for lv in (0, 1):
+                        lr = syllableLattices(cand, True, lv)
+                        ok = [x for x in lr if not x[1]]
+                        if ok:
+                            rescue.extend(ok)
+                            break
+            for i in positions:
+                for nb in t9DigitNeighbors.get(buf[i], ""):
+                    cand = buf[:i] + nb + buf[i+1:]
+                    for lv in (0, 1):
+                        lr = syllableLattices(cand, True, lv)
+                        ok = [x for x in lr if not x[1]]
+                        if ok:
+                            rescue.extend(ok)
+                            break
+            if rescue:
+                rescue.sort(key=lambda x: -x[2])
+                lats = rescue
     if not is9 and not lats:
         l1 = syllableLattices(buf, False, 1)
         if l1:

@@ -278,19 +278,40 @@ final class PinyinEngine {
     }
 
     // MARK: - 统一词库入口（mmap 优先 → 覆盖层 → JSON 回退）
+    private var wordsSortedCache: [String: [String]] = [:]
+
     private func words(forPinyinKey key: String) -> [String] {
+        if let hit = wordsSortedCache[key] { return hit }
+        func rank(_ x: String) -> Double {
+            // hot JSON 人工精选序保持原序（闺蜜>归你），其余语料词按词频降序
+            // （订单77 > 定单53）。与 verify_engine.py words_for 严格一致。
+            if wordFreq[x] != nil { return -1e9 }
+            return -Double(freqValue(x) ?? 0)
+        }
+        var res: [String]
         if let t = lexicon {
             let w = t.words(for: key)
             if !w.isEmpty {
-                guard let extra = phraseOverlay[key], !extra.isEmpty else { return w }
-                var all = extra
-                for x in w where !all.contains(x) { all.append(x) }
-                return all
+                if let extra = phraseOverlay[key], !extra.isEmpty {
+                    var all = extra
+                    for x in w where !all.contains(x) { all.append(x) }
+                    res = all.sorted(by: { rank($0) < rank($1) })
+                } else {
+                    res = w.sorted(by: { rank($0) < rank($1) })
+                }
+            } else {
+                var out = phraseOverlay[key] ?? []
+                for w in phraseMap[key] ?? [] where !out.contains(w) { out.append(w) }
+                res = out.sorted(by: { rank($0) < rank($1) })
             }
+        } else {
+            var out = phraseOverlay[key] ?? []
+            for w in phraseMap[key] ?? [] where !out.contains(w) { out.append(w) }
+            res = out.sorted(by: { rank($0) < rank($1) })
         }
-        var out = phraseOverlay[key] ?? []
-        for w in phraseMap[key] ?? [] where !out.contains(w) { out.append(w) }
-        return out
+        if wordsSortedCache.count > 4096 { wordsSortedCache.removeAll() }
+        wordsSortedCache[key] = res
+        return res
     }
 
     private func freqValue(_ w: String) -> Int? {
@@ -497,7 +518,45 @@ final class PinyinEngine {
         // 允许数字串 1 次误触（相邻键按错 / 漏按 / 多按）再切一次。
         if is9Key, !lats.contains(where: { $0.tail.isEmpty }) {
             let l1 = syllableLattices(buf, is9Key: true, level: 1)
-            if l1.contains(where: { $0.tail.isEmpty }) { lats = l1 }
+            if l1.contains(where: { $0.tail.isEmpty }) {
+                lats = l1
+            } else {
+                // 多按一键 / 按错相邻键：整串删位或换位重试。
+                // level1 只救「切不出的子串」，救不了「尾部是合法前缀」的场景
+                // （64426 按成 64425，尾键 5 是合法前缀，tail 路径吞掉整串）。
+                // 长串只试尾位：打字中按错几乎都在最后一键，全位扫描会让
+                // 逐键耗时爆炸（17键句 3ms/键 → 30ms/键 的实测教训）。
+                var rescue: [Lattice] = []
+                let digits = Array(buf)
+                let positions: [Int] = digits.count <= 8
+                    ? Array(0..<digits.count) : [digits.count - 1]
+                for i in positions {
+                    let del = String(digits[0..<i]) + String(digits[(i+1)...])
+                    if del.count >= 2 {
+                        for lv in 0...1 {
+                            let lr = syllableLattices(del, is9Key: true, level: lv)
+                            rescue.append(contentsOf: lr.filter { $0.tail.isEmpty })
+                            if !rescue.isEmpty { break }
+                        }
+                    }
+                }
+                let nb: [Character: String] = ["2":"13","3":"246","4":"357","5":"468",
+                                              "6":"359","7":"48","8":"579","9":"68"]
+                for i in positions {
+                    for d in nb[digits[i]] ?? "" {
+                        let cand = String(digits[0..<i]) + String(d) + String(digits[(i+1)...])
+                        for lv in 0...1 {
+                            let lr = syllableLattices(cand, is9Key: true, level: lv)
+                            rescue.append(contentsOf: lr.filter { $0.tail.isEmpty })
+                            if !rescue.isEmpty { break }
+                        }
+                    }
+                }
+                if !rescue.isEmpty {
+                    rescue.sort { $0.score > $1.score }
+                    lats = rescue
+                }
+            }
         }
         // 26 键尾部半截音节是正常输入状态，不算失败；只有完全切不出才逐级放宽纠错
         if !is9Key && lats.isEmpty {
@@ -701,7 +760,7 @@ final class PinyinEngine {
 
     /// 按「已切出的音节数」分桶保留：保证 zhong(1音节) 不会被 yin+ni(2音节) 挤掉。
     /// 纯 top-K 会系统性偏爱碎切分，这是之前 9 键「中国」被切成「印尼故哦」的根因。
-    private func trimBeam(_ arr: [Node], per: Int = 6) -> [Node] {
+    private func trimBeam(_ arr: [Node], per: Int = 8) -> [Node] {
         var buckets: [Int: [Node]] = [:]
         for n in arr { buckets[n.seq.count, default: []].append(n) }
         var out: [Node] = []
@@ -770,10 +829,10 @@ final class PinyinEngine {
                 }
             }
             // 每层结束统一裁剪，长句不会越打越卡。
-            // 宽度 8：搜狗级 4+ 音节整句靠的就是足够宽的 beam——
-            // 太窄会把「清理不掉」这类正确切分提前剪掉，碎片化路径反而存活。
+            // 宽度 10：同码音节对（62=ma/na × 9426=xian/xiao…）中间层会到
+            // 十几个状态，太窄会把正确切分挤出（那现在 被吗现在挤掉的实测）。
             for j in (i + 1)...min(n, i + 6) {
-                if let arr = beam[j], arr.count > 8 { beam[j] = trimBeam(arr) }
+                if let arr = beam[j], arr.count > 10 { beam[j] = trimBeam(arr) }
             }
             // 尾部未成音节：允许继续输入（ni'gan'jin'wo'qu'mian's）
             let tail = String(chars[i..<n])
@@ -1019,6 +1078,11 @@ final class PinyinEngine {
                         } else if isTrusted(w) {
                             b = Double(raw) / 2.0 + Double(wf) + 40
                             bonus = Double(l - 1) * 70
+                        } else if wf > 0 && l >= 3 {
+                            // 语料 3+ 字词（洗手间/订单号/羽绒服）是整词输出主体，
+                            // 18/音节会输给碎片组合，给 raw/2 + 180/音节
+                            b = Double(wf) + Double(raw) / 2.0
+                            bonus = Double(l - 1) * 180
                         } else if wf > 0 {
                             b = Double(wf) + Double(raw) / 10.0
                             bonus = Double(l - 1) * 18
@@ -1036,7 +1100,14 @@ final class PinyinEngine {
                 if l == 1, let cs = charMap[seq[i]] {
                     // 8 个字候选：长句整句拼字时字池太窄会拼出怪句
                     for (idx, c) in cs.prefix(8).enumerated() {
-                        options.append((c, Double(charFreq[c] ?? 1) / 4.0 - 25 - Double(idx) * 6))
+                        // 超高频单字封顶，防止「一」字频碾压「一杯」整词
+                        var sc = Double(min(charFreq[c] ?? 1, 1200)) / 4.0 - 25 - Double(idx) * 6
+                        // 句末语气词加成：口语收尾几乎都是 呀/吗/吧/啦，
+                        // 「去呀」被「去要」压过就是因为字频差距。句末位置先验补齐
+                        if i + l == n, ["呀","嘛","吧","啦","哦","呢","啊","吗","哈","哟"].contains(c) {
+                            sc += 460
+                        }
+                        options.append((c, sc))
                     }
                 }
                 if let ud = userByPinyin[key] {
@@ -1048,7 +1119,12 @@ final class PinyinEngine {
                 }
                 for (w, ws) in options {
                     guard let f = w.first, let last = w.last else { continue }
-                    let trans = cur.lastChar.isEmpty ? 0 : bigramBonus(cur.lastChar, String(f))
+                    var trans = cur.lastChar.isEmpty ? 0 : bigramBonus(cur.lastChar, String(f))
+                    // 词级搭配（今天→天气）：viterbi 转移命中联想表给大加分，
+                    // 这是「洗手间→在哪」「订单→号」衔接的真实信号（搜狗 LM 同源）
+                    if !cur.lastWord.isEmpty, let arr = assocNext[cur.lastWord], arr.contains(w) {
+                        trans += 150
+                    }
                     // 「秘密+秘密」这类重复是碎片切分刷分的典型产物，重罚，
                     // 让 ming'ming → 明明 稳稳压过 mi'mi'mi'mi → 秘密秘密。
                     // 词频奖励（~200/词）进 base 后，惩罚量级同步放大。

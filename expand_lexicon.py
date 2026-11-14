@@ -99,7 +99,9 @@ def fetch():
     except Exception as e:
         print("  wordfreq 不可用(可 pip install wordfreq 补足):", type(e).__name__)
 
-    tasks += [("rime_" + n, RIME_BASE + n) for n in RIME_FILES]
+    # rime-ice 词库已移除（用户决策）：其权重是排序值不是频率（9999 只表示
+    # 「是词」），虚高权重反复打乱排序（按户/你你/一按 压过 打电话/现在）。
+    # 词库主力 = jieba 真频词 + 清华 THUOCL 领域词表。
 
     for name, url in tasks:
         dst = os.path.join(cache_dir, name + ".txt")
@@ -158,6 +160,12 @@ def main():
                             freq = int(float(parts[-1]))
                         except ValueError:
                             freq = MIN_FREQ
+                    # rime 的权重是「排序值」不是频率（9999 只表示是词，
+                    # 229250 只表示排得靠前），直接当频率用会让「按户」
+                    # 压过「打电话」。压到 [30,100] 档：只表达"存在性"，
+                    # 真频词（jieba 榴莲 409）才能和它拉开档次。
+                    if name.startswith("rime"):
+                        freq = min(100, 30 + int(2.7 * (freq ** 0.5)))
                     if freq < MIN_FREQ or not (2 <= len(w) <= MAX_WORD_LEN):
                         skipped += 1
                         continue
