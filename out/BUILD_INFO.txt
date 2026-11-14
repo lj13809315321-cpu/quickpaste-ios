@@ -2,7 +2,7 @@
 形态：安卓悬浮胶囊（前台服务+无障碍抓剪贴板，非输入法/非 WebView 壳）/ iOS 键盘扩展（原生键盘，非 WebView 壳）
 安卓交付：debug 签名 APK（开启悬浮窗/无障碍后直接用）
 苹果交付：未签名 IPA（手机端签名工具直接导入）
-构建时间 (UTC): 2026-11-11 11:45:17
-commit: 567b3aeff0e09dc270d7aa6d9dbbd015afa630ff
+构建时间 (UTC): 2026-11-14 12:11:36
+commit: 657fa5e558b9dfeda675de350f06d0fa940f3170
 APK: 19992359 bytes
-IPA(未签名): 2530725 bytes
+IPA(未签名): 2557287 bytes
