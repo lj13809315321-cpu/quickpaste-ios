@@ -69,36 +69,39 @@ final class ToggleContinuousCopyIntent: AppIntent {
 struct MozhiAppShortcuts: AppShortcutsProvider {
     @AppShortcutsBuilder
     static var appShortcuts: [AppShortcut] {
+        let togglePhrases: [AppShortcutPhrase<ToggleContinuousCopyIntent>] = [
+            "用 \(.applicationName) 切换连续复制",
+            "切换连续复制",
+            "翻转墨指连续复制",
+            "连续复制 开关"
+        ]
+        let startPhrases: [AppShortcutPhrase<StartContinuousCopyIntent>] = [
+            "用 \(.applicationName) 开启连续复制",
+            "开启连续复制",
+            "打开墨指连续复制",
+            "开始墨指连续复制"
+        ]
+        let stopPhrases: [AppShortcutPhrase<StopContinuousCopyIntent>] = [
+            "用 \(.applicationName) 关闭连续复制",
+            "关闭连续复制",
+            "停止墨指连续复制",
+            "结束墨指连续复制"
+        ]
         AppShortcut(
             intent: ToggleContinuousCopyIntent(),
-            phrases: [
-                "用 \(.applicationName) 切换连续复制",
-                "切换连续复制",
-                "翻转墨指连续复制",
-                "连续复制 开关"
-            ],
+            phrases: togglePhrases,
             shortTitle: "切换连续复制",
             systemImageName: "arrow.triangle.2.circlepath"
         )
         AppShortcut(
             intent: StartContinuousCopyIntent(),
-            phrases: [
-                "用 \(.applicationName) 开启连续复制",
-                "开启连续复制",
-                "打开墨指连续复制",
-                "开始墨指连续复制"
-            ],
+            phrases: startPhrases,
             shortTitle: "开启连续复制",
             systemImageName: "play.circle"
         )
         AppShortcut(
             intent: StopContinuousCopyIntent(),
-            phrases: [
-                "用 \(.applicationName) 关闭连续复制",
-                "关闭连续复制",
-                "停止墨指连续复制",
-                "结束墨指连续复制"
-            ],
+            phrases: stopPhrases,
             shortTitle: "关闭连续复制",
             systemImageName: "stop.circle"
         )
