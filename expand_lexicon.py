@@ -144,16 +144,20 @@ def main():
             with open(path, encoding="utf-8", errors="ignore") as f:
                 for line in f:
                     parts = line.split()
-                    if not parts:
+                    if len(parts) < 2:
                         continue
                     w = parts[0]
-                    if len(parts) >= 2:
+                    # 词频解析（多格式兼容）：
+                    #   jieba/THUOCL: 词<TAB>频次            → parts[1] 是数字
+                    #   rime yaml:   词<TAB>拼音(带空格)<TAB>权重 → parts[1] 是拼音，
+                    #               split 被空格拆开后，权重在最后一个元素
+                    try:
+                        freq = int(float(parts[1]))
+                    except ValueError:
                         try:
-                            freq = int(float(parts[1]))
+                            freq = int(float(parts[-1]))
                         except ValueError:
                             freq = MIN_FREQ
-                    else:
-                        freq = MIN_FREQ  # wordfreq 纯词表
                     if freq < MIN_FREQ or not (2 <= len(w) <= MAX_WORD_LEN):
                         skipped += 1
                         continue

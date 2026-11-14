@@ -352,9 +352,22 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
                                   context: lastCommitted, locked: lockedSylls)
             currentDecode = r
             displayCandidates = r.candidates
-            let lockedPart = lockedSylls.isEmpty ? "" : lockedSylls.joined(separator: "'") + "'"
-            pinyinBar.text = lockedPart + (r.display.isEmpty ? compose : r.display)
-            if !engine.isLoaded { pinyinBar.text = "⚠ 词库未加载 · " + (pinyinBar.text ?? "") }
+            // 引擎 display 已含锁定音节（best.seq = locked + 新切分），这里只需
+            // 给锁定段画下划线区分（竞品 PreeditStyle::Pinned 同款），不要重复拼接
+            let rest = r.display.isEmpty ? compose : r.display
+            if lockedSylls.isEmpty || rest.isEmpty {
+                pinyinBar.text = rest
+            } else {
+                let lockLen = lockedSylls.reduce(0) { $0 + $1.count } + max(0, lockedSylls.count - 1)
+                let safe = min(lockLen, rest.count)
+                let m = NSMutableAttributedString(string: String(rest.prefix(safe)),
+                    attributes: [.underlineStyle: NSUnderlineStyle.single.rawValue])
+                m.append(NSAttributedString(string: String(rest.dropFirst(safe))))
+                pinyinBar.attributedText = m
+            }
+            if !engine.isLoaded {
+                pinyinBar.text = "⚠ 词库未加载 · " + (pinyinBar.text ?? "")
+            }
         } else {
             currentDecode = DecodeResult(display: "", candidates: [], key: "")
             displayCandidates = isComposeMode ? engine.associations(for: lastCommitted) : []
@@ -396,8 +409,9 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         // 音节候选（hao/gao/han…）是 9 键纠错的辅助入口，放最后、只留 4 个，
         // 向左滑到底才看得到，对应搜狗把它放侧栏的做法。
         let words = Array(displayCandidates.prefix(20))
-        let alts: [String] = (mode == .chinese9 && words.count >= 4)
-            ? Array(currentDecode.alternates.prefix(4)) : []
+        // 蓝色音节块与左列同源（前缀音节，点选锁定第一个未定位置），保证两处交互一致
+        let alts: [String] = (mode == .chinese9 && words.count >= 4 && engine.isLoaded)
+            ? Array(engine.t9SyllableOptions(compose).map { $0.0 }.prefix(4)) : []
         let items: [(String, Bool)] = words.map { ($0, false) } + alts.map { ($0, true) }
         for i in 0..<items.count {
             let b: UIButton
@@ -578,21 +592,27 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
             return b
         }
 
-        // 左列：音节候选（refresh() 里动态刷新，这里先建空槽）
+        // 左列：打字时=前缀音节候选(点选锁定)，空闲时=常用标点。
+        // 建槽时挂唯一一个 action，点按时按 accessibilityIdentifier 分派
+        // （"syl:gui" 锁音节 / "p:，" 上屏标点），不反复增删 action。
         var sylBtns: [UIButton] = []
         for _ in 0..<4 {
             let b = UIButton(type: .system)
             b.setTitle(" ", for: .normal)
             b.setTitleColor(.label, for: .normal)
-            b.backgroundColor = .tertiarySystemFill
+            b.backgroundColor = .clear
             b.layer.cornerRadius = 8
             b.titleLabel?.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .medium)
             b.isEnabled = false
             b.translatesAutoresizingMaskIntoConstraints = false
             b.addAction(UIAction { [weak self] a in
                 guard let self = self, let btn = a.sender as? UIButton,
-                      let s = btn.accessibilityIdentifier, !s.isEmpty else { return }
-                self.lockSyllable(s)
+                      let tag = btn.accessibilityIdentifier, !tag.isEmpty else { return }
+                if tag.hasPrefix("syl:") {
+                    self.lockSyllable(String(tag.dropFirst(4)))
+                } else if tag.hasPrefix("p:") {
+                    self.punctuationCommit(String(tag.dropFirst(2)))
+                }
             }, for: .touchUpInside)
             sylBtns.append(b)
         }
@@ -652,19 +672,32 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         return [panel]
     }
 
-    /// 左列音节候选刷新：跟随当前数字串实时变化（竞品同款）。
+    /// 左列刷新：打字时=4 个前缀音节候选（点选锁定第一个未定位置）；
+    /// 空闲时=4 个常用中文标点（讯飞/豆包符号列、qingjian「不组句时放标点」）。
+    /// 建槽时已挂唯一 action（按 accessibilityIdentifier 分派），这里只改外观与标签。
     private func updateSyllableColumn() {
         guard mode == .chinese9, sylButtons.count == 4 else { return }
         let opts = (engine.isLoaded && !compose.isEmpty)
             ? Array(engine.t9SyllableOptions(compose).prefix(4)) : []
+        let puncts: [String] = opts.isEmpty ? ["，", "。", "？", "！"] : []
         for i in 0..<sylButtons.count {
             let b = sylButtons[i]
             if i < opts.count {
+                let syl = opts[i].0
                 b.isEnabled = true
-                b.accessibilityIdentifier = opts[i].0
-                b.setTitle(opts[i].0, for: .normal)
+                b.accessibilityIdentifier = "syl:" + syl
+                b.setTitle(syl, for: .normal)
                 b.setTitleColor(.label, for: .normal)
                 b.backgroundColor = .tertiarySystemFill
+                b.titleLabel?.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .medium)
+            } else if i < puncts.count {
+                let p = puncts[i]
+                b.isEnabled = true
+                b.accessibilityIdentifier = "p:" + p
+                b.setTitle(p, for: .normal)
+                b.setTitleColor(.label, for: .normal)
+                b.backgroundColor = .secondarySystemGroupedBackground
+                b.titleLabel?.font = UIFont.systemFont(ofSize: 18)
             } else {
                 b.isEnabled = false
                 b.accessibilityIdentifier = nil

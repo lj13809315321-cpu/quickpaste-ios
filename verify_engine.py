@@ -1,14 +1,62 @@
 # -*- coding: utf-8 -*-
 """用 Python 忠实复刻 Swift 引擎的解码链路，本地验证效果与耗时。
 云端打包前先跑这个，避免把错算法编译进 IPA。
+
+本版同步：
+1. words_for() 读 mmap 词库 lexicon.bin（93 万条）—— 与 Swift words(forPinyinKey:) 同序
+2. decode(locked=) 音节锁定管线 —— 左列/分词键点选后跨音节组词
+3. t9_syllable_options() 前缀音节列 —— 竞品「第一个未定位置」标准
+4. 逐键节奏测试 —— 模拟真实打字过程（竞品连贯性对照）
 """
-import json, os, math, time
+import json, os, math, struct, time
 from collections import defaultdict
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Keyboard")
 def load(name):
     with open(os.path.join(OUT, name), encoding="utf-8") as f:
         return json.load(f)
+
+# ---------- mmap 词库（与 Swift MappedTable 同格式二分） ----------
+class Lex:
+    """MZLX 格式：24B 头 + count*12B 索引（按 key UTF-8 字节序）+ 数据区。"""
+    def __init__(self, path):
+        with open(path, "rb") as f:
+            self.d = f.read()
+        assert self.d[:4] == b"MZLX", "lexicon.bin magic"
+        self.count = struct.unpack_from("<I", self.d, 8)[0]
+        self.base = struct.unpack_from("<I", self.d, 12)[0]
+        self.cache = {}
+
+    def get(self, key):
+        if key in self.cache:
+            return self.cache[key]
+        kb = key.encode("utf-8")
+        lo, hi = 0, self.count
+        hit = None
+        while lo < hi:
+            mid = (lo + hi) // 2
+            koff, klen, voff, vlen = struct.unpack_from("<IHIH", self.d, 24 + mid * 12)
+            mk = self.d[self.base + koff:self.base + koff + klen]
+            if mk < kb:
+                lo = mid + 1
+            elif mk > kb:
+                hi = mid
+            else:
+                hit = self.d[self.base + voff:self.base + voff + vlen] \
+                    .decode("utf-8").split("\t")
+                break
+        self.cache[key] = hit
+        return hit
+
+lex = Lex(os.path.join(OUT, "lexicon.bin"))
+freqLex = Lex(os.path.join(OUT, "freq.bin"))
+
+def wf(w):
+    """与 Swift freqValue 同：wordFreq(JSON hot) → freq.bin(93万语料压缩刻度)"""
+    if w in wordFreq: return wordFreq[w]
+    v = freqLex.get(w)
+    if v: return int(v[0])
+    return None
 
 charMap = load("pinyin_chars.json")
 phraseMap = load("pinyin_phrases.json")
@@ -18,6 +66,20 @@ wordFreq = load("pinyin_hot_words.json")
 bigram = load("pinyin_bigram.json")
 t9Map = load("pinyin_t9.json")
 english = set(load("pinyin_english.json"))
+
+def words_for(key):
+    """与 Swift words(forPinyinKey:) 同序：mmap 词库优先，JSON 词表补充。"""
+    w = lex.get(key)
+    if w:
+        pm = phraseMap.get(key)
+        if not pm:
+            return w
+        all_ = list(pm)
+        for x in w:
+            if x not in all_:
+                all_.append(x)
+        return all_
+    return phraseMap.get(key) or []
 
 valid = set(charMap) | {s for k in phraseMap for s in k.split()} | {s for v in t9Map.values() for s in v}
 sylPrefixes = set()
@@ -51,7 +113,8 @@ def bigramBonus(a, b):
     return min(26, bigram.get(a, {}).get(b, 0) * 2.5)
 
 def approxWordFreq(w):
-    if w in wordFreq: return wordFreq[w]
+    f = wf(w)
+    if f: return f
     return min(150, sum(charFreq.get(c, 1) for c in w) / max(1, len(w)))
 
 def syllableCandidates(s, level=2):
@@ -66,7 +129,6 @@ def syllableCandidates(s, level=2):
         variantCache[ck] = out
         return out
     add(s, 0)
-    # level 1：只开模糊音；level 2：再开 1 次编辑纠错
     for a,b in fuzzyInit:
         if s.startswith(a): add(b + s[len(a):], 1)
         if s.startswith(b): add(a + s[len(b):], 1)
@@ -94,14 +156,12 @@ def latticeBonus(seq):
     s = 0.0
     for k in range(2, min(4, c) + 1):
         key = " ".join(seq[c-k:])
-        if key in phraseMap:
-            w = phraseMap[key][0]
-            s += 130 if w in wordFreq else 35
+        w = words_for(key)
+        if w:
+            s += 130 if trusted(w[0]) else 35
     return s
 
 def trimBeamBucket(arr, per=2):
-    """按「已切出的音节数」分桶保留：保证 zhong(1音节) 不会被 yin+ni(2音节) 挤掉。
-    贪心 top-K 会系统性地偏爱碎切分，这是之前 9 键「中国」被切成「印尼故哦」的根因。"""
     buckets = defaultdict(list)
     for node in arr:
         buckets[len(node[0])].append(node)
@@ -118,7 +178,6 @@ def syllableLattices(buf, is9, level=0):
         states = beam.get(i)
         if not states: continue
         for seq, sc, last in states:
-            # 9 键最少 2 位数字才成音节（离线索引已删 a/e/o 单字母音节）
             for l in range(2 if is9 else 1, min(6, n - i) + 1):
                 sub = buf[i:i+l]
                 if is9:
@@ -130,7 +189,6 @@ def syllableLattices(buf, is9, level=0):
                 for syl, pen in opts:
                     nseq = seq + (syl,)
                     top = topChar(syl)
-                    # 每个音节有固定成本，抑制「切得越碎分越高」；词组命中给强加分
                     ns = (sc + sylScore(syl) - 14 + bigramBonus(last, top)
                           - pen * 12 + latticeBonus(list(nseq)) * 2
                           + (len(syl) * 6 if is9 else 0))
@@ -163,7 +221,7 @@ def syllableLattices(buf, is9, level=0):
     return uniq[:18]
 
 def trusted(w):
-    """是否可信日常词：有真实词频，或长词且用字都很常用（如「打电话」）。"""
+    """hot 精选词表专属（与 Swift isTrusted 一致）——93 万语料词不算 trusted。"""
     if w in wordFreq: return True
     return len(w) >= 3 and sum(charFreq.get(c, 0) for c in w) >= 3 * 170
 
@@ -177,19 +235,31 @@ def composeSentence(seq):
         for l in range(1, min(6, n-i)+1):
             key = " ".join(seq[i:i+l])
             opts = []
-            for idx, w in enumerate(phraseMap.get(key, [])[:4]):
-                # 可信高频词享受长词加成；冷僻词不给，避免「曲面」压过「去+面」
-                # 双刻度叠加：字频和（偏好多字词）+ 真实词频（同长词排序）
-                hot = trusted(w)
-                base = sum(charFreq.get(c, 1) for c in w) / 2.0
-                base += wordFreq.get(w, 0)
-                bonus = (l-1) * (70 if hot else 18)
+            for idx, w in enumerate(words_for(key)[:4]):
+                raw = sum(charFreq.get(c, 1) for c in w)
+                f = wf(w) or 0
+                # 四层刻度（与 Swift composeSentenceWithScore 严格一致）：
+                #  A hot JSON 精选词：字频和/2 + 词频 + 120 + 250/字长加成
+                #  B 启发式长词（3+字全常用字，如一按在/你你你）：只给弱加成，
+                #    否则 rime 语料的长词凭 500 分长词加成压过「现在」
+                #  C 语料词（93万 freq.bin）：词频主导 + 字频点缀
+                #  D 生僻拼凑：字频和/4
+                if w in wordFreq:
+                    b = raw / 2.0 + f + 120
+                    bonus = (l - 1) * 250
+                elif trusted(w):
+                    b = raw / 2.0 + f + 40
+                    bonus = (l - 1) * 70
+                elif f > 0:
+                    b = f + raw / 10.0
+                    bonus = (l - 1) * 18
+                else:
+                    b = raw / 4.0
+                    bonus = (l - 1) * 18
                 redu = 65 if (len(w) == 2 and w[0] == w[1]) else 0
-                opts.append((w, (base if hot else base * 0.5) + bonus
-                             + (120 if hot else 0) + redu - 25 - idx*10))
+                opts.append((w, b + bonus + redu - 25 - idx * 10))
             if l == 1:
                 for idx, c in enumerate(charMap.get(seq[i], [])[:4]):
-                    # 单字降权：碎片切分不该靠数量堆分
                     opts.append((c, charFreq.get(c,1)/4.0 - 25 - idx*6))
             for w, ws in opts:
                 trans = bigramBonus(last, w[0]) if last else 0
@@ -233,6 +303,20 @@ def t9TailLetters(digits):
         out += max(votes, key=votes.get) if votes else digitLetters.get(digits[i], digits[i])[0]
     return out
 
+def t9SyllableOptions(buf):
+    """左列音节候选：前缀（第一个未定位置），竞品标准。返回 [(音节, 位数)]"""
+    n = len(buf)
+    if n < 2: return []
+    seen, scored = set(), []
+    for l in range(min(6, n), 1, -1):
+        for s in t9Map.get(buf[:l], []):
+            if s in seen: continue
+            seen.add(s)
+            c = topChar(s)
+            scored.append((s, (charFreq.get(c, 1) if c else 1) + l * 24, l))
+    scored.sort(key=lambda x: -x[1])
+    return [(s, l) for s, _, l in scored[:8]]
+
 def prefixCandidates(buf, is9, fallback):
     out, seen = [], set()
     if is9:
@@ -247,39 +331,72 @@ def prefixCandidates(buf, is9, fallback):
     if not out: out.append(fallback)
     return out[:16]
 
-def decode(buf, is9):
+def decode(buf, is9, locked=()):
     buf = buf.lower()
-    # 精确切分优先；只有精确无解时才逐级放宽到模糊音、1 次编辑纠错
+    if not buf and not locked:
+        return "", []
     lats = syllableLattices(buf, is9, 0)
-    # 尾部半截音节（...mian's）是正常输入状态，不算失败；只有完全切不出才升级纠错
+    if is9 and not any(not lat[1] for lat in lats):
+        l1 = syllableLattices(buf, True, 1)
+        if any(not lat[1] for lat in l1): lats = l1
     if not is9 and not lats:
-        l1 = syllableLattices(buf, is9, 1)
+        l1 = syllableLattices(buf, False, 1)
         if l1:
             lats = l1
         else:
-            l2 = syllableLattices(buf, is9, 2)
+            l2 = syllableLattices(buf, False, 2)
             if l2: lats = l2
     if not lats:
-        d = "".join(digitLetters.get(c,c)[0] for c in buf) if is9 else buf
+        # 锁定兜底：剩余数字（含单键元音 a/e/o）补全成音节与锁定音节组词
+        if locked:
+            comps = []
+            if buf:
+                if is9:
+                    # 补全音节消耗位数 == 已输入位数（与 Swift 一致）
+                    if len(buf) >= 2: comps = list(t9Map.get(buf, []))
+                    if buf == "2": comps.append("a")
+                    if buf == "3": comps.append("e")
+                    if buf == "6": comps.append("o")
+                else:
+                    comps = [s for s in valid if s.startswith(buf)]
+            comps = sorted(set(comps), key=lambda s: -sylScore(s))
+            scored = []
+            for syl in comps[:6]:
+                full = tuple(locked) + (syl,)
+                t, sc = composeSentence(list(full))
+                w = words_for(" ".join(full))
+                scored.append((syl, sc + (200 if any(trusted(x) for x in (w or [])[:4]) else 0), t))
+            scored.sort(key=lambda x: -x[1])
+            disp = (locked and "'".join(locked) + "'" + scored[0][0]) if scored else "'".join(locked)
+            out, seen = [], set()
+            for _, _, t in scored:
+                if t and t not in seen: seen.add(t); out.append(t)
+            for w in words_for(" ".join(locked))[:6]:
+                if w not in seen: seen.add(w); out.append(w)
+            for syl in locked:
+                for c in (charMap.get(syl) or [])[:4]:
+                    if c not in seen: seen.add(c); out.append(c)
+            return disp, (out[:20] if out else [disp])
+        d = t9TailLetters(buf) if is9 else buf
         return d, prefixCandidates(buf, is9, d)
-    # 关键：音节格的贪心分不作为最终排序，改由词格 viterbi 的整句分数决定
     ranked = []
     for lat in lats[:18]:
-        text, sc = composeSentence(list(lat[0]))
-        key = " ".join(lat[0])
-        ps = phraseMap.get(key)
-        whole = 200 if ps and ps[0] in wordFreq else 0
-        # 9 键完整切完优先；26 键尾部半截音节是正常输入状态
+        full = tuple(locked) + lat[0]
+        text, sc = composeSentence(list(full))
+        key = " ".join(full)
+        w = words_for(key)
+        whole = 200 if any(trusted(x) for x in (w or [])[:4]) else 0
         complete = (300 if not lat[1] else -160) if is9 else (20 if not lat[1] else 0)
-        length_cost = len(lat[0]) * (30 if is9 else 12)
+        # 每音节固定成本：碎片化切分（hua->hu+a 多出一个音节）整体出局，
+        # 这就是 qingjian「音节少优先」原则，也是竞品整句连贯的排序根基
+        length_cost = len(lat[0]) * (120 if is9 else 150)
         final = sc - length_cost + whole + complete + lat[2] * 0.05
-        ranked.append((lat, text, final))
+        ranked.append(((full, lat[1], sc), text, final))
     ranked.sort(key=lambda x: -x[2])
     lats = [r[0] for r in ranked]
     sentences = [r[1] for r in ranked]
     best = lats[0]
     parts = list(best[0])
-    # mi'an -> mian：显示层把被误拆的长音节合回来，贴近搜狗的 mian's
     if best[1] and len(parts) >= 2 and parts[-2] + parts[-1] in valid:
         parts = parts[:-2] + [parts[-2] + parts[-1]]
     if best[1]: parts.append(t9TailLetters(best[1]) if is9 else best[1])
@@ -288,8 +405,6 @@ def decode(buf, is9):
     def push(s):
         if s and s not in seen:
             seen.add(s); out.append(s)
-    # 尾部半截音节补全 + 音节重切：搜狗在 ni'gan'jin'wo'qu'mian's 时
-    # 会直接给出「你赶紧我去面试」，而不是让用户再补一个键。
     if best[1] and len(best[0]) >= 3:
         tail = best[1]
         cands = []
@@ -302,28 +417,30 @@ def decode(buf, is9):
         if len(best[0]) >= 2:
             merged = best[0][-2] + best[0][-1]
             if merged in valid:
-                seqs.append(list(best[0][:-2]) + [merged])   # 合并版优先，更可能是正确长句
+                seqs.append(list(best[0][:-2]) + [merged])
         seqs.append(list(best[0]))
         for sq in seqs:
             for syl in cands:
                 text, _ = composeSentence(sq + [syl])
                 if text: push(text)
-    # 整串是可信词时用 viterbi 整句结果置顶（明明 > 词库首序命名）
     bkey = " ".join(best[0])
     if sentences and trusted(sentences[0]):
         push(sentences[0])
-    elif phraseMap.get(bkey) and trusted(phraseMap[bkey][0]):
-        push(phraseMap[bkey][0])
+    else:
+        for x in (words_for(bkey) or [])[:4]:
+            if trusted(x): push(x); break
     for s in sentences[:3]:
         push(s)
+    if locked:
+        for w in words_for(" ".join(locked))[:4]: push(w)
     for lat in lats[:3]:
         key = " ".join(lat[0])
-        for w in phraseMap.get(key, [])[:8]: push(w)
+        for w in words_for(key)[:8]: push(w)
         for k in fuzzyKeys(list(lat[0])):
-            for w in phraseMap.get(k, [])[:4]: push(w)
+            for w in words_for(k)[:4]: push(w)
     if len(best[0]) >= 2:
         for l in range(2, min(5, len(best[0]))+1):
-            for w in phraseMap.get(" ".join(best[0][:l]), [])[:3]: push(w)
+            for w in words_for(" ".join(best[0][:l]))[:3]: push(w)
         if len(best[0]) - 1 >= 2:
             for l in range(2, min(4, len(best[0])-1)+1):
                 push(composeSentence(list(best[0][:l]))[0])
@@ -343,7 +460,6 @@ def assoc(t):
         if s and s != t and s not in seen:
             seen.add(s); out.append(s)
     for p in ["，","！","。","？"]: push(p)
-    # 词级搭配紧跟标点，别让一整排语气词把「吗 / 天气 / 想」挤到后面
     for l in range(min(4, len(t)), 0, -1):
         for w in assocNext.get(t[-l:], []): push(w)
     for p in ["～","、","吗","呢","吧","啊","呀","哦","嗯","哈","了","的"]: push(p)
@@ -351,46 +467,90 @@ def assoc(t):
     for ch, _ in sorted(bigram.get(last, {}).items(), key=lambda x: -x[1])[:10]: push(ch)
     return out[:20]
 
-print("=" * 70)
-CASES = [
-    ("26", "niganjinwoqumians", "长句(搜狗图3)"),
-    ("26", "nihao", "常用词"),
-    ("26", "woxiangdadianhua", "长句2"),
-    ("26", "zhongguo", "常用词"),
-    ("26", "nihaoa", "多打一个字母"),
-    ("26", "niha", "少打一个字母"),
-    ("26", "niganjin", "连续词"),
-    ("9",  "64426", "9键你好"),
-    ("9",  "94664486", "9键中国"),
-    ("9",  "744543", "9键世界"),
-    ("9",  "5468426", "9键今天"),
-    ("9",  "644265469678642678", "9键长串(图2)"),
-]
-for mode, buf, name in CASES:
-    t0 = time.perf_counter()
-    d, c = decode(buf, mode == "9")
-    dt = (time.perf_counter() - t0) * 1000
-    print(f"[{name}] {mode}键 {buf}")
-    print(f"   拼音串: {d}")
-    print(f"   候选  : {c[:8]}")
-    print(f"   耗时  : {dt:.1f} ms")
-print("=" * 70)
-for ctx in ["你好", "今天", "我", "中国", "面试", "你赶紧我去面试"]:
-    print(f"联想「{ctx}」-> {assoc(ctx)[:14]}")
+# ==================================================================
+PASS, FAIL = 0, 0
+def check(name, cond, detail=""):
+    global PASS, FAIL
+    if cond: PASS += 1
+    else: FAIL += 1
+    print("  %s %s%s" % ("[PASS]" if cond else "[FAIL]", name,
+                         ("  -> " + detail) if detail and not cond else ""))
 
-# 逐键性能：模拟用户连续敲 18 个键
-buf = ""
-t0 = time.perf_counter()
-for ch in "niganjinwoqumians":
-    buf += ch
-    decode(buf, False)
 print("=" * 70)
-print("26键逐键 18 次解码总耗时: %.1f ms (平均 %.1f ms/键)" % (
-    (time.perf_counter()-t0)*1000, (time.perf_counter()-t0)*1000/18))
-buf = ""
-t0 = time.perf_counter()
-for ch in "644265469678642678":
-    buf += ch
-    decode(buf, True)
-print("9键逐键 18 次解码总耗时: %.1f ms (平均 %.1f ms/键)" % (
-    (time.perf_counter()-t0)*1000, (time.perf_counter()-t0)*1000/18))
+print("一、93 万 mmap 词库关键词条（lexicon.bin 直查）")
+for key, want in [("gui mi", "闺蜜"), ("xi an", "西安"), ("yu e", "余额"),
+                  ("xian zai", "现在"), ("shu fu", "舒服"), ("duo le", "多了"),
+                  ("ni hao", "你好"), ("zhong guo", "中国"),
+                  ("tian qi", "天气"), ("mian shi", "面试")]:
+    ws = words_for(key) or []
+    check("%s → %s" % (key, want), want in ws, "词表: %s" % ws[:6])
+# freq.bin：93 万词频压缩后必须带上这些词（trusted 排序的关键）
+for w in ["闺蜜", "西安", "余额", "现在", "舒服"]:
+    check("freq.bin 含 %s" % w, wf(w) is not None, "无词频")
+
+print("=" * 70)
+print("二、左列前缀音节（竞品「第一个未定位置」标准；a=2 键！）")
+for digits, want in [("484", "gui"), ("94", "xi"), ("98", "yu"),
+                     ("64", "mi"), ("9426", "xian"), ("26", "an")]:
+    opts = [s for s, _ in t9SyllableOptions(digits)]
+    check("左列 %s 含 %s" % (digits, want), want in opts, "实际: %s" % opts[:6])
+
+print("=" * 70)
+print("三、音节锁定连贯组词（竞品核心交互；an=26、e=3）")
+d, c = decode("48464", True)
+check("48464 → 闺蜜(直接)", c and c[0] == "闺蜜", "首位: %s" % (c[:4] if c else []))
+d, c = decode("64", True, locked=("gui",))
+check("锁gui+64 → 闺蜜", c and c[0] == "闺蜜", "首位: %s / 串: %s" % (c[:4] if c else [], d))
+d, c = decode("26", True, locked=("xi",))
+check("锁xi+26 → 西安", c and c[0] == "西安", "首位: %s / 串: %s" % (c[:4] if c else [], d))
+d, c = decode("3", True, locked=("yu",))
+check("锁yu+3 → 余额", c and c[0] == "余额", "首位: %s / 串: %s" % (c[:4] if c else [], d))
+d, c = decode("", True, locked=("gui",))
+check("锁gui空缓冲 → 归/规类字词", bool(c), "候选: %s" % (c[:5] if c else []))
+
+print("=" * 70)
+print("四、逐键节奏测试（模拟真实打字：每键刷新，最终出词）")
+RHYTHM = [
+    ("94269247483838653", "现在舒服多了"),
+    ("64426", "你好"), ("94664486", "中国"), ("744543", "世界"),
+    ("5468426", "今天"), ("48464", "闺蜜"), ("64646464", "明明"),
+]
+for digits, want in RHYTHM:
+    buf = ""
+    first = ""
+    t0 = time.perf_counter()
+    for ch in digits:
+        buf += ch
+        d, c = decode(buf, True)
+        if c: first = c[0]
+    dt = (time.perf_counter() - t0) * 1000
+    check("9键 %s → %s" % (digits, want), first == want,
+          "实际首位: %s (串 %s)" % (first, d))
+    print("      逐键 %d 键总耗时 %.1f ms" % (len(digits), dt))
+
+print("=" * 70)
+print("五、26 键回归")
+for buf, want in [("niganjinwoqumians", "你赶紧我去面试"),
+                  ("woxiangdadianhua", "我想打电话"),
+                  ("nihao", "你好")]:
+    d, c = decode(buf, False)
+    check("26键 %s → %s" % (buf, want), c and c[0] == want,
+          "首位: %s / 串: %s" % (c[:4] if c else [], d))
+
+print("=" * 70)
+print("六、显示回归（拼音串非数字串 / 锁定段在串首）")
+d, c = decode("64426", True)
+check("64426 显示 ni'hao", d == "ni'hao", d)
+d, c = decode("64", True, locked=("gui",))
+check("锁gui+64 显示 gui'mi", d == "gui'mi", d)
+d, c = decode("26", True, locked=("xi",))
+check("锁xi+26 显示 xi'an", d == "xi'an", d)
+d, c = decode("3", True, locked=("yu",))
+check("锁yu+3 显示 yu'e", d == "yu'e", d)
+
+print("=" * 70)
+for ctx in ["你好", "今天", "我"]:
+    print("联想「%s」-> %s" % (ctx, assoc(ctx)[:12]))
+
+print("=" * 70)
+print("结果: %d PASS / %d FAIL" % (PASS, FAIL))

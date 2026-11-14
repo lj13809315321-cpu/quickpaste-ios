@@ -340,9 +340,9 @@ final class PinyinEngine {
     }
 
     /// 9 键左列音节候选（带该音节对应的数字位数）。
-    /// 搜狗式交互：左侧竖排 4 个常用音节，点选即锁定 —— 该音节确定下来，
-    /// 继续打的数字与它组词（gui 锁定后再打 64 → 闺蜜），这才是「连贯」。
-    /// 任何拼音音节的每个字母恰好对应一位数字，所以位数 == 音节字母数。
+    /// 竞品标准（搜狗官方帮助 + qingjian 设计文档）：左列针对**第一个未确定的
+    /// 位置**，即缓冲区前缀能读出的音节 —— 点选锁定该位置，剩余数字继续组词
+    /// （gui 锁定后再打 64 → 闺蜜）。位数 == 音节字母数（一字母一数字）。
     func t9SyllableOptions(_ buf: String) -> [(String, Int)] {
         let chars = Array(buf)
         guard !chars.isEmpty else { return [] }
@@ -351,7 +351,7 @@ final class PinyinEngine {
         var seen = Set<String>()
         var scored: [(String, Int, Int)] = []
         for l in stride(from: maxL, through: 2, by: -1) {
-            let sub = String(chars[(chars.count - l)..<chars.count])
+            let sub = String(chars[0..<l])          // 前缀：第一个未定位置
             for s in t9Map[sub] ?? [] {
                 guard seen.insert(s).inserted else { continue }
                 let f = topChar(s).flatMap { charFreq[$0] } ?? 1
@@ -510,17 +510,49 @@ final class PinyinEngine {
         }
         guard !lats.isEmpty else {
             if !locked.isEmpty {
-                // 新串还没打成音节（或为空）：锁定部分自己出词 + 常用字兜底
-                let lk = locked.joined(separator: " ")
-                let d = locked.joined(separator: "'") + (buf.isEmpty ? "" : "'" + (is9Key ? t9Display(buf) : buf))
+                // 锁定音节 + 剩余数字还没成音节（含单键元音 a/e/o）：
+                // 把剩余数字补全成音节与锁定音节组词 —— 锁 yu + 3 → yu'e → 余额（搜狗同款）
+                var comps: [String] = []
+                if !buf.isEmpty {
+                    if is9Key {
+                        // 补全音节消耗的数字必须 == 已输入位数（qingjian 对齐原则）：
+                        // 锁 yu + "3" 只能补成 e（余额），不能预支成 dao（326 还没打出来）
+                        if buf.count >= 2 { comps = t9Map[buf] ?? [] }
+                        if buf == "2" { comps.append("a") }
+                        if buf == "3" { comps.append("e") }
+                        if buf == "6" { comps.append("o") }
+                    } else {
+                        comps = validSyllables.filter { $0.hasPrefix(buf) }
+                    }
+                }
+                comps = Array(Set(comps)).sorted { sylScore($0) > sylScore($1) }
+                // 按补全后的整句分排序，分高的先出（余额 > 鱼得这类拼凑）
+                var scored: [(String, Double, String)] = []
+                for syl in comps.prefix(6) {
+                    let full = locked + [syl]
+                    let (t, sc) = composeSentenceWithScore(full)
+                    let wb: Double = words(forPinyinKey: full.joined(separator: " "))
+                        .prefix(4).contains { isTrusted($0) } ? 200.0 : 0.0
+                    scored.append((syl, sc + wb, t))
+                }
+                scored.sort { $0.1 > $1.1 }
+                let disp = scored.first
+                    .map { locked.joined(separator: "'") + "'" + $0.0 }
+                    ?? locked.joined(separator: "'")
                 var out: [String] = []
                 var seen = Set<String>()
-                for w in words(forPinyinKey: lk).prefix(10) where seen.insert(w).inserted { out.append(w) }
+                for s in scored where seen.insert(s.2).inserted { out.append(s.2) }
+                let lk = locked.joined(separator: " ")
+                for w in words(forPinyinKey: lk).prefix(6) where seen.insert(w).inserted { out.append(w) }
                 for syl in locked {
-                    if let cs = charMap[syl] { for c in cs.prefix(6) where seen.insert(c).inserted { out.append(c) } }
+                    if let cs = charMap[syl] {
+                        for c in cs.prefix(4) where seen.insert(c).inserted { out.append(c) }
+                    }
                 }
-                return DecodeResult(display: d, candidates: out.isEmpty ? [d] : Array(out.prefix(20)),
-                                    key: lk, alternates: is9Key && !buf.isEmpty ? t9Alternates(buf) : [])
+                return DecodeResult(display: disp,
+                                    candidates: out.isEmpty ? [disp] : Array(out.prefix(20)),
+                                    key: scored.first.map { (locked + [$0.0]).joined(separator: " ") } ?? lk,
+                                    alternates: is9Key && !buf.isEmpty ? t9Alternates(buf) : [])
             }
             let d = is9Key ? t9Display(buf) : buf
             return DecodeResult(display: d,
@@ -535,15 +567,18 @@ final class PinyinEngine {
             let full = locked + lat.seq
             let (text, sc) = composeSentenceWithScore(full)
             let key = full.joined(separator: " ")
-            let whole: Double = (words(forPinyinKey: key).first).map { isTrusted($0) ? 200.0 : 0.0 } ?? 0
+            // 整串词表前 4 里任一可信词即给 whole 加成（明明常排在命名后面）
+            let whole: Double = words(forPinyinKey: key).prefix(4).contains { isTrusted($0) } ? 200 : 0
             // 9 键必须优先「数字串完整切完」的路径。旧版让 mi'mi'mi'64 靠
             // 重复「秘密」刷分压过 ming'ming，于是出现「你也哦哦鄂哦此」。
             // 26 键的尾部半截音节是正常输入（ni'gan'jin'...'mian's），保持轻权重。
             let completeBonus: Double = is9Key
                 ? (lat.tail.isEmpty ? 300 : -160)
                 : (lat.tail.isEmpty ? 20 : 0)
-            // 9 键额外抑制「把一个数字串切成一堆短音节再反复拼同一个词」
-            let lengthCost: Double = Double(lat.seq.count) * (is9Key ? 30 : 12)
+            // 每音节固定成本（qingjian「音节少优先」原则）：碎片化切分
+            // （hua→hu+a 多出一个音节、ni×4 叠音节刷分）整体出局，
+            // 这是竞品整句连贯排序的根基。26 键比 9 键更重（长句路径更长）。
+            let lengthCost: Double = Double(lat.seq.count) * (is9Key ? 120 : 150)
             let finalScore = sc - lengthCost + whole
                              + completeBonus + lat.score * 0.05
             ranked.append((Lattice(seq: full, tail: lat.tail, score: sc), text, finalScore))
@@ -602,7 +637,7 @@ final class PinyinEngine {
         // ming ming 的词库首序是「命名」，但口语首选是叠字词「明明」。
         let bestKey = best.seq.joined(separator: " ")
         if let first = sentences.first, isTrusted(first) { push(first) }
-        else if let w = words(forPinyinKey: bestKey).first, isTrusted(w) { push(w) }
+        else if let w = words(forPinyinKey: bestKey).prefix(4).first(where: { isTrusted($0) }) { push(w) }
         // 3) 整句候选
         for s in sentences.prefix(3) { push(s) }
         // 3.5) 锁定音节自身的词（点音节后候选立刻联动，不用等新键）
@@ -791,7 +826,10 @@ final class PinyinEngine {
     }
 
     private func isTrusted(_ w: String) -> Bool {
-        if freqValue(w) != nil { return true }
+        // hot 精选词表专属（词频 172~341 刻度、人工校过）。93 万语料词走
+        // freqValue 的 corpus 刻度进 base，但不享受 trusted 加成 ——
+        // 否则「一按(rime 229250)」会压过「现在」，排序直接崩坏。
+        if wordFreq[w] != nil { return true }
         if w.count >= 3 {
             var sum = 0
             for c in w { sum += charFreq[String(c)] ?? 0 }
@@ -955,19 +993,39 @@ final class PinyinEngine {
                 let ps = words(forPinyinKey: key)
                 if !ps.isEmpty {
                     for (idx, w) in ps.prefix(4).enumerated() {
-                        // 可信高频词享受长词加成；冷僻词不给，避免「曲面」压过「去+面」
-                        // 双刻度叠加：字频和（偏好多字词）+ 真实词频（决定同长词排序）。
-                        // 只用字频和会让「使+节」反超「世界」，只用词频会丢长度倾向。
-                        var base = 0
-                        for c in w { base += charFreq[String(c)] ?? 1 }
+                        // 三层刻度（与 verify_engine.py 严格一致）：
+                        //  1) hot 精选词：字频和/2 + 词频 + 120 加成
+                        //  2) 语料词（93万 freq.bin，压缩刻度≤341）：词频主导 + 字频点缀，
+                        //     不加 120 —— rime 权重虚高的「一按」不能压过 hot 的「现在」
+                        //  3) 生僻拼凑：字频和/4
+                        var raw = 0
+                        for c in w { raw += charFreq[String(c)] ?? 1 }
                         let wf = freqValue(w) ?? 0
-                        let hot = isTrusted(w)
-                        let b = (hot ? Double(base) / 2.0 : Double(base) / 4.0) + Double(wf)
-                        let bonus = Double(l - 1) * (hot ? 70 : 18)
+                        // 四层刻度（与 verify_engine.py 严格一致）：
+                        //  A hot JSON 精选词：字频和/2 + 词频 + 120 + 250/字长加成
+                        //  B 启发式长词（3+字全常用字，如一按在/你你你）：只给弱加成，
+                        //    否则 rime 语料的长词凭长词加成压过「现在」
+                        //  C 语料词（93万 freq.bin）：词频主导 + 字频点缀
+                        //  D 生僻拼凑：字频和/4
+                        let b: Double
+                        let bonus: Double
+                        if wordFreq[w] != nil {
+                            b = Double(raw) / 2.0 + Double(wf) + 120
+                            bonus = Double(l - 1) * 250
+                        } else if isTrusted(w) {
+                            b = Double(raw) / 2.0 + Double(wf) + 40
+                            bonus = Double(l - 1) * 70
+                        } else if wf > 0 {
+                            b = Double(wf) + Double(raw) / 10.0
+                            bonus = Double(l - 1) * 18
+                        } else {
+                            b = Double(raw) / 4.0
+                            bonus = Double(l - 1) * 18
+                        }
                         // 明明 / 看看 / 渐渐 这类叠字词在口语里极常用，
                         // 让它们压过同音的普通双字词（ming ming：明明 > 命名）
                         let reduplication: Double = (w.count == 2 && w.first == w.last) ? 65 : 0
-                        options.append((w, b + bonus + (hot ? 120 : 0) + reduplication
+                        options.append((w, b + bonus + reduplication
                                         - 25 - Double(idx) * 10))
                     }
                 }

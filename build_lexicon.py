@@ -41,6 +41,7 @@ extra.txt 每行：  拼音串<TAB>词1[<TAB>词2 ...]
 """
 import argparse
 import json
+import math
 import os
 import struct
 import sys
@@ -48,6 +49,15 @@ import sys
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Keyboard")
 MAGIC = b"MZLX"
 SEP = "\t"
+
+
+def compress_freq(f):
+    """语料原始频次压到 hot words(172~341)刻度带下方。
+    用 30+2.7*sqrt(f) 而不是对数：rime 里闺蜜 9999 vs 归你 5480 近 2:1 的
+    排序信号必须保留（对数会把 2:1 压成 1.06:1，闺蜜就压不过归你了）；
+    hot words 保持原值不被覆盖。"""
+    f = max(1, int(f))
+    return min(341, max(2, round(30 + 2.7 * math.sqrt(f))))
 
 
 def load_json(name):
@@ -102,7 +112,8 @@ def compile_table(items):
 
 
 def read_extra(path):
-    """每行：拼音串<TAB>词1[<TAB>词2...]"""
+    """每行：拼音串<TAB>词<TAB>频次（expand_lexicon.py 生成）。
+    返回 {拼音串: [(词, 频次), ...]} —— 频次进 freq.bin，是排序质量的关键。"""
     out = {}
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -113,15 +124,16 @@ def read_extra(path):
             if len(parts) < 2:
                 continue
             key = parts[0].strip().lower()
-            # 只收含汉字的词：extra 行第 3 列可能是词频数字，别把它当词条
-            words = [w.strip() for w in parts[1:]
-                     if w.strip() and any("\u4e00" <= c <= "\u9fff" for c in w.strip())]
-            if not key or not words:
+            w = parts[1].strip()
+            if not key or not w or not any("\u4e00" <= c <= "\u9fff" for c in w):
                 continue
-            out.setdefault(key, [])
-            for w in words:
-                if w not in out[key] and len(out[key]) < 12:
-                    out[key].append(w)
+            try:
+                freq = int(float(parts[2])) if len(parts) >= 3 else 0
+            except ValueError:
+                freq = 0
+            lst = out.setdefault(key, [])
+            if all(x[0] != w for x in lst) and len(lst) < 12:
+                lst.append((w, freq))
     return out
 
 
@@ -138,8 +150,13 @@ def main():
     hot = load_json("pinyin_hot_words.json")
 
     extra = {}
+    extra_freqs = {}
     if args.extra:
-        extra.update(read_extra(args.extra))
+        for k, pairs in read_extra(args.extra).items():
+            extra[k] = [w for w, _ in pairs]
+            for w, f in pairs:
+                if f > 0:
+                    extra_freqs[w] = max(extra_freqs.get(w, 0), f)
     if args.extra_json:
         with open(args.extra_json, encoding="utf-8") as f:
             d = json.load(f)
@@ -160,15 +177,21 @@ def main():
         if added:
             phrases[k] = cur
             total_extra_words += added
-        # 注意：扩库新词**不**进 freq.bin / flat.bin。
-        # freq.bin 里的词会被 isTrusted 当成可信高频词，若把 30 万长尾词全塞进去，
-        # 冷僻词会压过「你好/中国」，整句排序直接崩坏。它们只作为普通候选存在。
+
+    # freq.bin：hot words 精选刻度（172~341）保持原值，93 万语料词按对数压缩后并入。
+    # Swift isTrusted/approxWordFreq 走 freqValue() 自动生效：闺蜜/西安/余额这类
+    # 「真实词但字频低」的词拿到 trusted 加成，不再被「归你」这类高频字拼凑压过。
+    freq_out = dict(hot)
+    for w, f in extra_freqs.items():
+        if w not in freq_out:
+            freq_out[w] = compress_freq(f)
+    print("freq.bin 词条: hot=%d 语料=%d 合计=%d" % (len(hot), len(freq_out) - len(hot), len(freq_out)))
 
     tables = {
         "lexicon.bin": {k: SEP.join(v) for k, v in phrases.items() if v},
         "flat.bin": {k: v for k, v in flat.items() if isinstance(v, str)},
         "abbr.bin": {k: SEP.join(v) for k, v in abbr.items() if v},
-        "freq.bin": {k: str(v) for k, v in hot.items()},
+        "freq.bin": {k: str(v) for k, v in freq_out.items()},
     }
 
     print("=== mmap 词库编译 ===")
