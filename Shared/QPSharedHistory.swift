@@ -986,6 +986,19 @@ enum QPSharedHistory {
         write(p, keeping: nil)
     }
 
+    /// 清空连续复制已收录的内容，但**保留用户真实剪贴板正文**。
+    /// 与 `clear()` 不同：这里在 Ad Hoc（无 App Group）下也会走剪贴板兜底通道
+    /// 清掉共享条目，只是把真实剪贴板文本原样保留，绝不误删用户正在用的内容。
+    /// 供「开启连续复制前清空」开关调用（只在主 App 进程内调用，安全）。
+    static func clearItemsKeepingClipboard() {
+        var p = read()
+        p.items = []
+        p.times = []
+        // 保留真实剪贴板正文；为空时 writePasteboard 会自动跳过，不会写入无意义内容
+        let body = UIPasteboard.general.string
+        write(p, keeping: body)
+    }
+
     /// - Parameter keeping: 已知的剪贴板正文。传了就不再去读剪贴板
     ///   （iOS 16 读正文会弹授权框，后台直接拿不到）。
     private static func write(_ p: Payload, keeping text: String?) {

@@ -140,7 +140,7 @@ final class KeyboardViewController: UIInputViewController {
     /// ✕ 键左滑逐字符退删的位移基准与已删步数（对齐空格滑光标的手感）
     private var deleteOriginX: CGFloat = 0
     private var deleteDeletedSteps = 0
-    /// v1.8.37：✕ 上滑/下滑统一判定用（垂直基准、已触发、最近一次垂直动作时刻）
+    /// v1.8.38：✕ 上滑/下滑统一判定用（垂直基准、已触发、最近一次垂直动作时刻）
     private var deleteOriginY: CGFloat = 0
     private var deleteVerticalFired = false
     private var deleteVerticalAt: TimeInterval = 0
@@ -1191,7 +1191,7 @@ final class KeyboardViewController: UIInputViewController {
         deleteKey.clipsToBounds = true
         deleteKey.addAction(UIAction { [weak self] _ in
             guard let self = self else { return }
-            // v1.8.37：上滑/下滑已并入滑动手势，抬手时别再额外删一个字
+            // v1.8.38：上滑/下滑已并入滑动手势，抬手时别再额外删一个字
             // 用「距垂直动作 0.4 秒内」判定：手指滑出按钮外抬起也不会残留吞键
             if Date().timeIntervalSince1970 - self.deleteVerticalAt < 0.4 {
                 self.deleteVerticalAt = 0
@@ -1199,7 +1199,7 @@ final class KeyboardViewController: UIInputViewController {
             }
             self.textDocumentProxy.deleteBackward()
         }, for: .touchUpInside)
-        // v1.8.37：原来挂在 ✕ 上的两个 UISwipeGestureRecognizer 会被 0.15s 的
+        // v1.8.38：原来挂在 ✕ 上的两个 UISwipeGestureRecognizer 会被 0.15s 的
         //「原地长按」抢先识别挡掉（默认两个手势不能同时识别），表现就是
         // 上滑清空 / 下滑恢复完全没反应、上滑时反而在逐字删。
         // 现在统一交给一个手势：垂直滑动 = 清空/恢复，左滑 = 逐字删，
@@ -2175,7 +2175,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.37 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.38 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)
@@ -2932,7 +2932,7 @@ final class KeyboardViewController: UIInputViewController {
     // MARK: - 交互
 
     /// ✕ 键统一手势：原地长按连删 / 左滑逐字删 / 上滑清空 / 下滑恢复。
-    /// v1.8.37：垂直动作不再依赖 UISwipeGestureRecognizer（会被长按挡掉），
+    /// v1.8.38：垂直动作不再依赖 UISwipeGestureRecognizer（会被长按挡掉），
     /// 改在同一个长按手势里按位移方向判定，一次手势只触发一次。
     @objc private func handleDeleteSlide(_ g: UILongPressGestureRecognizer) {
         let p = g.location(in: view)

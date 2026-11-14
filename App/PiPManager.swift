@@ -204,6 +204,11 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
             return
         }
 
+        // v1.8.38：「开启连续复制前清空」开关打开时，先把之前攒下的连续复制内容清空，再从头收集。
+        if UserDefaults.standard.bool(forKey: "qp.pipClearOnStart") {
+            Self.clearContinuousHistory()
+        }
+
         starting = true
         message = "正在开启画中画…"
 
@@ -313,6 +318,14 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     private static func saveLocal(_ arr: [LocalEntry]) {        if let data = try? JSONEncoder().encode(arr) {
             UserDefaults.standard.set(data, forKey: "qp.app.pipHistory")
         }
+    }
+
+    /// 开启连续复制前清空之前的连续复制内容（受「开启前清空」开关控制）。
+    /// 同时清主 App 本地历史（qp.app.pipHistory）与共享通道（QPSharedHistory），
+    /// 共享通道在 Ad Hoc 下走剪贴板兜底但会保留真实剪贴板正文。
+    static func clearContinuousHistory() {
+        saveLocal([])
+        QPSharedHistory.clearItemsKeepingClipboard()
     }
 
     /// 指纹：**用完整内容**。墓碑按指纹过滤，之前只取前 140 字，
@@ -689,6 +702,8 @@ struct PiPControlView: View {
     @State private var defaultReturn: String = QPSharedHistory.defaultReturn() ?? "auto"
     /// v1.8.16：删除所选前必须二次确认，杜绝「一键清空全部」的误操作
     @State private var confirmDelete = false
+    /// v1.8.38：「开启连续复制前清空之前的连续复制」开关（持久化到 UserDefaults）
+    @AppStorage("qp.pipClearOnStart") private var clearBeforeStart = false
 
     /// 链接条目判断（与键盘侧 isLinkItem 同口径）
     private static func isLink(_ s: String) -> Bool {
@@ -812,6 +827,15 @@ struct PiPControlView: View {
                 } footer: {
                     Text("小窗就是系统画中画：可以拖到屏幕边框缩成小图标，点小窗上的 ✕ 结束。"
                          + "小窗消失 = 停止监听。")
+                }
+
+                // ── v1.8.38：开启连续复制前是否清空之前的连续复制 ──
+                Section {
+                    Toggle("开启前清空之前的连续复制", isOn: $clearBeforeStart)
+                        .font(.body)
+                    Text("打开后，每次点「开启连续复制」会先把之前攒下的连续复制内容清空，再从头开始收集；关闭则接着之前的继续叠加（默认关闭，沿用现在的行为）。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
                 }
 
                 // ── v1.8.14 收录列表：筛选 / 批量选择 / 删除 / 复制 / 导出 ──
