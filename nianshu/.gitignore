@@ -1,0 +1,22 @@
+# Xcode / iOS 构建产物（云端构建会重新生成，不入库）
+build/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+*.xcuserstate
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+
+# 本机构建中间产物
+dist/
+Payload/
+*.ipa
+*.log
+build.log
+
+# OS / 编辑器
+.DS_Store
+.idea/
+.vscode/

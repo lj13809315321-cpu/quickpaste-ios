@@ -1,0 +1,174 @@
+# 粘鼠 Nianshu 连续复制 · iOS 云端构建（单 target 独立 App，置于 quickpaste-ios 仓库的 nianshu/ 子目录）
+#
+# 与墨指 workflow 互不干扰：
+#   - 本 workflow 只在 nianshu/** 或本文件变动时触发；
+#   - 墨指 build-inputmethod.yml 已加 paths-ignore: ['nianshu/**', '.github/workflows/nianshu-build.yml']，
+#     故推粘鼠不会触发墨指重建。
+# 产物写回 out/nianshu/，不碰墨指的 out/。
+
+name: 构建粘鼠 IPA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'nianshu/**'
+      - '.github/workflows/nianshu-build.yml'
+    paths-ignore:
+      - 'out/**'
+      - '*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ipa:
+    # 固定 Intel 池，避开 arm64 拥塞（墨指 1.8.13 同池构建成功，2.8G 实测稳定）。
+    runs-on: macos-15-intel
+    defaults:
+      run:
+        working-directory: nianshu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 环境诊断
+        run: |
+          xcodebuild -version
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer || true
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 准备资源目录
+        run: mkdir -p App/Resources && ls -la App
+
+      - name: 生成 Xcode 工程（单 target 主 App）
+        run: xcodegen generate
+
+      - name: 列出工程方案
+        run: xcodebuild -list -project Nianshu.xcodeproj
+
+      - name: 编译（build 不归档，避开 iOS 18.5 禁止 archive 阶段 ad-hoc 的限制）
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project Nianshu.xcodeproj \
+            -scheme Nianshu \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            GENERATE_INFOPLIST_FILE=NO \
+            clean build 2>&1 | tee build.log
+
+      - name: 修正 Info.plist（BundleID / ATS / 后台模式 / URL scheme）
+        run: |
+          set -euo pipefail
+          python3 scripts/fix_info_plists.py
+          APP="$PWD/build/Build/Products/Release-iphoneos/Nianshu.app"
+          echo "=== 主 app ==="
+          plutil -p "$APP/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundlePackageType|NSAppTransportSecurity|NSLocalNetwork' || true
+
+      - name: 中间步骤：生成代码签名槽位（预签名包不交付）
+        run: |
+          set -euo pipefail
+          APP="$PWD/build/Build/Products/Release-iphoneos/Nianshu.app"
+          codesign --force --timestamp=none -s - "$APP"
+          codesign -vvv "$APP"
+          ls -la "$APP"
+
+      - name: 打包并校验 IPA 内真的有主 App
+        run: |
+          set -euo pipefail
+          APP="$PWD/build/Build/Products/Release-iphoneos/Nianshu.app"
+          mkdir -p dist
+          rm -rf Payload dist/Nianshu-Sync-iOS.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qr dist/Nianshu-Sync-iOS.ipa Payload
+          echo "=== IPA 内容（关键条目）==="
+          unzip -l dist/Nianshu-Sync-iOS.ipa | grep -E 'Info.plist|Nianshu$' | head -20
+          python3 - <<'PY'
+          import plistlib, zipfile
+          z = zipfile.ZipFile('dist/Nianshu-Sync-iOS.ipa')
+          names = z.namelist()
+          app_plist = 'Payload/Nianshu.app/Info.plist'
+          app_bin   = 'Payload/Nianshu.app/Nianshu'
+          assert app_plist in names, 'IPA 缺主 app plist'
+          a = plistlib.loads(z.read(app_plist))
+          assert a.get('CFBundleIdentifier') == 'app.mulberry6323.nianshu'
+          assert a.get('CFBundlePackageType') == 'APPL'
+          assert (a.get('NSAppTransportSecurity') or {}).get('NSAllowsArbitraryLoads') is True
+          assert a.get('UIBackgroundModes') == ['audio'], '主 App 缺画中画后台模式'
+          schemes = [s for t in (a.get('CFBundleURLTypes') or [])
+                     for s in (t.get('CFBundleURLSchemes') or [])]
+          assert 'nianshu' in schemes, '主 App 缺 nianshu URL scheme'
+          assert z.read(app_bin)[:4] == b'\xcf\xfa\xed\xfe', '主程序不是 arm64 Mach-O'
+          print('[OK] 主 App 在 IPA 内，bundle id / 后台模式 / URL scheme 齐全')
+          PY
+
+      - name: 派生【未签名 IPA】（手机端签名工具直接导入）
+        run: |
+          set -euo pipefail
+          python3 scripts/make_unsigned_ipa.py \
+            dist/Nianshu-Sync-iOS.ipa \
+            dist/Nianshu-Sync-iOS-unsigned.ipa
+          echo "=== 交付产物 ==="
+          ls -lh dist/Nianshu-Sync-iOS-unsigned.ipa
+
+      - name: 上传 IPA 产物（只传未签名包）
+        uses: actions/upload-artifact@v4
+        with:
+          name: nianshu-ipa
+          path: nianshu/dist/Nianshu-Sync-iOS-unsigned.ipa
+          if-no-files-found: error
+
+      - name: 上传构建日志（失败时排查）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-log
+          path: nianshu/build.log
+          if-no-files-found: warn
+
+  publish:
+    needs: [ipa]
+    if: ${{ always() && needs.ipa.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: 下载产物
+        uses: actions/download-artifact@v4
+        with:
+          name: nianshu-ipa
+          path: out/nianshu
+
+      - name: 校验产物并提交回仓库
+        run: |
+          set -euo pipefail
+          mkdir -p out/nianshu
+          echo "=== out/nianshu/ 内容 ==="
+          ls -lh out/nianshu/
+          UIPA=out/nianshu/Nianshu-Sync-iOS-unsigned.ipa
+          [ -f "$UIPA" ] || { echo "::error::缺未签名 IPA"; exit 1; }
+          {
+            echo "粘鼠 连续复制 独立版 手机安装包"
+            echo "形态：单 target 主 App（无键盘扩展 / 无 App Group），靠系统画中画后台常驻监听剪贴板"
+            echo "交付：未签名 IPA（手机端签名工具直接导入）"
+            echo "构建时间 (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+            echo "commit: ${GITHUB_SHA}"
+            echo "IPA(未签名): $(stat -c%s "$UIPA") bytes"
+          } > out/nianshu/BUILD_INFO.txt
+          git config user.name "nianshu-bot"
+          git config user.email "nianshu-bot@users.noreply.github.com"
+          git add -f out/nianshu/Nianshu-Sync-iOS-unsigned.ipa out/nianshu/BUILD_INFO.txt
+          git commit -m "chore: 自动回传粘鼠未签名 IPA [skip ci]" || echo "无变更，跳过提交"
+          git pull --rebase origin main || true
+          git push origin HEAD:main

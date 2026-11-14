@@ -1,0 +1,43 @@
+# 粘鼠 Nianshu · 连续复制独立版（iOS）
+# 单 target：只有主 App（无键盘扩展、无 App Group、无「允许完全访问」）。
+# 复用：画中画连续复制 + 收录列表与按轮次标记 + 7 种导出 + 批量选择 +
+#       3 个开关 + 返回来源 App + 快捷指令三动作 + 「小开关」按钮逻辑。
+#
+# 用法：macOS 上 `xcodegen generate` 生成 Nianshu.xcodeproj
+# 不硬编码 App Groups entitlement —— 手机端签名工具按自己的描述文件来。
+
+name: Nianshu
+
+options:
+  deploymentTarget:
+    iOS: "16.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    # 禁止 Xcode 自动生成 Info.plist，否则会覆盖仓库里的自定义 plist，
+    # 导致产物缺 CFBundleIdentifier / UIBackgroundModes 等字段。
+    GENERATE_INFOPLIST_FILE: NO
+
+targets:
+  Nianshu:
+    type: application
+    platform: iOS
+    sources:
+      - App
+    info:
+      path: App/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.mulberry6323.nianshu
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+schemes:
+  Nianshu:
+    build:
+      targets:
+        Nianshu: all
+    archive:
+      config: Release

@@ -1,0 +1,131 @@
+import Foundation
+import AppIntents
+
+// MARK: - 连续复制 · 快捷指令接入（独立 App 版）
+//
+// 让用户能在 iOS「快捷指令」App 里搜到「粘鼠」，并一键开关画中画连续复制；
+// 也可被 Siri 语音唤起、放进「自动化」（如：连上家里 WiFi 自动开启）。
+//
+// 实现要点：
+//  · 意图全部放在【主 App】(Nianshu target)，不走键盘扩展——键盘扩展里起不了画中画。
+//  · 「开启 / 切换」会把 App 短暂拉到前台（openAppWhenRun），因为画中画必须
+//    由前台 App 的窗口承载，和你在 App 内点开启是同一套逻辑。
+//  · 复用既有 PiPManager.shared.start() / stop()，状态自动同步。
+//  · 意图类不加 @MainActor（否则与快捷指令 Provider 实例化冲突），UI 调用用
+//    MainActor.run 切到主线程。
+
+/// 开启连续复制：拉起画中画小窗开始跨 App 抓取剪贴板。
+final class StartContinuousCopyIntent: AppIntent {
+    static var title: LocalizedStringResource = "开启连续复制"
+    static var description: LocalizedStringResource =
+        "拉起粘鼠画中画小窗，开始跨 App 连续复制（会短暂切到粘鼠前台以启动画中画，随后自动跳回来源 App）。"
+    static var openAppWhenRun: Bool = true
+
+    func perform() async throws -> some IntentResult {
+        // 窗口就绪与画中画重试已内置于 PiPManager.start()；启动后自动跳回来源 App。
+        await MainActor.run {
+            PiPManager.shared.start()
+            AppRootView.returnToSourceAfterPipStart()
+        }
+        return .result()
+    }
+}
+
+/// 关闭连续复制：关掉画中画小窗。用「就地停止」直接收尾，无需切到前台、真生效。
+final class StopContinuousCopyIntent: AppIntent {
+    static var title: LocalizedStringResource = "关闭连续复制"
+    static var description: LocalizedStringResource =
+        "关闭粘鼠画中画小窗，停止连续复制（静默、无需切到前台）。"
+    static var openAppWhenRun: Bool = false
+
+    func perform() async throws -> some IntentResult {
+        // 单进程 App：意图与主 App 是同一个 PiPManager 实例，直接同步收尾即可。
+        await MainActor.run {
+            PiPManager.shared.forceStopFromShortcut()
+        }
+        return .result()
+    }
+}
+
+/// 切换连续复制：在开 / 关之间翻转。
+/// ★ iOS 18 SDK 要求 `openAppWhenRun` 必须是【静态编译期常量】，不能按当前状态
+///   动态计算（否则编译报 "must have a compile-time static value"），所以统一 true。
+/// ★ 判活用【本进程真实 running/starting】为准，不要用任何剪贴板心跳。
+/// ★ 关闭走 `forceStopFromShortcut()` 同步全量收尾，避免刚关又被 startIfWanted 拉起。
+final class ToggleContinuousCopyIntent: AppIntent {
+    static var title: LocalizedStringResource = "切换连续复制"
+    static var description: LocalizedStringResource =
+        "在开 / 关之间翻转连续复制（开启或关闭后都会自动跳回来源 App）。"
+    static var openAppWhenRun: Bool = true
+
+    func perform() async throws -> some IntentResult {
+        await MainActor.run {
+            let mgr = PiPManager.shared
+            let isRunning = mgr.isActive
+            if isRunning {
+                // 关闭：同步清干净所有「还想开」的标记。
+                mgr.forceStopFromShortcut()
+                // 开关控制「关完是否自动跳回来源 App」。
+                //   默认关（不跳）→ 停在粘鼠主 App，能看到状态；
+                //   打开 → 关完立刻回来源 App。
+                //   注意 openAppWhenRun=true 那一次拉起是系统静态要求，开关管不了。
+                if UserDefaults.standard.bool(forKey: "ns.pipToggleReturnOnClose") {
+                    let target = LocalStore.defaultReturnBundleId()
+                    if let target = target, !target.isEmpty {
+                        AppRootView.openHostApp(target)
+                    } else {
+                        PiPManager.shared.note("没识别出来源 App：可在本页「返回来源 App」设个默认目标")
+                    }
+                }
+            } else {
+                // 开启：画中画必须要前台窗口，启动后自动跳回来源 App。
+                mgr.start()
+                AppRootView.returnToSourceAfterPipStart()
+            }
+        }
+        return .result()
+    }
+}
+
+// MARK: - 快捷指令里的「粘鼠」入口与建议短语
+//
+// 注册后：打开「快捷指令」App → 右上角「+」→ 搜索「粘鼠」即可看到下列动作；
+// 也可在「自动化」里引用，或用 Siri 念出短语唤起。
+struct NianshuAppShortcuts: AppShortcutsProvider {
+    @AppShortcutsBuilder
+    static var appShortcuts: [AppShortcut] {
+        AppShortcut(
+            intent: ToggleContinuousCopyIntent(),
+            phrases: [
+                "用 \(.applicationName) 切换连续复制",
+                "切换连续复制",
+                "翻转粘鼠连续复制",
+                "连续复制 开关"
+            ],
+            shortTitle: "切换连续复制",
+            systemImageName: "arrow.triangle.2.circlepath"
+        )
+        AppShortcut(
+            intent: StartContinuousCopyIntent(),
+            phrases: [
+                "用 \(.applicationName) 开启连续复制",
+                "开启连续复制",
+                "打开粘鼠连续复制",
+                "开始粘鼠连续复制"
+            ],
+            shortTitle: "开启连续复制",
+            systemImageName: "play.circle"
+        )
+        AppShortcut(
+            intent: StopContinuousCopyIntent(),
+            phrases: [
+                "用 \(.applicationName) 关闭连续复制",
+                "关闭连续复制",
+                "停止粘鼠连续复制",
+                "结束粘鼠连续复制"
+            ],
+            shortTitle: "关闭连续复制",
+            systemImageName: "stop.circle"
+        )
+    }
+}

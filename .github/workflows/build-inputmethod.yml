@@ -23,6 +23,10 @@ on:
     paths-ignore:
       - 'out/**'
       - '*.md'
+      # 粘鼠（Nianshu 连续复制独立版）放在 nianshu/ 子目录，由专属 workflow 构建，
+      # 推 nianshu/** 或 .github/workflows/nianshu-build.yml 时不触发本墨指流水线。
+      - 'nianshu/**'
+      - '.github/workflows/nianshu-build.yml'
   workflow_dispatch:
 
 permissions:
