@@ -5,6 +5,7 @@ import UIKit
 // 键盘（开启「完全访问」）读取后写进自己的 UserDefaults 并移除该 item。
 // 这样不需要 App Group entitlement —— 手机端重签工具通常不会保留自定义 entitlement。
 private let kSettingsPBKey = "app.mulberry6323.mozhi.kbcfg"
+private let kDiagPBKey = "app.mulberry6323.mozhi.kbdiag"
 private let kPhrasesKey = "kb_custom_phrases"
 
 struct ContentView: View {
@@ -14,6 +15,7 @@ struct ContentView: View {
 
     @State private var syncTip = ""
     @State private var dictCheck = ""
+    @State private var diagText = ""
     @State private var phrases: [String: String] = [:]
     @State private var newKey = ""
     @State private var newValue = ""
@@ -79,6 +81,12 @@ struct ContentView: View {
                     Text(dictCheck.isEmpty ? "检测中…" : dictCheck)
                         .font(.footnote)
                         .foregroundColor(.secondary)
+                    Text(diagText.isEmpty ? "键盘启动状态：暂无记录" : "键盘启动状态：\(diagText)")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                    Text("若键盘闪退，这里显示它最后走到的阶段（1:init → 2:ui-ready → 3:core → 4:extras），据此可快速定位。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
                 }
 
                 Section("如何启用") {
@@ -107,6 +115,7 @@ struct ContentView: View {
             .onAppear {
                 loadPhrases()
                 dictCheck = dictSelfCheck()
+                diagText = readDiag()
                 syncToKeyboard()
             }
         }
@@ -140,18 +149,29 @@ struct ContentView: View {
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: cfg) else { return }
         let pb = UIPasteboard.general
-        // 去掉旧的配置 item，用户复制的内容原样保留在数组前面
-        var items = pb.items.filter { $0[kSettingsPBKey] == nil }
+        // 去掉旧配置 item 和已读过的诊断 item，用户复制的内容原样保留在数组前面
+        var items = pb.items.filter { $0[kSettingsPBKey] == nil && $0[kDiagPBKey] == nil }
         items.append([kSettingsPBKey: data])
         pb.items = items
         syncTip = "已同步，下次弹出键盘时生效。"
+    }
+
+    /// 读键盘扩展写回的启动里程碑（扩展与主 App 不共享 UserDefaults，走剪贴板独立 item）
+    private func readDiag() -> String {
+        var last = ""
+        for item in UIPasteboard.general.items {
+            if let s = item[kDiagPBKey] as? String { last = s }
+            else if let d = item[kDiagPBKey] as? Data,
+                    let s = String(data: d, encoding: .utf8) { last = s }
+        }
+        return last
     }
 
     /// 自检：确认词库确实打进了键盘扩展包，方便排查「打不了字」
     private func dictSelfCheck() -> String {
         let names = ["pinyin_chars", "pinyin_phrases", "pinyin_assoc",
                      "pinyin_char_freq", "pinyin_bigram", "pinyin_hot_words",
-                     "pinyin_t9", "pinyin_english", "cat_net"]
+                     "pinyin_t9", "pinyin_english", "pinyin_abbr", "pinyin_flat", "cat_net"]
         guard let plugins = Bundle.main.builtInPlugInsURL,
               let ext = Bundle(url: plugins.appendingPathComponent("PinyinKeyboardKeyboard.appex")) else {
             return "未找到键盘扩展包（请确认安装的是完整 IPA）"

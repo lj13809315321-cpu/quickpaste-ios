@@ -24,7 +24,7 @@ OLD_DICT = r"E:\紧急通知\输入法引擎\README.md等5个文件\dict.json"
 
 MAX_PHRASE_KEYS = 20000
 PHRASE_PER_KEY = 10
-BIGRAM_PER_CTX = 30
+BIGRAM_PER_CTX = 10
 BIGRAM_TOP_CTX = 2000
 CHARS_PER_SYL = 40
 ASSOC_PER_CTX = 16
@@ -363,6 +363,36 @@ t9_out = {k: [s for _, s in sorted(v, key=lambda x: -x[0])[:T9_PER_KEY]]
 eng_out = sorted({w.lower() for w in english_words
                   if isinstance(w, str) and 2 <= len(w) <= 12 and w.isalpha()})
 
+# ---- 超级简拼 / 整串纠错索引：离线预计算，键盘运行时零排序零遍历 ----
+# 之前这两个索引在 load() 里遍历 2 万个 phrase keys 并逐键 sorted，
+# 是键盘扩展启动期 O(n log n) 峰值的主要来源；改为打包时算好。
+abbr_raw = defaultdict(list)
+flat_out = {}
+for key, phrases in trimmed_phrase.items():
+    syls = key.split()
+    if 2 <= len(syls) <= 3:
+        initials = "".join(s[0] for s in syls if s)
+        if initials:
+            abbr_raw[initials].extend((hot_words.get(p, 0), p) for p in phrases[:3])
+    # 整串纠错只收可信高频词，避免冷僻成语被当成纠错结果
+    w = phrases[0]
+    f = hot_words.get(w, 0)
+    if f > 0 and len(key.replace(" ", "")) <= 12:
+        flat_out[key.replace(" ", "")] = w
+
+abbr_out = {}
+for k, pairs in abbr_raw.items():
+    seen, arr = set(), []
+    for _, w in sorted(pairs, key=lambda x: -x[0]):
+        if w in seen:
+            continue
+        seen.add(w)
+        arr.append(w)
+        if len(arr) >= 12:
+            break
+    if arr:
+        abbr_out[k] = arr
+
 os.makedirs(OUT, exist_ok=True)
 def dump(name, obj):
     with open(os.path.join(OUT, name), "w", encoding="utf-8") as f:
@@ -376,15 +406,19 @@ dump("pinyin_char_freq.json", dict(freq_chars))
 dump("pinyin_hot_words.json", hot_words)
 dump("pinyin_t9.json", t9_out)
 dump("pinyin_english.json", eng_out)
+dump("pinyin_abbr.json", abbr_out)
+dump("pinyin_flat.json", flat_out)
 
 files = ["pinyin_chars.json","pinyin_phrases.json","pinyin_assoc.json",
          "pinyin_bigram.json","pinyin_char_freq.json","pinyin_hot_words.json",
-         "pinyin_t9.json","pinyin_english.json","cat_net.json"]
+         "pinyin_t9.json","pinyin_english.json","pinyin_abbr.json",
+         "pinyin_flat.json","cat_net.json"]
 total = sum(os.path.getsize(os.path.join(OUT, f)) for f in files if os.path.exists(os.path.join(OUT, f)))
 print("=== 生成完成 ===")
 print("chars syllables:", len(new_chars), " phrase keys:", len(trimmed_phrase))
 print("assoc keys(词->后续词):", len(assoc_out), " bigram:", len(bigram_out))
 print("hot words:", len(hot_words), " t9 keys:", len(t9_out), " english:", len(eng_out))
+print("简拼索引:", len(abbr_out), " 整串纠错索引:", len(flat_out))
 print("包内 JSON 合计: %.2f MB" % (total/1024/1024))
 for k in ["ni hao","gan jin","mian shi","zhong guo","shi jie"]:
     print("  校验 '%s' ->" % k, trimmed_phrase.get(k, "缺失"))

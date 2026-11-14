@@ -77,7 +77,13 @@ final class PinyinEngine {
         ("an","ang"), ("en","eng"), ("in","ing"), ("ian","iang"), ("uan","uang"),
     ]
 
-    private init() { load() }
+    /// 关键：初始化器里绝不读词库。键盘扩展在 UIInputViewController 构造阶段
+    /// 同步解析 1MB+ JSON 会被 watchdog / jetsam 直接杀掉（表现就是「弹一下就没了」）。
+    /// 改由 viewDidLoad 把 UI 先呈现出来，再分两帧加载。
+    private init() { }
+
+    private var coreLoaded = false
+    private var extrasLoaded = false
 
     /// 键盘扩展里 Bundle.main 不一定指向 .appex 自己，三重回退保证词库一定能读到。
     private func resourceURL(_ name: String) -> URL? {
@@ -92,37 +98,42 @@ final class PinyinEngine {
     }
 
     private func loadJSON<T>(_ name: String, as type: T.Type) -> T? {
-        guard let url = resourceURL(name), let d = try? Data(contentsOf: url) else { return nil }
-        return (try? JSONSerialization.jsonObject(with: d)) as? T
+        // autoreleasepool 让 JSONSerialization 产生的 NSDictionary/NSArray 中间对象
+        // 在桥接成 Swift 字典后立刻释放。否则 11 个文件的中间对象会一路堆到
+        // runloop 末尾，内存峰值直接翻倍 —— 这是键盘扩展被 jetsam 杀掉的主因。
+        return autoreleasepool { () -> T? in
+            guard let url = resourceURL(name), let d = try? Data(contentsOf: url) else { return nil }
+            let obj = try? JSONSerialization.jsonObject(with: d, options: [])
+            return obj as? T
+        }
     }
 
-    // MARK: - 加载
-    func load() {
+    // MARK: - 加载（分两帧：UI 先出来，词库后补）
+
+    /// 第 1 帧：打字必需的最小词库，跑完就能正常出整句候选。
+    func loadCore() {
+        guard !coreLoaded else { return }
+        coreLoaded = true
         // 每个字典独立可选绑定：单个资源缺失只降级对应能力，绝不整体崩掉。
         if let m = loadJSON("pinyin_chars", as: [String: [String]].self) { charMap = m }
         if let m = loadJSON("pinyin_phrases", as: [String: [String]].self) { phraseMap = m }
-        if let m = loadJSON("pinyin_assoc", as: [String: [String]].self) { assocNext = m }
-        if let m = loadJSON("pinyin_char_freq", as: [String: Int].self) { charFreq = m }
-        if let m = loadJSON("pinyin_hot_words", as: [String: Int].self) { wordFreq = m }
-        if let m = loadJSON("pinyin_bigram", as: [String: [String: Int]].self) { bigram = m }
         if let m = loadJSON("pinyin_t9", as: [String: [String]].self) { t9Map = m }
-        if let m = loadJSON("pinyin_english", as: [String].self) { englishSet = Set(m) }
+        if let m = loadJSON("pinyin_hot_words", as: [String: Int].self) { wordFreq = m }
+        if let m = loadJSON("pinyin_char_freq", as: [String: Int].self) { charFreq = m }
 
         isLoaded = !charMap.isEmpty && !phraseMap.isEmpty
-        diagnostics = "chars=\(charMap.count) phrases=\(phraseMap.count) assoc=\(assocNext.count) " +
-                      "freq=\(wordFreq.count) bigram=\(bigram.count) t9=\(t9Map.count)"
+        diagnostics = "chars=\(charMap.count) phrases=\(phraseMap.count) freq=\(wordFreq.count)"
 
+        // 轻量索引只碰 414 个音节 + 219 个 T9 键。
+        // 旧版在这里遍历 2 万个 phrase keys 做 split + 逐键 sorted，启动期 O(n log n)
+        // 且临时字符串成堆，是「切过去弹一下就没了」的另一半原因。
+        for syl in charMap.keys { validSyllables.insert(syl) }
+        for syls in t9Map.values { for s in syls { validSyllables.insert(s) } }
         var c2p: [String: String] = [:]
         for (syl, chars) in charMap {
-            validSyllables.insert(syl)
             for ch in chars where c2p[ch] == nil { c2p[ch] = syl }
         }
-        for key in phraseMap.keys {
-            for syl in key.split(separator: " ") { validSyllables.insert(String(syl)) }
-        }
-        for syls in t9Map.values { for s in syls { validSyllables.insert(s) } }
         charToPinyin = c2p
-
         for syl in validSyllables {
             let c = Array(syl)
             if c.isEmpty { continue }
@@ -132,35 +143,28 @@ final class PinyinEngine {
             let c = Array(key)
             for i in 1...c.count { t9Prefixes.insert(String(c[0..<i])) }
         }
+        // 单音节纠错索引：dign -> ding -> 顶
+        for (syl, chars) in charMap { pinyinToChars[syl] = Array(chars.prefix(4)) }
+    }
 
-        // 整串纠错索引：只收可信词，避免把冷僻成语当纠错结果
-        for (key, words) in phraseMap {
-            guard let w = words.first, isTrusted(w) else { continue }
-            let flat = key.replacingOccurrences(of: " ", with: "")
-            pinyinToWords[flat, default: []].append(w)
+    /// 第 2 帧：联想 / bigram / 纠错 / 简拼 / 英文等增强数据，全部离线预计算好，
+    /// 运行时只做 JSON 解析，零排序零遍历，把内存峰值摊到两个 runloop 周期。
+    func loadExtras() {
+        guard coreLoaded, !extrasLoaded else { return }
+        extrasLoaded = true
+        if let m = loadJSON("pinyin_assoc", as: [String: [String]].self) { assocNext = m }
+        if let m = loadJSON("pinyin_bigram", as: [String: [String: Int]].self) { bigram = m }
+        if let m = loadJSON("pinyin_english", as: [String].self) { englishSet = Set(m) }
+        if let m = loadJSON("pinyin_abbr", as: [String: [String]].self) { abbrMap = m }
+        if let m = loadJSON("pinyin_flat", as: [String: String].self) {
+            for (k, w) in m { pinyinToWords[k] = [w] }
         }
-        // 单音节纠错索引：dign -> ding -> 顶（用户明确举的例子）
-        for (syl, chars) in charMap {
-            pinyinToChars[syl] = Array(chars.prefix(4))
-        }
-
-        // 超级简拼表（2~3 字短语的声母串），离线预排序
-        var abbr: [String: [String]] = [:]
-        for (key, phrases) in phraseMap {
-            let syls = key.split(separator: " ")
-            guard (2...3).contains(syls.count) else { continue }
-            let initials = syls.map { String($0.prefix(1)) }.joined()
-            guard !initials.isEmpty else { continue }
-            for p in phrases where !p.isEmpty { abbr[initials, default: []].append(p) }
-        }
-        for (k, v) in abbr {
-            abbrMap[k] = Array(v.sorted { approxWordFreq($0) > approxWordFreq($1) }.prefix(20))
-        }
-
         if let ud = UserDefaults.standard.dictionary(forKey: "kb_user_dict") as? [String: [String: Int]] {
             userByPinyin = ud
         }
         if let m = loadJSON("cat_net", as: [String: [String]].self) { mergeCategory(m) }
+        diagnostics += " assoc=\(assocNext.count) bigram=\(bigram.count) abbr=\(abbrMap.count)"
+        decodeCache.removeAll()
     }
 
     func mergeCategory(_ dict: [String: [String]]) {

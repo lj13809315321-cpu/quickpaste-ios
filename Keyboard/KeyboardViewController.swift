@@ -1,5 +1,4 @@
 import UIKit
-import AVFoundation
 import AudioToolbox
 
 // 模式：只保留搜狗式的基础布局（中文9键/中文26键/英文/数字/符号/剪贴板），不再有双拼。
@@ -11,6 +10,7 @@ enum KBMode {
 // 不依赖 App Group（手机端重签工具通常不会保留自定义 entitlement），
 // 改用系统剪贴板里追加一个自定义 item；键盘开启「完全访问」后读取并移除。
 private let kSettingsPBKey = "app.mulberry6323.mozhi.kbcfg"
+private let kDiagPBKey = "app.mulberry6323.mozhi.kbdiag"
 
 class KeyboardViewController: UIInputViewController {
 
@@ -33,11 +33,13 @@ class KeyboardViewController: UIInputViewController {
     // 候选按钮复用：每次按键不再重建几十个 UIButton（这是「打字卡顿」的主因之一）
     private var candidateButtons: [UIButton] = []
 
-    // 反馈（音 / 震），开关由主 App 设置页同步过来
+    // 反馈（音 / 震），开关由主 App 设置页同步过来。
+    // 不用 AVAudioEngine / AVAudioSession：键盘扩展里激活音频会话会被系统直接终止，
+    // 且 AVAudioEngine.connect/start 抛的是 Objective-C 异常（Swift 无法捕获）。
+    // 改成 SystemSound 播放一段运行时生成的短 WAV，安全、零会话、零内存常驻。
     private let impact = UIImpactFeedbackGenerator(style: .light)
-    private var audioEngine: AVAudioEngine?
-    private var clickPlayer: AVAudioPlayerNode?
-    private var clickBuffer: AVAudioPCMBuffer?
+    private var clickSoundID: SystemSoundID = 0
+    private var clickVolumeCached: Float = -1
 
     private let engine = PinyinEngine.shared
 
@@ -59,17 +61,16 @@ class KeyboardViewController: UIInputViewController {
         let pb = UIPasteboard.general
         let items = pb.items
         guard !items.isEmpty else { return }
-        var found: String?
-        var kept: [[String: Any]] = []
+        var found: Data?
         for item in items {
-            if let s = item[kSettingsPBKey] as? String { found = s; continue }
-            if let d = item[kSettingsPBKey] as? Data,
-               let s = String(data: d, encoding: .utf8) { found = s; continue }
-            kept.append(item)
+            if let s = item[kSettingsPBKey] as? String { found = s.data(using: .utf8); break }
+            if let d = item[kSettingsPBKey] as? Data { found = d; break }
         }
-        guard let json = found,
-              let data = json.data(using: .utf8),
+        guard let data = found,
+              let sig = String(data: data, encoding: .utf8),
+              sig != (UserDefaults.standard.string(forKey: "kb_last_cfg") ?? ""),
               let cfg = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+        UserDefaults.standard.set(sig, forKey: "kb_last_cfg")
         if let v = cfg["sound"] as? Bool { UserDefaults.standard.set(v, forKey: "kb_sound_on") }
         if let v = cfg["haptic"] as? Bool { UserDefaults.standard.set(v, forKey: "kb_haptic_on") }
         if let v = cfg["vol"] as? Double { UserDefaults.standard.set(v, forKey: "kb_sound_vol") }
@@ -77,26 +78,51 @@ class KeyboardViewController: UIInputViewController {
             UserDefaults.standard.set(ph, forKey: "kb_custom_phrases")
             engine.setCustomPhrases(ph)
         }
-        UserDefaults.standard.synchronize()
-        pb.items = kept
+        // 只读不写回：键盘扩展写 UIPasteboard.items 既可能触发异常，
+        // 也会把用户刚复制的内容清掉。配置本身是幂等的，重复读到无副作用。
+        clickVolumeCached = -1     // 音量变了，下次按键重新生成音效
+    }
+
+    /// 启动里程碑。键盘扩展和主 App 不共享 UserDefaults（没有 App Group），
+    /// 所以用剪贴板里一个独立 item 把状态递出去，主 App 设置页能显示「停在第几步」。
+    private func mark(_ step: String) {
+        UserDefaults.standard.set(step, forKey: "kb_diag")
+        UIPasteboard.general.addItems([[kDiagPBKey: step]])
     }
 
     // MARK: - 生命周期
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
-        // 先读本地缓存，再用主 App 刚放进剪贴板的新配置覆盖
+        mark("1:init")
         if let ph = UserDefaults.standard.dictionary(forKey: "kb_custom_phrases") as? [String: String] {
             engine.setCustomPhrases(ph)
         }
         syncSettingsFromApp()
         setupUI()
         updateKeyArea()
-        refresh()
         applyKeyboardHeight()
         impact.prepare()
-        // 音频预热：不让第一次按键去等 AVAudioEngine 启动
-        DispatchQueue.main.async { [weak self] in self?.ensureAudio() }
+        mark("2:ui-ready")
+
+        // 关键修复：UI 先完整呈现，再把词库分两帧加载。
+        // 旧版在 UIInputViewController 构造时同步解析 11 个 JSON（PinyinEngine.shared），
+        // 又在键盘刚弹出的第一帧启动 AVAudioEngine + 激活 AVAudioSession，
+        // 两个重活叠在一起 → 扩展被 watchdog / jetsam 杀掉，表现就是「弹一下就没了，
+        // 自动回退到系统英文键盘」。
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.engine.loadCore()
+            self.mark("3:core")
+            self.refresh()
+            self.prepareClickSound()
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.engine.loadExtras()
+                self.mark("4:extras")
+                self.refresh()
+            }
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -624,50 +650,61 @@ class KeyboardViewController: UIInputViewController {
             impact.prepare()          // 为下一次按键预准备，连打零延迟
         }
         guard soundOn() else { return }
-        if let p = clickPlayer, let b = clickBuffer, audioEngine?.isRunning == true {
-            p.volume = soundVol()
-            p.scheduleBuffer(b, at: nil, options: .interrupts)
-            if !p.isPlaying { p.play() }
+        if clickSoundID == 0 { prepareClickSound() }
+        if clickSoundID != 0 {
+            AudioServicesPlaySystemSound(clickSoundID)
         } else {
-            // 音频引擎还没热好就用系统按键音兜底，绝不阻塞输入
-            AudioServicesPlaySystemSound(1104)
+            AudioServicesPlaySystemSound(1104)   // 极端情况用系统按键音兜底
         }
     }
 
-    private func ensureAudio() {
-        guard audioEngine == nil else { return }
-        let av = AVAudioEngine()
-        let player = AVAudioPlayerNode()
-        av.attach(player)
-        let fmt = av.outputNode.inputFormat(forBus: 0)
-        av.connect(player, to: av.mainMixerNode, format: fmt)
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
-            try AVAudioSession.sharedInstance().setActive(true, options: [])
-        } catch { }
-        av.prepare()
-        do { try av.start() } catch { }
-        audioEngine = av
-        clickPlayer = player
-        clickBuffer = makeClickBuffer(format: fmt)
+    /// 生成 22ms 的清脆「嗒」并注册成 SystemSound。
+    /// 完全不碰 AVAudioEngine / AVAudioSession —— 键盘扩展里激活音频会话会被系统终止，
+    /// 且 AVAudioEngine.connect/start 抛的是 Swift 捕获不到的 ObjC 异常。
+    /// 振幅按主 App 的音量滑杆缩放，所以音量设置真实生效、音色仍是我们合成的清脆声。
+    private func prepareClickSound() {
+        let vol = soundVol()
+        if clickSoundID != 0, abs(clickVolumeCached - vol) < 0.02 { return }
+        guard let url = writeClickWav(volume: vol) else { return }
+        if clickSoundID != 0 {
+            AudioServicesDisposeSystemSoundID(clickSoundID)
+            clickSoundID = 0
+        }
+        var sid: SystemSoundID = 0
+        AudioServicesCreateSystemSoundID(url as CFURL, &sid)
+        if sid != 0 {
+            clickSoundID = sid
+            clickVolumeCached = vol
+        }
     }
 
-    private func makeClickBuffer(format: AVAudioFormat) -> AVAudioPCMBuffer? {
-        let sr = format.sampleRate
-        let dur = 0.024
-        let n = Int(sr * dur)
-        guard n > 0,
-              let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)),
-              let ch = buf.floatChannelData else { return nil }
-        buf.frameLength = AVAudioFrameCount(n)
-        let data = ch[0]
-        for i in 0..<n {
-            let t = Double(i) / sr
-            let env = exp(-t * 95.0)
-            // 短促清脆的「嗒」：基频 + 一点高频泛音，接近系统按键音
-            data[i] = Float((sin(2.0 * .pi * 1250.0 * t) * 0.75 +
-                             sin(2.0 * .pi * 2500.0 * t) * 0.25) * env * 0.5)
+    private func writeClickWav(volume: Float) -> URL? {
+        let sampleRate: UInt32 = 44100
+        let frames = 970                       // ≈ 22ms
+        let amp = 0.55 * max(0.0, min(1.0, volume))
+        var pcm: [Int16] = []
+        pcm.reserveCapacity(frames)
+        for i in 0..<frames {
+            let t = Double(i) / Double(sampleRate)
+            let env = exp(-t * 130.0)
+            let s = (sin(2.0 * .pi * 1350.0 * t) * 0.72 +
+                     sin(2.0 * .pi * 2700.0 * t) * 0.28) * env * Double(amp)
+            pcm.append(Int16(max(-1.0, min(1.0, s)) * 32767.0))
         }
-        return buf
+        var d = Data()
+        func ascii(_ s: String) { d.append(contentsOf: s.utf8) }
+        func u32(_ v: UInt32) {
+            d.append(contentsOf: [UInt8(v & 0xff), UInt8((v >> 8) & 0xff),
+                                  UInt8((v >> 16) & 0xff), UInt8((v >> 24) & 0xff)])
+        }
+        func u16(_ v: UInt16) { d.append(contentsOf: [UInt8(v & 0xff), UInt8(v >> 8)]) }
+        let bytes = UInt32(frames * 2)
+        ascii("RIFF"); u32(36 + bytes); ascii("WAVE")
+        ascii("fmt "); u32(16); u16(1); u16(1)
+        u32(sampleRate); u32(sampleRate * 2); u16(2); u16(16)
+        ascii("data"); u32(bytes)
+        for s in pcm { u16(UInt16(bitPattern: s)) }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("kb_click.wav")
+        do { try d.write(to: url, options: .atomic); return url } catch { return nil }
     }
 }
