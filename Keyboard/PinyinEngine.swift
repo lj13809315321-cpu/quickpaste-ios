@@ -78,10 +78,12 @@ final class PinyinEngine {
         if let d = try? Data(contentsOf: a),
            let m = try? JSONSerialization.jsonObject(with: d) as? [String: [String]] { assocMap = m }
 
-        // 词频 + bigram（增强联想/排序）
-        if let d = try? Data(contentsOf: Bundle.main.url(forResource: "pinyin_char_freq", withExtension: "json")!),
+        // 词频 + bigram（增强联想/排序）。用可选绑定，缺失也不崩溃。
+        if let url = Bundle.main.url(forResource: "pinyin_char_freq", withExtension: "json"),
+           let d = try? Data(contentsOf: url),
            let m = try? JSONSerialization.jsonObject(with: d) as? [String: Int] { charFreq = m }
-        if let d = try? Data(contentsOf: Bundle.main.url(forResource: "pinyin_bigram", withExtension: "json")!),
+        if let url = Bundle.main.url(forResource: "pinyin_bigram", withExtension: "json"),
+           let d = try? Data(contentsOf: url),
            let m = try? JSONSerialization.jsonObject(with: d) as? [String: [String: Int]] { bigram = m }
 
         var c2p: [String: String] = [:]
