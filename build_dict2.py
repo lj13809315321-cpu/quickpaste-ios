@@ -181,6 +181,23 @@ for ch, cnt in raw_count.items():
 hot_words = {w: f for w, py, f in old_multis if f >= 150 and 2 <= len(w) <= 6}
 hot_set = set(hot_words)
 
+# ---- 口语粒子词兜底（对标搜狗/百度的整句能力）----
+# 9 键上 le/ke/me/ne 同数字串（53 等），没有词级兜底时引擎会选字频更高的「克/么」。
+# 「动词+了」是中文口语最高频的结构，必须成词进词图；短语键也一并补上。
+colloquial = {
+    "多了", "好了", "来了", "去了", "说了", "看了", "听了", "做了", "走了",
+    "开了", "关了", "完了", "忘了", "懂了", "会了", "到了", "拿了", "买了",
+    "吃了", "喝了", "用了", "发了", "行了", "快了", "慢了", "对了", "错了",
+    "给的", "我的", "你的", "他的", "是的", "对的", "好的", "行啊", "走啊",
+    "舒服多了", "舒服了", "轻松了", "明白了", "知道了", "到位了", "太好了",
+    "现在", "马上", "舒服", "轻松", "顺利", "麻利", "利索", "到位",
+}
+COLLOQUIAL_FREQ = 340   # 接近词频表上限，保证压过单字碎片
+for w in colloquial:
+    if w not in hot_words:
+        hot_words[w] = COLLOQUIAL_FREQ
+hot_set = set(hot_words)
+
 # ---- 短语裁剪 ----
 phrase_order_uniq = []
 seen = set()
@@ -198,6 +215,33 @@ kept.update(DOMAIN.values())
 kept.update(k for k in old_multi_keys if key_weight(k) >= 200)
 trimmed_phrase = {k: v for k, v in phrase_map.items() if k in kept}
 trimmed_phrase = {k: sorted(v, key=lambda w: -real_freq.get(w, 0)) for k, v in trimmed_phrase.items()}
+
+# 口语粒子词直接注入短语库（绕过裁剪），保证词图能查到
+def _pys_of(word):
+    syls = []
+    for ch in word:
+        found = None
+        for syl, chars in chars_map.items():
+            if chars and chars[0] == ch:
+                found = syl
+                break
+        if not found:
+            for syl, chars in chars_map.items():
+                if ch in chars:
+                    found = syl
+                    break
+        if not found:
+            return None
+        syls.append(found)
+    return " ".join(syls)
+
+for w in colloquial:
+    k = _pys_of(w)
+    if k:
+        cur = trimmed_phrase.setdefault(k, [])
+        if w in cur:
+            cur.remove(w)
+        cur.insert(0, w)
 
 override = {
  "ni":["你","尼","泥","逆"], "ta":["他","她","它","塌","塔"],

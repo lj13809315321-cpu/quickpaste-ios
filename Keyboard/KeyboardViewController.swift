@@ -547,16 +547,14 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
             return b
         }
         func funcKey(_ t: String, height: CGFloat = 50, _ a: @escaping () -> Void) -> UIButton {
-            let b = key(t, height: height) {}
-            // 功能键字体小一号、灰一点，突出字母键
-            b.setTitleColor(.secondaryLabel, for: .normal)
-            b.titleLabel?.font = UIFont.systemFont(ofSize: 14)
-            b.removeAction(for: .touchDown)
-            b.addAction(UIAction { [weak self] _ in
+            let b = key(t, height: height) { [weak self] in
                 guard let self = self else { return }
                 a()
                 self.feedback()
-            }, for: .touchDown)
+            }
+            // 功能键字体小一号、灰一点，突出字母键
+            b.setTitleColor(.secondaryLabel, for: .normal)
+            b.titleLabel?.font = UIFont.systemFont(ofSize: 14)
             return b
         }
 
