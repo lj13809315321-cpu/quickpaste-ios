@@ -22,10 +22,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: nianshu-build
+  cancel-in-progress: true
+
 jobs:
   ipa:
-    # 固定 Intel 池，避开 arm64 拥塞（墨指 1.8.13 同池构建成功，2.8G 实测稳定）。
-    runs-on: macos-15-intel
+    # 改用 macos-latest（arm64 池，iOS 交叉编译产物一致，且比 Intel 池更容易拿到机器）。
+    runs-on: macos-latest
     defaults:
       run:
         working-directory: nianshu
