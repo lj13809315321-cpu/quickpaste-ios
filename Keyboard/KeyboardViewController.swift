@@ -631,7 +631,14 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
             self.refresh()
         }
         let sym = funcKey("符号") { [weak self] in self?.switchMode(.symbol) }
-        let ok = funcKey("确认") { [weak self] in self?.confirm() }
+        let ok = funcKey("确认") { [weak self] in
+            guard let self = self else { return }
+            if self.isComposeMode, (!self.compose.isEmpty || !self.lockedSylls.isEmpty) {
+                self.confirm()          // 打字中：首选上屏
+            } else {
+                self.textDocumentProxy.insertText("\n")   // 空闲时当换行/发送键
+            }
+        }
         ok.backgroundColor = .systemBlue
         ok.setTitleColor(.white, for: .normal)
         ok.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .medium)
