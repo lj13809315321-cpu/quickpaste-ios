@@ -2,7 +2,7 @@ import UIKit
 import AVFoundation
 
 enum KBMode {
-    case chinese9, chinese26, english, number, symbol, clipboard
+    case chinese9, chinese26, shuangpin, english, number, symbol, clipboard
 }
 
 class KeyboardViewController: UIInputViewController {
@@ -147,7 +147,7 @@ class KeyboardViewController: UIInputViewController {
 
     private func buildModeBar() {
         let items: [(String, KBMode?)] = [
-            ("中", .chinese9), ("EN", .english), ("123", .number),
+            ("中", .chinese9), ("双拼", .shuangpin), ("EN", .english), ("123", .number),
             ("#", .symbol), ("剪贴板", .clipboard), ("⚙", nil),
         ]
         for (title, m) in items {
@@ -180,7 +180,11 @@ class KeyboardViewController: UIInputViewController {
         refresh()
     }
 
-    private var isComposeMode: Bool { mode == .chinese9 || mode == .chinese26 }
+    private var isComposeMode: Bool { mode == .chinese9 || mode == .chinese26 || mode == .shuangpin }
+
+    private func spScheme() -> String {
+        return UserDefaults.standard.string(forKey: "kb_sp_scheme") ?? "小鹤"
+    }
 
     // MARK: - 候选刷新
     private func refresh() {
@@ -188,7 +192,11 @@ class KeyboardViewController: UIInputViewController {
         candidateStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         if isComposeMode {
             if !compose.isEmpty {
-                displayCandidates = engine.candidates(for: compose, is9Key: mode == .chinese9)
+                if mode == .shuangpin {
+                    displayCandidates = engine.candidatesForShuangpin(compose, scheme: spScheme())
+                } else {
+                    displayCandidates = engine.candidates(for: compose, is9Key: mode == .chinese9)
+                }
             } else if !lastCommitted.isEmpty {
                 displayCandidates = engine.associations(for: lastCommitted)
             }
@@ -255,6 +263,7 @@ class KeyboardViewController: UIInputViewController {
         switch mode {
         case .chinese9:  rows = nineKeys()
         case .chinese26: rows = qwerty(insertDirectly: false)
+        case .shuangpin: rows = qwerty(insertDirectly: false)
         case .english:   rows = qwerty(insertDirectly: true)
         case .number:    rows = numberKeys()
         case .symbol:    rows = symbolKeys()
@@ -527,6 +536,7 @@ class KeyboardViewController: UIInputViewController {
         let l1 = UILabel(); l1.text = "按键音"; l1.textColor = .label; l1.font = .systemFont(ofSize: 16)
         let l2 = UILabel(); l2.text = "音量"; l2.textColor = .label; l2.font = .systemFont(ofSize: 16)
         let l3 = UILabel(); l3.text = "震动反馈"; l3.textColor = .label; l3.font = .systemFont(ofSize: 16)
+        let l4 = UILabel(); l4.text = "双拼方案"; l4.textColor = .label; l4.font = .systemFont(ofSize: 16)
 
         soundSwitch.isOn = soundOn()
         hapticSwitch.isOn = hapticOn()
@@ -536,6 +546,14 @@ class KeyboardViewController: UIInputViewController {
         hapticSwitch.addTarget(self, action: #selector(onHaptic(_:)), for: .valueChanged)
         volumeSlider.addTarget(self, action: #selector(onVol(_:)), for: .valueChanged)
 
+        // 双拼方案选择
+        let schemes = engine.availableShuangpinSchemes()
+        let spSeg = UISegmentedControl(items: schemes)
+        spSeg.selectedSegmentIndex = max(0, schemes.firstIndex(of: spScheme()) ?? 0)
+        spSeg.addTarget(self, action: #selector(onScheme(_:)), for: .valueChanged)
+        let spBox = UIStackView(arrangedSubviews: [l4, spSeg])
+        spBox.axis = .vertical; spBox.spacing = 8; spBox.alignment = .fill
+
         let close = UIButton(type: .system)
         close.setTitle("完成", for: .normal)
         close.titleLabel?.font = .boldSystemFont(ofSize: 17)
@@ -543,7 +561,7 @@ class KeyboardViewController: UIInputViewController {
         close.layer.cornerRadius = 8
         close.addAction(UIAction { [weak self] _ in self?.toggleSettings() }, for: .touchUpInside)
 
-        let vstack = UIStackView(arrangedSubviews: [title, rowSettings(l1, soundSwitch), rowSettings(l2, volumeSlider), rowSettings(l3, hapticSwitch), close])
+        let vstack = UIStackView(arrangedSubviews: [title, rowSettings(l1, soundSwitch), rowSettings(l2, volumeSlider), rowSettings(l3, hapticSwitch), spBox, close])
         vstack.axis = .vertical
         vstack.spacing = 16
         vstack.translatesAutoresizingMaskIntoConstraints = false
@@ -585,4 +603,10 @@ class KeyboardViewController: UIInputViewController {
     @objc private func onSound(_ s: UISwitch) { UserDefaults.standard.set(s.isOn, forKey: "kb_sound_on") }
     @objc private func onHaptic(_ s: UISwitch) { UserDefaults.standard.set(s.isOn, forKey: "kb_haptic_on") }
     @objc private func onVol(_ s: UISlider) { UserDefaults.standard.set(Double(s.value), forKey: "kb_sound_vol") }
+    @objc private func onScheme(_ s: UISegmentedControl) {
+        let schemes = engine.availableShuangpinSchemes()
+        guard s.selectedSegmentIndex >= 0, s.selectedSegmentIndex < schemes.count else { return }
+        UserDefaults.standard.set(schemes[s.selectedSegmentIndex], forKey: "kb_sp_scheme")
+        if mode == .shuangpin { refresh() }
+    }
 }
