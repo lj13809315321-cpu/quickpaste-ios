@@ -252,9 +252,9 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
     }
 
     private func buildModeBar() {
+        // 精简（用户反馈：底部一排冗余）：剪贴板页移除，保留 中/EN/123/符号
         let items: [(String, KBMode)] = [
-            ("中", .chinese9), ("EN", .english), ("123", .number),
-            ("#", .symbol), ("剪贴板", .clipboard),
+            ("中", .chinese9), ("EN", .english), ("123", .number), ("#", .symbol),
         ]
         for (title, m) in items {
             let b = UIButton(type: .system)
@@ -566,6 +566,38 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         return s
     }
 
+    // MARK: - 长按连删（搜狗同款）
+    // ⌫ 长按：先删完候选缓冲，再连续删备忘录里已上屏的文字；
+    // 清空 长按：直接连续删已上屏文字（用户反馈：清空只能清候选栏清不了正文）。
+    private var holdTimer: Timer?
+    private var holdBlocks: [ObjectIdentifier: () -> Void] = [:]
+
+    /// 给按钮挂长按连发。tap 行为照旧（touchDown 已由 key() 处理）。
+    private func attachHold(_ b: UIButton, _ block: @escaping () -> Void) {
+        holdBlocks[ObjectIdentifier(b)] = block
+        let lp = UILongPressGestureRecognizer(target: self, action: #selector(holdGesture(_:)))
+        lp.minimumPressDuration = 0.35
+        lp.cancelsTouchesInView = false
+        b.addGestureRecognizer(lp)
+    }
+
+    @objc private func holdGesture(_ g: UILongPressGestureRecognizer) {
+        guard let btn = g.view as? UIButton, let block = holdBlocks[ObjectIdentifier(btn)] else { return }
+        switch g.state {
+        case .began:
+            block()
+            feedback()
+            holdTimer = Timer.scheduledTimer(withTimeInterval: 0.11, repeats: true) { _ in
+                block()
+            }
+        case .ended, .cancelled, .failed:
+            holdTimer?.invalidate()
+            holdTimer = nil
+        default:
+            break
+        }
+    }
+
     // MARK: - 9键（T9拼音）—— 竞品通用布局（搜狗/百度/讯飞/豆包）
     // 左列：4 个常用音节候选（动态，点选锁定，搜狗官方帮助文档同款交互）；
     // 中间：3×3 大字母格，首行「分词 | ABC | DEF」，底行「123 | 空格 | 中英」；
@@ -644,11 +676,17 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         // 右功能列：⌫ / 清空 / 符号 / 确认（蓝色，竞品同款）
         let bk = funcKey("⌫") { [weak self] in self?.backspace() }
         bk.titleLabel?.font = UIFont.systemFont(ofSize: 18)
+        attachHold(bk) { [weak self] in self?.backspace() }   // 长按连删正文
         let clear = funcKey("清空") { [weak self] in
             guard let self = self else { return }
             self.lockedSylls = []
             self.compose = ""
             self.refresh()
+        }
+        // 长按清空 = 连续删除已上屏文字（备忘录/聊天记录一键清，搜狗同款）
+        attachHold(clear) { [weak self] in
+            guard let self = self else { return }
+            self.textDocumentProxy.deleteBackward()
         }
         let sym = funcKey("符号") { [weak self] in self?.switchMode(.symbol) }
         let ok = funcKey("确认") { [weak self] in
@@ -730,6 +768,7 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
                     self?.shiftOn.toggle(); self?.updateKeyArea()
                 }, at: 0)
                 btns.append(key("⌫") { [weak self] in self?.backspace() })
+                if let bkBtn = btns.last { attachHold(bkBtn) { [weak self] in self?.backspace() } }
             }
             rows.append(row(btns))
         }

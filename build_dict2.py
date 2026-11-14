@@ -24,8 +24,8 @@ OLD_DICT = r"E:\紧急通知\输入法引擎\README.md等5个文件\dict.json"
 
 MAX_PHRASE_KEYS = 20000
 PHRASE_PER_KEY = 10
-BIGRAM_PER_CTX = 10
-BIGRAM_TOP_CTX = 2000
+BIGRAM_PER_CTX = 20
+BIGRAM_TOP_CTX = 2200
 CHARS_PER_SYL = 40
 ASSOC_PER_CTX = 16
 T9_PER_KEY = 14
@@ -102,6 +102,29 @@ with open(os.path.join(ASSETS, "phrase_raw.txt"), encoding="utf-8") as f:
             lst.append(phrase)
         for i in range(len(phrase) - 1):
             char_bigram.setdefault(phrase[i], Counter())[phrase[i+1]] += 1
+
+# ---- 字符 bigram 主料：93 万真实语料（词内相邻字对，词频加权）----
+# 之前只用 phrase_raw.txt（几百条精选短语），连「现→在」都没有，
+# 导致整句打分的字级衔接分全是 0 —— 这是长句碎片化、
+# 「清理不掉→清理不低按」「那现在→吗现在」的根本原因。
+try:
+    with open(os.path.join(HERE, "extra_phrases.txt"), encoding="utf-8") as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 2:
+                continue
+            w = parts[1].strip()
+            if not (2 <= len(w) <= 8) or not all('\u4e00' <= c <= '\u9fff' for c in w):
+                continue
+            try:
+                f_ = int(float(parts[2])) if len(parts) > 2 else 1
+            except ValueError:
+                f_ = 1
+            f_ = min(max(f_, 1), 100000)   # 封顶防止单词对独大
+            for i in range(len(w) - 1):
+                char_bigram.setdefault(w[i], Counter())[w[i+1]] += f_
+except FileNotFoundError:
+    print("警告: extra_phrases.txt 不存在，字级 bigram 退回 phrase_raw 单源")
 
 # ---- 小型分类/常用词库 ----
 DOMAIN = {
@@ -191,12 +214,24 @@ colloquial = {
     "给的", "我的", "你的", "他的", "是的", "对的", "好的", "行啊", "走啊",
     "舒服多了", "舒服了", "轻松了", "明白了", "知道了", "到位了", "太好了",
     "现在", "马上", "舒服", "轻松", "顺利", "麻利", "利索", "到位",
+    # 「V+补语」productive 口语模式（搜狗整句的关键素材）：
+    # 不掉/不了/不到…… 9 键上 bu'diao 与 bu'di'an 同码，
+    # 语料里「不掉」组合太少（bigram 不→掉 几乎为 0），必须词级兜底
+    "不掉", "不了", "不到", "不上", "不起", "不动", "不信", "不像",
+    "不在", "不清", "不干", "不好", "没用", "没事", "没有",
+    "清理不掉", "删不掉", "改不掉", "忘不掉", "去不掉", "擦不掉",
+    "洗不掉", "关不掉", "搬不动", "跑不动", "受不了", "少不了",
+    "挡不住", "靠不住", "差不多", "差不多", "不知道", "不舒服",
 }
 COLLOQUIAL_FREQ = 340   # 接近词频表上限，保证压过单字碎片
 for w in colloquial:
     if w not in hot_words:
         hot_words[w] = COLLOQUIAL_FREQ
 hot_set = set(hot_words)
+# 口语词的相邻字对也喂给字级 bigram（清理不掉 → 不→掉 有真实共现）
+for w in colloquial:
+    for i in range(len(w) - 1):
+        char_bigram.setdefault(w[i], Counter())[w[i+1]] += 30000
 
 # ---- 短语裁剪 ----
 phrase_order_uniq = []
@@ -385,6 +420,15 @@ for a in top_ctx:
     if not cnt:
         continue
     bigram_out[a] = {b: c for b, c in cnt.most_common(BIGRAM_PER_CTX)}
+
+# 口语词字对绕过裁剪直接补入（不掉/不了等真实共现太低，会被 top-20 挤掉）
+for w in colloquial:
+    for i in range(len(w) - 1):
+        a, b = w[i], w[i + 1]
+        if a in bigram_out:
+            bigram_out[a].setdefault(b, 12000)
+        else:
+            bigram_out[a] = {b: 12000}
 
 # ---- T9 数字串 -> 音节列表（离线预计算） ----
 all_syl = set(new_chars.keys()) | set(std_syllables)

@@ -562,7 +562,7 @@ final class PinyinEngine {
 
         // 关键：音节格的贪心分不作为最终排序，改由词格 viterbi 的整句分决定
         var ranked: [(Lattice, String, Double)] = []
-        for lat in lats.prefix(18) {
+        for lat in lats.prefix(24) {
             // 锁定音节拼在词图最前面统一打分（gui + mi 跨边界成词「闺蜜」）
             let full = locked + lat.seq
             let (text, sc) = composeSentenceWithScore(full)
@@ -701,7 +701,7 @@ final class PinyinEngine {
 
     /// 按「已切出的音节数」分桶保留：保证 zhong(1音节) 不会被 yin+ni(2音节) 挤掉。
     /// 纯 top-K 会系统性偏爱碎切分，这是之前 9 键「中国」被切成「印尼故哦」的根因。
-    private func trimBeam(_ arr: [Node], per: Int = 2) -> [Node] {
+    private func trimBeam(_ arr: [Node], per: Int = 6) -> [Node] {
         var buckets: [Int: [Node]] = [:]
         for n in arr { buckets[n.seq.count, default: []].append(n) }
         var out: [Node] = []
@@ -769,9 +769,11 @@ final class PinyinEngine {
                     }
                 }
             }
-            // 每层结束统一裁剪，长句不会越打越卡
+            // 每层结束统一裁剪，长句不会越打越卡。
+            // 宽度 8：搜狗级 4+ 音节整句靠的就是足够宽的 beam——
+            // 太窄会把「清理不掉」这类正确切分提前剪掉，碎片化路径反而存活。
             for j in (i + 1)...min(n, i + 6) {
-                if let arr = beam[j], arr.count > 6 { beam[j] = trimBeam(arr) }
+                if let arr = beam[j], arr.count > 8 { beam[j] = trimBeam(arr) }
             }
             // 尾部未成音节：允许继续输入（ni'gan'jin'wo'qu'mian's）
             let tail = String(chars[i..<n])
@@ -799,9 +801,11 @@ final class PinyinEngine {
         }
         var uniq: [Lattice] = []
         for c in byCount.keys.sorted() {
-            if let lst = byCount[c] { uniq.append(contentsOf: lst.prefix(3)) }
+            // 每个音节数桶留 6 个：同码音节（62=ma/na）经常同分，
+            // 只留 4 个会把正确切分挤出、留下同分的兄弟切分（搜狗对比用例实测）
+            if let lst = byCount[c] { uniq.append(contentsOf: lst.prefix(6)) }
         }
-        return Array(uniq.prefix(18))
+        return Array(uniq.prefix(24))
     }
 
     private func sylScore(_ syl: String) -> Double {
@@ -811,7 +815,7 @@ final class PinyinEngine {
 
     private func bigramBonus(_ a: String, _ b: String) -> Double {
         guard !a.isEmpty, !b.isEmpty, let m = bigram[a] else { return 0 }
-        return min(26, Double(m[b] ?? 0) * 2.5)
+        return min(40, Double(m[b] ?? 0) * 2.5)
     }
 
     private func latticeBonus(_ seq: [String]) -> Double {
@@ -992,7 +996,7 @@ final class PinyinEngine {
                 var options: [(String, Double)] = []
                 let ps = words(forPinyinKey: key)
                 if !ps.isEmpty {
-                    for (idx, w) in ps.prefix(4).enumerated() {
+                    for (idx, w) in ps.prefix(6).enumerated() {
                         // 三层刻度（与 verify_engine.py 严格一致）：
                         //  1) hot 精选词：字频和/2 + 词频 + 120 加成
                         //  2) 语料词（93万 freq.bin，压缩刻度≤341）：词频主导 + 字频点缀，
@@ -1030,7 +1034,8 @@ final class PinyinEngine {
                     }
                 }
                 if l == 1, let cs = charMap[seq[i]] {
-                    for (idx, c) in cs.prefix(4).enumerated() {
+                    // 8 个字候选：长句整句拼字时字池太窄会拼出怪句
+                    for (idx, c) in cs.prefix(8).enumerated() {
                         options.append((c, Double(charFreq[c] ?? 1) / 4.0 - 25 - Double(idx) * 6))
                     }
                 }
@@ -1281,7 +1286,7 @@ final class PinyinEngine {
         return String(format: "%.4g", d)
     }
 
-    // MARK: - 联想（词级搭配驱动）
+    // MARK: - 联想（词级搭配 + 词库首字预测驱动）
     func associations(for context: String) -> [String] {
         let t = context.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return [] }
@@ -1292,22 +1297,31 @@ final class PinyinEngine {
             guard !s.isEmpty, s != t, !seen.contains(s) else { return }
             seen.insert(s); out.append(s)
         }
-        for p in ["，","！","。","？"] { push(p) }
-        // 词级搭配紧跟标点，别让一整排语气词把「吗 / 天气 / 想」挤到后面
         let c = Array(t)
         let maxL = min(4, c.count)
+        // 1) 词级搭配（「今天→天气/晚上」这类真实共现），与拼音无关的最强信号
         for l in stride(from: maxL, through: 1, by: -1) {
             let k = String(c[(c.count - l)..<c.count])
             if let arr = assocNext[k] { for w in arr { push(w) } }
         }
-        for p in ["～","、","吗","呢","吧","啊","呀","哦","嗯","哈","了","的"] { push(p) }
+        // 2) 超级联想：以上屏末字开头的词库词（「在→在哪/在这里」，搜狗同款）
         let last = String(t.suffix(1))
+        if let py = charToPinyin[last], !py.isEmpty {
+            for w in words(forPinyinKey: py) where w.count >= 2 && w.count <= 4 && w.hasPrefix(last) {
+                push(w)
+            }
+        }
+        // 3) 字级 bigram 高频后继
         if let nxt = bigram[last] {
             for (ch, _) in nxt.sorted(by: { $0.value > $1.value }).prefix(10) { push(ch) }
         }
+        // 4) 个人历史（打过的同拼音词）
         if let key = pinyinKey(of: String(t.suffix(2))), let ud = userByPinyin[key] {
             for (w, _) in ud.sorted(by: { $0.value > $1.value }) { push(w) }
         }
+        // 5) 标点 / 语气词垫底（用户还要打字，别让语气词占候选栏前半段）
+        for p in ["，","。","？","！"] { push(p) }
+        for p in ["～","、","吗","呢","吧","啊","呀","哦","嗯","哈","了","的"] { push(p) }
         let res = Array(out.prefix(20))
         if assocCache.count > 160 { assocCache.removeAll() }
         assocCache[t] = res

@@ -110,7 +110,7 @@ def sylScore(syl):
 
 def bigramBonus(a, b):
     if not a or not b: return 0
-    return min(26, bigram.get(a, {}).get(b, 0) * 2.5)
+    return min(40, bigram.get(a, {}).get(b, 0) * 2.5)
 
 def approxWordFreq(w):
     f = wf(w)
@@ -161,7 +161,7 @@ def latticeBonus(seq):
             s += 130 if trusted(w[0]) else 35
     return s
 
-def trimBeamBucket(arr, per=2):
+def trimBeamBucket(arr, per=6):
     buckets = defaultdict(list)
     for node in arr:
         buckets[len(node[0])].append(node)
@@ -171,7 +171,7 @@ def trimBeamBucket(arr, per=2):
     return out
 
 def syllableLattices(buf, is9, level=0):
-    n, W = len(buf), 6
+    n, W = len(buf), 8
     beam = {0: [((), 0.0, "")]}
     finished = []
     for i in range(n):
@@ -217,8 +217,9 @@ def syllableLattices(buf, is9, level=0):
         seen.add(k); byCount[len(f[0])].append(f)
     uniq = []
     for c in sorted(byCount):
-        uniq += byCount[c][:3]
-    return uniq[:18]
+        # 每桶 6 个：同码音节（62=ma/na）同分时不能挤掉正确切分（与 Swift 一致）
+        uniq += byCount[c][:6]
+    return uniq[:24]
 
 def trusted(w):
     """hot 精选词表专属（与 Swift isTrusted 一致）——93 万语料词不算 trusted。"""
@@ -235,7 +236,7 @@ def composeSentence(seq):
         for l in range(1, min(6, n-i)+1):
             key = " ".join(seq[i:i+l])
             opts = []
-            for idx, w in enumerate(words_for(key)[:4]):
+            for idx, w in enumerate(words_for(key)[:6]):
                 raw = sum(charFreq.get(c, 1) for c in w)
                 f = wf(w) or 0
                 # 四层刻度（与 Swift composeSentenceWithScore 严格一致）：
@@ -259,7 +260,7 @@ def composeSentence(seq):
                 redu = 65 if (len(w) == 2 and w[0] == w[1]) else 0
                 opts.append((w, b + bonus + redu - 25 - idx * 10))
             if l == 1:
-                for idx, c in enumerate(charMap.get(seq[i], [])[:4]):
+                for idx, c in enumerate(charMap.get(seq[i], [])[:8]):
                     opts.append((c, charFreq.get(c,1)/4.0 - 25 - idx*6))
             for w, ws in opts:
                 trans = bigramBonus(last, w[0]) if last else 0
@@ -380,7 +381,7 @@ def decode(buf, is9, locked=()):
         d = t9TailLetters(buf) if is9 else buf
         return d, prefixCandidates(buf, is9, d)
     ranked = []
-    for lat in lats[:18]:
+    for lat in lats[:24]:
         full = tuple(locked) + lat[0]
         text, sc = composeSentence(list(full))
         key = " ".join(full)
@@ -529,7 +530,15 @@ for digits, want in RHYTHM:
     print("      逐键 %d 键总耗时 %.1f ms" % (len(digits), dt))
 
 print("=" * 70)
-print("五、26 键回归")
+print("五、搜狗对比用例（2026-11-14 用户截图实测：竞品输出 vs 我们）")
+# 用户实测：搜狗 na'xian'zai → 那现在；qing'li'bu'diao → 清理不掉
+for buf, want in [("629426924", "那现在"), ("746454283426", "清理不掉")]:
+    d, c = decode(buf, True)
+    check("9键 %s → %s（搜狗同款）" % (buf, want), c and c[0] == want,
+          "首位: %s / 串: %s" % (c[:4] if c else [], d))
+
+print("=" * 70)
+print("六、26 键回归")
 for buf, want in [("niganjinwoqumians", "你赶紧我去面试"),
                   ("woxiangdadianhua", "我想打电话"),
                   ("nihao", "你好")]:
@@ -538,7 +547,7 @@ for buf, want in [("niganjinwoqumians", "你赶紧我去面试"),
           "首位: %s / 串: %s" % (c[:4] if c else [], d))
 
 print("=" * 70)
-print("六、显示回归（拼音串非数字串 / 锁定段在串首）")
+print("七、显示回归（拼音串非数字串 / 锁定段在串首）")
 d, c = decode("64426", True)
 check("64426 显示 ni'hao", d == "ni'hao", d)
 d, c = decode("64", True, locked=("gui",))

@@ -1,0 +1,21 @@
+[info] 自动选定最新 run: 43567223537
+[poll] run 43567223537: in_progress / None
+[poll] run 43567223537: in_progress / None
+[poll] run 43567223537: in_progress / None
+[poll] run 43567223537: in_progress / None
+[poll] run 43567223537: in_progress / None
+[poll] run 43567223537: in_progress / None
+[poll] run 43567223537: in_progress / None
+[poll] run 43567223537: in_progress / None
+[poll] run 43567223537: completed / success
+[OK] 构建成功，开始下载 artifact
+[OK] 下载完成 20170505 bytes -> E:\紧急通知\输入法IPA\PinyinKeyboard-unsigned.ipa.dl
+[OK] IPA 落盘: E:\紧急通知\输入法IPA\PinyinKeyboard-unsigned.ipa
+主 App ID   = app.mulberry6323.mozhi.pinyinkeyboard Type= APPL
+扩展 ID     = app.mulberry6323.mozhi.pinyinkeyboard.keyboard Type= XPC!
+扩展点      = com.apple.keyboard-service
+Principal   = PinyinKeyboardKeyboard.KeyboardViewController
+完全访问    = True
+PinyinKeyboardKeyboard -> slot=YES
+PinyinKeyboard -> slot=YES
+结论: PASS —— 可直接导入手机端签名工具
