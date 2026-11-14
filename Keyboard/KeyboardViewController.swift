@@ -551,7 +551,7 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
             // 功能键字体小一号、灰一点，突出字母键
             b.setTitleColor(.secondaryLabel, for: .normal)
             b.titleLabel?.font = UIFont.systemFont(ofSize: 14)
-            b.removeActions(for: .touchDown)
+            b.removeAction(for: .touchDown)
             b.addAction(UIAction { [weak self] _ in
                 guard let self = self else { return }
                 a()
