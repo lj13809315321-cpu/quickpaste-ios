@@ -118,7 +118,8 @@ def syllableLattices(buf, is9, level=0):
         states = beam.get(i)
         if not states: continue
         for seq, sc, last in states:
-            for l in range(1, min(6, n - i) + 1):
+            # 9 键最少 2 位数字才成音节（离线索引已删 a/e/o 单字母音节）
+            for l in range(2 if is9 else 1, min(6, n - i) + 1):
                 sub = buf[i:i+l]
                 if is9:
                     opts = [(s, 0) for s in t9Map.get(sub, [])[:6]]
@@ -131,7 +132,8 @@ def syllableLattices(buf, is9, level=0):
                     top = topChar(syl)
                     # 每个音节有固定成本，抑制「切得越碎分越高」；词组命中给强加分
                     ns = (sc + sylScore(syl) - 14 + bigramBonus(last, top)
-                          - pen * 12 + latticeBonus(list(nseq)) * 2)
+                          - pen * 12 + latticeBonus(list(nseq)) * 2
+                          + (len(syl) * 6 if is9 else 0))
                     if len(syl) == 1: ns -= 25
                     j = i + l
                     if j == n:
@@ -168,28 +170,31 @@ def trusted(w):
 def composeSentence(seq):
     n = len(seq)
     dp = [None] * (n + 1)
-    dp[0] = (0.0, "", "")
+    dp[0] = (0.0, "", "", "")
     for i in range(n):
         if dp[i] is None: continue
-        cur, text, last = dp[i]
+        cur, text, last, lastw = dp[i]
         for l in range(1, min(6, n-i)+1):
             key = " ".join(seq[i:i+l])
             opts = []
             for idx, w in enumerate(phraseMap.get(key, [])[:4]):
                 # 可信高频词享受长词加成；冷僻词不给，避免「曲面」压过「去+面」
+                # 双刻度叠加：字频和（偏好多字词）+ 真实词频（同长词排序）
                 hot = trusted(w)
                 base = sum(charFreq.get(c, 1) for c in w) / 2.0
+                base += wordFreq.get(w, 0)
                 bonus = (l-1) * (70 if hot else 18)
+                redu = 65 if (len(w) == 2 and w[0] == w[1]) else 0
                 opts.append((w, (base if hot else base * 0.5) + bonus
-                             + (120 if hot else 0) - 25 - idx*10))
+                             + (120 if hot else 0) + redu - 25 - idx*10))
             if l == 1:
                 for idx, c in enumerate(charMap.get(seq[i], [])[:4]):
                     # 单字降权：碎片切分不该靠数量堆分
                     opts.append((c, charFreq.get(c,1)/4.0 - 25 - idx*6))
             for w, ws in opts:
                 trans = bigramBonus(last, w[0]) if last else 0
-                total = cur + ws + trans
-                node = (total, text + w, w[-1])
+                total = cur + ws + trans - (560 if w == lastw else 0)
+                node = (total, text + w, w[-1], w)
                 if dp[i+l] is None or total > dp[i+l][0]:
                     dp[i+l] = node
     return (dp[n][1], dp[n][0]) if dp[n] else ("", 0.0)
@@ -264,7 +269,10 @@ def decode(buf, is9):
         key = " ".join(lat[0])
         ps = phraseMap.get(key)
         whole = 200 if ps and ps[0] in wordFreq else 0
-        final = sc - len(lat[0]) * 12 + whole + (20 if not lat[1] else 0) + lat[2] * 0.05
+        # 9 键完整切完优先；26 键尾部半截音节是正常输入状态
+        complete = (300 if not lat[1] else -160) if is9 else (20 if not lat[1] else 0)
+        length_cost = len(lat[0]) * (30 if is9 else 12)
+        final = sc - length_cost + whole + complete + lat[2] * 0.05
         ranked.append((lat, text, final))
     ranked.sort(key=lambda x: -x[2])
     lats = [r[0] for r in ranked]
@@ -300,9 +308,11 @@ def decode(buf, is9):
             for syl in cands:
                 text, _ = composeSentence(sq + [syl])
                 if text: push(text)
-    # 整串恰好是一个可信高频词时无条件置顶（你好 / 中国 / 世界 / 今天）
+    # 整串是可信词时用 viterbi 整句结果置顶（明明 > 词库首序命名）
     bkey = " ".join(best[0])
-    if phraseMap.get(bkey) and trusted(phraseMap[bkey][0]):
+    if sentences and trusted(sentences[0]):
+        push(sentences[0])
+    elif phraseMap.get(bkey) and trusted(phraseMap[bkey][0]):
         push(phraseMap[bkey][0])
     for s in sentences[:3]:
         push(s)

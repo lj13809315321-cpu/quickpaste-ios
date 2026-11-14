@@ -1,5 +1,87 @@
 import Foundation
 
+/// mmap 二进制词表（build_lexicon.py 生成）。
+/// 文件用 Data(.mappedIfSafe) 映射，系统按需分页；索引按 key 的 UTF-8 字节排序，
+/// 二分查到后只解码命中的那一小段 value。因此词库从 2 万扩到 50 万条，
+/// 键盘扩展的常驻内存几乎不变 —— 这是大词库不闪退的关键。
+final class MappedTable {
+    private let data: Data
+    private let count: Int
+    private let dataBase: Int
+    private var cache: [String: String] = [:]     // 空串表示「查过但没有」
+
+    init?(name: String) {
+        var url: URL?
+        let bundles: [Bundle] = [Bundle(for: MappedTable.self), Bundle.main] + Bundle.allBundles
+        for b in bundles {
+            if let u = b.url(forResource: name, withExtension: "bin") { url = u; break }
+        }
+        guard let u = url,
+              let d = try? Data(contentsOf: u, options: .mappedIfSafe),
+              d.count >= 24,
+              [UInt8](d[0..<4]) == [UInt8]("MZLX".utf8) else { return nil }
+        let c = Int(MappedTable.u32(d, 8))
+        let db = Int(MappedTable.u32(d, 12))
+        guard c > 0, db >= 24, db <= d.count, db + c * 12 <= d.count else { return nil }
+        data = d
+        count = c
+        dataBase = db
+    }
+
+    private static func u32(_ d: Data, _ o: Int) -> UInt32 {
+        UInt32(d[o]) | (UInt32(d[o + 1]) << 8) | (UInt32(d[o + 2]) << 16) | (UInt32(d[o + 3]) << 24)
+    }
+    private static func u32(_ p: UnsafeRawBufferPointer, _ o: Int) -> UInt32 {
+        UInt32(p[o]) | (UInt32(p[o + 1]) << 8) | (UInt32(p[o + 2]) << 16) | (UInt32(p[o + 3]) << 24)
+    }
+    private static func u16(_ d: Data, _ o: Int) -> Int { Int(d[o]) | (Int(d[o + 1]) << 8) }
+    private static func u16(_ p: UnsafeRawBufferPointer, _ o: Int) -> Int {
+        Int(p[o]) | (Int(p[o + 1]) << 8)
+    }
+
+    var keyCount: Int { count }
+
+    func value(for key: String) -> String? {
+        if let hit = cache[key] { return hit.isEmpty ? nil : hit }
+        let kb = Array(key.utf8)
+        let found: String? = data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> String? in
+            var lo = 0, hi = count - 1
+            while lo <= hi {
+                let mid = (lo + hi) / 2
+                let io = 24 + mid * 12
+                let ko = dataBase + Int(MappedTable.u32(raw, io))
+                let kl = MappedTable.u16(raw, io + 4)
+                guard ko >= 0, ko + kl <= raw.count else { return nil }
+                var cmp = 0
+                let lim = min(kb.count, kl)
+                for i in 0..<lim {
+                    let a = kb[i], b = raw[ko + i]
+                    if a < b { cmp = -1; break }
+                    if a > b { cmp = 1; break }
+                }
+                if cmp == 0 { cmp = kb.count - kl }
+                if cmp == 0 {
+                    let vo = dataBase + Int(MappedTable.u32(raw, io + 6))
+                    let vl = MappedTable.u16(raw, io + 10)
+                    guard vo >= 0, vo + vl <= raw.count else { return nil }
+                    let slice = UnsafeRawBufferPointer(
+                        start: raw.baseAddress?.advanced(by: vo), count: vl)
+                    return String(decoding: slice, as: UTF8.self)
+                } else if cmp < 0 { hi = mid - 1 } else { lo = mid + 1 }
+            }
+            return nil
+        }
+        if cache.count > 512 { cache.removeAll() }
+        cache[key] = found ?? ""
+        return found
+    }
+
+    func words(for key: String) -> [String] {
+        guard let v = value(for: key), !v.isEmpty else { return [] }
+        return v.split(separator: "\t", omittingEmptySubsequences: true).map(String.init)
+    }
+}
+
 /// 一次解码的结果。
 /// - display: 候选栏上方那行拼音串（9 键也显示拼音，绝不显示数字）
 /// - candidates: 可上屏的汉字候选，首位是整句
@@ -8,6 +90,8 @@ struct DecodeResult {
     let display: String
     let candidates: [String]
     let key: String
+    /// 9 键音节候选（搜狗左侧那列 ming / ning / min / nin）
+    var alternates: [String] = []
 }
 
 /// 拼音输入法引擎（第三代：音节格 + 整句 viterbi + 编辑纠错 + 词级联想）。
@@ -27,22 +111,29 @@ final class PinyinEngine {
     static let shared = PinyinEngine()
 
     // MARK: - 词库
+    // 大表走 mmap 二进制（任意规模不占常驻内存），小表留内存字典。
+    private var lexicon: MappedTable?                       // "ni hao" -> 词（主词库，可扩 50 万+）
+    private var flatTable: MappedTable?                     // 去空格拼音串 -> 可信词（整串纠错）
+    private var abbrTable: MappedTable?                     // 声母串 -> 词（超级简拼）
+    private var freqTable: MappedTable?                     // 词 -> 真实词频
+    private var phraseOverlay: [String: [String]] = [:]     // cat_net / 动态扩库覆盖层
+    private var flatFallback: [String: [String]] = [:]      // bin 缺失时的 JSON 回退
+    private var abbrFallback: [String: [String]] = [:]      // bin 缺失时的 JSON 回退
+
     private var charMap: [String: [String]] = [:]          // 音节 -> 汉字(按词频)
-    private var phraseMap: [String: [String]] = [:]        // "ni hao" -> 词(按真实词频)
+    private var phraseMap: [String: [String]] = [:]        // bin 不可用时的 JSON 回退
     private var assocNext: [String: [String]] = [:]        // 上屏词 -> 后续词
     private var charFreq: [String: Int] = [:]              // 单字 -> 语料词频
-    private var wordFreq: [String: Int] = [:]              // 可信高频词 -> 真实词频
+    private var wordFreq: [String: Int] = [:]              // bin 不可用时的 JSON 回退
     private var bigram: [String: [String: Int]] = [:]      // 字 -> 后继字 -> 次数
     private var englishSet: Set<String> = []
     private var t9Map: [String: [String]] = [:]            // 数字串 -> 音节(离线预计算)
-    private var pinyinToWords: [String: [String]] = [:]    // 去空格拼音串 -> 可信词(纠错索引)
-    private var customPhrases: [String: String] = [:]      // 自定义短语：缩写 -> 长文本
     private var pinyinToChars: [String: [String]] = [:]     // 单音节 -> 常用字(纠错用)
+    private var customPhrases: [String: String] = [:]      // 自定义短语：缩写 -> 长文本
 
     private var validSyllables: Set<String> = []
     private var syllablePrefixes: Set<String> = []
     private var t9Prefixes: Set<String> = []
-    private var abbrMap: [String: [String]] = [:]          // 超级简拼
     private var charToPinyin: [String: String] = [:]
 
     private(set) var isLoaded = false
@@ -116,13 +207,18 @@ final class PinyinEngine {
         coreLoaded = true
         // 每个字典独立可选绑定：单个资源缺失只降级对应能力，绝不整体崩掉。
         if let m = loadJSON("pinyin_chars", as: [String: [String]].self) { charMap = m }
-        if let m = loadJSON("pinyin_phrases", as: [String: [String]].self) { phraseMap = m }
         if let m = loadJSON("pinyin_t9", as: [String: [String]].self) { t9Map = m }
-        if let m = loadJSON("pinyin_hot_words", as: [String: Int].self) { wordFreq = m }
         if let m = loadJSON("pinyin_char_freq", as: [String: Int].self) { charFreq = m }
 
-        isLoaded = !charMap.isEmpty && !phraseMap.isEmpty
-        diagnostics = "chars=\(charMap.count) phrases=\(phraseMap.count) freq=\(wordFreq.count)"
+        // 主词库与词频表走 mmap：这两个是唯一会随 50 万+ 语料线性膨胀的东西。
+        lexicon = MappedTable(name: "lexicon")
+        freqTable = MappedTable(name: "freq")
+        if lexicon == nil, let m = loadJSON("pinyin_phrases", as: [String: [String]].self) { phraseMap = m }
+        if freqTable == nil, let m = loadJSON("pinyin_hot_words", as: [String: Int].self) { wordFreq = m }
+
+        isLoaded = !charMap.isEmpty && (lexicon != nil || !phraseMap.isEmpty)
+        diagnostics = "chars=\(charMap.count) lexicon=\(lexicon?.keyCount ?? phraseMap.count)(mmap) " +
+                      "freq=\(freqTable?.keyCount ?? wordFreq.count)"
 
         // 轻量索引只碰 414 个音节 + 219 个 T9 键。
         // 旧版在这里遍历 2 万个 phrase keys 做 split + 逐键 sorted，启动期 O(n log n)
@@ -155,25 +251,131 @@ final class PinyinEngine {
         if let m = loadJSON("pinyin_assoc", as: [String: [String]].self) { assocNext = m }
         if let m = loadJSON("pinyin_bigram", as: [String: [String: Int]].self) { bigram = m }
         if let m = loadJSON("pinyin_english", as: [String].self) { englishSet = Set(m) }
-        if let m = loadJSON("pinyin_abbr", as: [String: [String]].self) { abbrMap = m }
-        if let m = loadJSON("pinyin_flat", as: [String: String].self) {
-            for (k, w) in m { pinyinToWords[k] = [w] }
+        flatTable = MappedTable(name: "flat")
+        abbrTable = MappedTable(name: "abbr")
+        if flatTable == nil, let m = loadJSON("pinyin_flat", as: [String: String].self) {
+            for (k, w) in m { flatFallback[k] = [w] }
+        }
+        if abbrTable == nil, let m = loadJSON("pinyin_abbr", as: [String: [String]].self) {
+            abbrFallback = m
         }
         if let ud = UserDefaults.standard.dictionary(forKey: "kb_user_dict") as? [String: [String: Int]] {
             userByPinyin = ud
         }
         if let m = loadJSON("cat_net", as: [String: [String]].self) { mergeCategory(m) }
-        diagnostics += " assoc=\(assocNext.count) bigram=\(bigram.count) abbr=\(abbrMap.count)"
+        diagnostics += " assoc=\(assocNext.count) bigram=\(bigram.count) " +
+                       "flat=\(flatTable?.keyCount ?? 0)(mmap) abbr=\(abbrTable?.keyCount ?? 0)(mmap)"
         decodeCache.removeAll()
     }
 
     func mergeCategory(_ dict: [String: [String]]) {
         for (k, vals) in dict {
-            var arr = phraseMap[k] ?? []
+            var arr = phraseOverlay[k] ?? []
             for v in vals where !arr.contains(v) { arr.append(v) }
-            phraseMap[k] = arr
+            phraseOverlay[k] = arr
         }
         decodeCache.removeAll()
+    }
+
+    // MARK: - 统一词库入口（mmap 优先 → 覆盖层 → JSON 回退）
+    private func words(forPinyinKey key: String) -> [String] {
+        if let t = lexicon {
+            let w = t.words(for: key)
+            if !w.isEmpty {
+                guard let extra = phraseOverlay[key], !extra.isEmpty else { return w }
+                var all = extra
+                for x in w where !all.contains(x) { all.append(x) }
+                return all
+            }
+        }
+        var out = phraseOverlay[key] ?? []
+        for w in phraseMap[key] ?? [] where !out.contains(w) { out.append(w) }
+        return out
+    }
+
+    private func freqValue(_ w: String) -> Int? {
+        if let f = wordFreq[w] { return f }
+        if let s = freqTable?.value(for: w), let f = Int(s) { return f }
+        return nil
+    }
+
+    private func flatWords(_ k: String) -> [String] {
+        if let t = flatTable { return t.words(for: k) }
+        return flatFallback[k] ?? []
+    }
+
+    private func abbrWords(_ k: String) -> [String] {
+        if let t = abbrTable { return t.words(for: k) }
+        return abbrFallback[k] ?? []
+    }
+
+    /// 用户点选搜狗式音节候选（ming / ning / min / nin）后，给这个音节的常用字词。
+    func candidates(forSyllable syl: String) -> [String] {
+        var out: [String] = []
+        var seen = Set<String>()
+        func push(_ s: String) { if !s.isEmpty, seen.insert(s).inserted { out.append(s) } }
+        for w in words(forPinyinKey: syl).prefix(8) { push(w) }
+        for c in (charMap[syl] ?? []).prefix(16) { push(c) }
+        return Array(out.prefix(20))
+    }
+
+    /// 9 键音节候选：把当前数字串末尾 2~6 位能切出的所有合法音节列出来。
+    /// 这就是搜狗左侧 wen / zen / ye / ze 那一列，用户按错数字也能一键改回来。
+    func t9Alternates(_ buf: String) -> [String] {
+        let chars = Array(buf)
+        guard !chars.isEmpty else { return [] }
+        var seen = Set<String>()
+        var scored: [(String, Int)] = []
+        let maxL = min(6, chars.count)
+        if maxL < 2 { return [] }
+        for l in stride(from: maxL, through: 2, by: -1) {
+            let sub = String(chars[(chars.count - l)..<chars.count])
+            for s in t9Map[sub] ?? [] {
+                guard seen.insert(s).inserted else { continue }
+                let f = topChar(s).flatMap { charFreq[$0] } ?? 1
+                scored.append((s, f + l * 24))
+            }
+        }
+        return scored.sorted { $0.1 > $1.1 }.prefix(10).map { $0.0 }
+    }
+
+    /// 数字串 1 次误触变体：相邻键替换 / 漏按 / 多按。9 键模糊纠错用。
+    private let t9Neighbors: [Character: String] = [
+        "1": "24", "2": "135", "3": "265", "4": "175", "5": "2468",
+        "6": "359", "7": "48", "8": "5709", "9": "68", "0": "8",
+    ]
+    private var t9VariantCache: [String: [String]] = [:]
+    private func t9Variants(_ s: String) -> [String] {
+        if let hit = t9VariantCache[s] { return hit }
+        let c = Array(s)
+        var out = Set<String>()
+        // 替换一位为相邻键
+        for i in 0..<c.count {
+            for d in t9Neighbors[c[i]] ?? "" {
+                var v = c; v[i] = d
+                out.insert(String(v))
+            }
+        }
+        // 漏按一位
+        if c.count > 2 {
+            for i in 0..<c.count {
+                var v = c; v.remove(at: i)
+                out.insert(String(v))
+            }
+        }
+        // 多按一位
+        if c.count < 6 {
+            for i in 0...c.count {
+                for d in "23456789" {
+                    var v = c; v.insert(d, at: i)
+                    out.insert(String(v))
+                }
+            }
+        }
+        let res = out.filter { $0 != s && ($0.count >= 2) }
+        if t9VariantCache.count > 256 { t9VariantCache.removeAll() }
+        t9VariantCache[s] = res
+        return res
     }
 
     // MARK: - 对外入口
@@ -184,6 +386,10 @@ final class PinyinEngine {
         if let text = customPhrases[buf], !text.isEmpty {
             return DecodeResult(display: "短语·" + buf, candidates: [text], key: "")
         }
+        // 系统文本替换（UILexicon）同级优先：用户在 设置›键盘›文本替换 里配的
+        if let text = appleShortcuts[buf], !text.isEmpty {
+            return DecodeResult(display: "替换·" + buf, candidates: [text], key: "")
+        }
         // U/V 模式（26 键）
         if !is9Key, buf.count >= 2, let first = buf.first, (first == "u" || first == "v"),
            let r = specialMode(buf) { return r }
@@ -193,14 +399,15 @@ final class PinyinEngine {
         var result = computeDecode(buf, is9Key: is9Key)
         result = DecodeResult(display: result.display,
                               candidates: rerankByContext(result.candidates, context: ckey),
-                              key: result.key)
+                              key: result.key, alternates: result.alternates)
         // 自定义短语的缩写前缀也给提示，不必打全
         if !is9Key, buf.count >= 2 {
             let hits = customPhrases.keys.filter { $0.hasPrefix(buf) }
                 .sorted { $0.count < $1.count }.prefix(3).compactMap { customPhrases[$0] }
             if !hits.isEmpty {
                 result = DecodeResult(display: result.display,
-                                      candidates: hits + result.candidates, key: result.key)
+                                      candidates: hits + result.candidates,
+                                      key: result.key, alternates: result.alternates)
             }
         }
         if decodeCache.count > 192 { decodeCache.removeAll() }
@@ -216,9 +423,55 @@ final class PinyinEngine {
         decodeCache.removeAll()
     }
 
+    // MARK: - 苹果官方补充词库（UILexicon：系统「文本替换」+ 通讯录姓名 + 常用词）
+    /// 这是苹果唯一对第三方键盘开放的官方词库 API（requestSupplementaryLexicon）。
+    /// 系统里配的文本替换（如 omw→马上到）走缩写短语通道；
+    /// 通讯录中文名转拼音注入候选（打人名不用再选字）；英文名进中英混输候选。
+    private var appleShortcuts: [String: String] = [:]     // 系统文本替换：缩写 -> 长文本
+    private var supplementByPinyin: [String: [String]] = [:] // 拼音键 -> 通讯录中文名
+    private var extraEnglish: Set<String> = []              // 英文名/常用英文词
+    private var appleLexiconLoaded = false
+
+    func ingestAppleLexicon(_ entries: [(input: String, document: String)]) {
+        guard !appleLexiconLoaded else { return }
+        appleLexiconLoaded = true
+        for e in entries {
+            let input = e.input.trimmingCharacters(in: .whitespacesAndNewlines)
+            let doc = e.document.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !input.isEmpty, !doc.isEmpty, doc.count <= 60 else { continue }
+            if input != doc {
+                // 系统文本替换：用户主动配置的缩写，与自定义短语同级
+                appleShortcuts[input.lowercased()] = doc
+            } else if doc.count <= 12, doc.range(of: "^[A-Za-z]+$", options: .regularExpression) != nil {
+                extraEnglish.insert(doc.lowercased())
+            } else if doc.count >= 2, doc.count <= 4 {
+                // 中文名：逐字转拼音（charToPinyin 为首读音，多数人名准确）
+                var syls: [String] = []
+                var ok = true
+                for ch in doc {
+                    guard let s = charToPinyin[String(ch)] else { ok = false; break }
+                    syls.append(s)
+                }
+                if ok {
+                    let key = syls.joined(separator: " ")
+                    var arr = supplementByPinyin[key] ?? []
+                    if !arr.contains(doc) { arr.append(doc) }
+                    supplementByPinyin[key] = arr
+                }
+            }
+        }
+        decodeCache.removeAll()
+    }
+
     private func computeDecode(_ buf: String, is9Key: Bool) -> DecodeResult {
         var lats = syllableLattices(buf, is9Key: is9Key, level: 0)
-        // 尾部半截音节是正常输入状态，不算失败；只有完全切不出才逐级放宽纠错
+        // 9 键模糊纠错：精确切分若没有任何「完整切完」的路径，
+        // 允许数字串 1 次误触（相邻键按错 / 漏按 / 多按）再切一次。
+        if is9Key, !lats.contains(where: { $0.tail.isEmpty }) {
+            let l1 = syllableLattices(buf, is9Key: true, level: 1)
+            if l1.contains(where: { $0.tail.isEmpty }) { lats = l1 }
+        }
+        // 26 键尾部半截音节是正常输入状态，不算失败；只有完全切不出才逐级放宽纠错
         if !is9Key && lats.isEmpty {
             let l1 = syllableLattices(buf, is9Key: false, level: 1)
             if !l1.isEmpty { lats = l1 }
@@ -230,7 +483,8 @@ final class PinyinEngine {
         guard !lats.isEmpty else {
             let d = is9Key ? t9Display(buf) : buf
             return DecodeResult(display: d,
-                                candidates: prefixCandidates(buf, is9Key: is9Key, fallback: d), key: "")
+                                candidates: prefixCandidates(buf, is9Key: is9Key, fallback: d),
+                                key: "", alternates: is9Key ? t9Alternates(buf) : [])
         }
 
         // 关键：音节格的贪心分不作为最终排序，改由词格 viterbi 的整句分决定
@@ -238,9 +492,17 @@ final class PinyinEngine {
         for lat in lats.prefix(18) {
             let (text, sc) = composeSentenceWithScore(lat.seq)
             let key = lat.seq.joined(separator: " ")
-            let whole: Double = (phraseMap[key]?.first).map { isTrusted($0) ? 200.0 : 0.0 } ?? 0
-            let finalScore = sc - Double(lat.seq.count) * 12 + whole
-                             + (lat.tail.isEmpty ? 20 : 0) + lat.score * 0.05
+            let whole: Double = (words(forPinyinKey: key).first).map { isTrusted($0) ? 200.0 : 0.0 } ?? 0
+            // 9 键必须优先「数字串完整切完」的路径。旧版让 mi'mi'mi'64 靠
+            // 重复「秘密」刷分压过 ming'ming，于是出现「你也哦哦鄂哦此」。
+            // 26 键的尾部半截音节是正常输入（ni'gan'jin'...'mian's），保持轻权重。
+            let completeBonus: Double = is9Key
+                ? (lat.tail.isEmpty ? 300 : -160)
+                : (lat.tail.isEmpty ? 20 : 0)
+            // 9 键额外抑制「把一个数字串切成一堆短音节再反复拼同一个词」
+            let lengthCost: Double = Double(lat.seq.count) * (is9Key ? 30 : 12)
+            let finalScore = sc - lengthCost + whole
+                             + completeBonus + lat.score * 0.05
             ranked.append((lat, text, finalScore))
         }
         ranked.sort { $0.2 > $1.2 }
@@ -293,17 +555,19 @@ final class PinyinEngine {
                 }
             }
         }
-        // 2) 整串恰好是一个可信高频词时置顶（你好 / 中国 / 世界 / 今天）
+        // 2) 整串是一个可信词时置顶。用 viterbi 的整句结果，而不是词库首序：
+        // ming ming 的词库首序是「命名」，但口语首选是叠字词「明明」。
         let bestKey = best.seq.joined(separator: " ")
-        if let w = phraseMap[bestKey]?.first, isTrusted(w) { push(w) }
+        if let first = sentences.first, isTrusted(first) { push(first) }
+        else if let w = words(forPinyinKey: bestKey).first, isTrusted(w) { push(w) }
         // 3) 整句候选
         for s in sentences.prefix(3) { push(s) }
         // 4) 整串精确词 / 模糊音词
         for lat in ordered.prefix(3) {
             let key = lat.seq.joined(separator: " ")
-            if let ps = phraseMap[key] { for w in ps.prefix(8) { push(w) } }
+            for w in words(forPinyinKey: key).prefix(8) { push(w) }
             for k in fuzzyKeys(lat.seq) {
-                if let ps = phraseMap[k] { for w in ps.prefix(4) { push(w) } }
+                for w in words(forPinyinKey: k).prefix(4) { push(w) }
             }
         }
         // 5) 整串 1 次编辑纠错（dign -> 顶）
@@ -312,7 +576,7 @@ final class PinyinEngine {
         if best.seq.count >= 2 {
             for l in 2...min(5, best.seq.count) {
                 let key = best.seq.prefix(l).joined(separator: " ")
-                if let ps = phraseMap[key] { for w in ps.prefix(3) { push(w) } }
+                for w in words(forPinyinKey: key).prefix(3) { push(w) }
             }
             if best.seq.count - 1 >= 2 {
                 for l in 2...min(4, best.seq.count - 1) {
@@ -321,10 +585,10 @@ final class PinyinEngine {
                 }
             }
         }
-        // 7) 超级简拼 + 英文
+        // 7) 超级简拼 + 英文（含 UILexicon 的英文名/常用英文词）
         if !is9Key {
-            if let ab = abbrMap[buf] { for w in ab.prefix(10) { push(w) } }
-            if englishSet.contains(buf) { push(buf) }
+            for w in abbrWords(buf).prefix(10) { push(w) }
+            if englishSet.contains(buf) || extraEnglish.contains(buf) { push(buf) }
         }
         // 8) 单字（保证任何情况都能选字）
         for lat in ordered.prefix(2) {
@@ -337,7 +601,8 @@ final class PinyinEngine {
         }
         if out.isEmpty { push(display) }
         if !is9Key, buf.count <= 24 { push(buf) }
-        return DecodeResult(display: display, candidates: Array(out.prefix(24)), key: bestKey)
+        return DecodeResult(display: display, candidates: Array(out.prefix(24)),
+                            key: bestKey, alternates: is9Key ? t9Alternates(buf) : [])
     }
 
     // MARK: - 音节格（按音节数分桶的 beam）
@@ -376,12 +641,29 @@ final class PinyinEngine {
         for i in 0..<n {
             guard let states = beam[i], !states.isEmpty else { continue }
             for st in states {
-                for l in 1...min(6, n - i) {
+                // 9 键最少 2 位数字才成音节（离线索引已删掉 a/e/o 单字母音节），
+                // 杜绝 ni'ye'o'e'o'e'o'ci 这种把数字串切碎的垃圾路径。
+                let minL = is9Key ? 2 : 1
+                let maxL = min(6, n - i)
+                guard minL <= maxL else { continue }
+                for l in minL...maxL {
                     let sub = String(chars[i..<(i + l)])
                     let opts: [(String, Int)]
                     if is9Key {
-                        guard let syls = t9Map[sub] else { continue }
-                        opts = Array(syls.prefix(6).map { ($0, 0) })
+                        let exact = t9Map[sub] ?? []
+                        var syls = exact
+                        if syls.isEmpty && level > 0 {
+                            // 数字串 1 次误触：相邻键按错 / 漏按 / 多按
+                            var seen = Set<String>()
+                            for v in t9Variants(sub).prefix(24) {
+                                for s in t9Map[v] ?? [] where seen.insert(s).inserted {
+                                    syls.append(s)
+                                }
+                            }
+                        }
+                        guard !syls.isEmpty else { continue }
+                        let pen = exact.isEmpty ? 2 : 0
+                        opts = Array(syls.prefix(6).map { ($0, pen) })
                     } else if level == 0 {
                         let ok = validSyllables.contains(sub) && (sub.count > 1 || ["a","e","o"].contains(sub))
                         opts = ok ? [(sub, 0)] : []
@@ -394,6 +676,7 @@ final class PinyinEngine {
                         let top = topChar(syl) ?? ""
                         var sc = st.score + sylScore(syl) - 14 + bigramBonus(st.lastChar, top)
                                  - Double(penalty) * 12 + latticeBonus(seq) * 2
+                                 + (is9Key ? Double(syl.count) * 6 : 0)  // 9键偏好完整长音节
                         if syl.count == 1 { sc -= 25 }   // 单字母音节降权
                         let j = i + l
                         if j == n {
@@ -455,13 +738,13 @@ final class PinyinEngine {
         var s = 0.0
         for k in 2...min(4, c) {
             let key = Array(seq[(c - k)..<c]).joined(separator: " ")
-            if let w = phraseMap[key]?.first { s += isTrusted(w) ? 130 : 35 }
+            if let w = words(forPinyinKey: key).first { s += isTrusted(w) ? 130 : 35 }
         }
         return s
     }
 
     private func isTrusted(_ w: String) -> Bool {
-        if wordFreq[w] != nil { return true }
+        if freqValue(w) != nil { return true }
         if w.count >= 3 {
             var sum = 0
             for c in w { sum += charFreq[String(c)] ?? 0 }
@@ -471,7 +754,7 @@ final class PinyinEngine {
     }
 
     private func approxWordFreq(_ w: String) -> Int {
-        if let f = wordFreq[w] { return f }
+        if let f = freqValue(w) { return f }
         var s = 0
         for c in w { s += charFreq[String(c)] ?? 1 }
         return min(150, s / max(1, w.count))
@@ -558,9 +841,8 @@ final class PinyinEngine {
         var phraseHits: [(String, Int)] = []
         var charHits: [(String, Int)] = []
         for v in variants {
-            if let ws = pinyinToWords[v] {
-                for w in ws.prefix(2) { phraseHits.append((w, approxWordFreq(w) + 200)) }
-            }
+            let ws = flatWords(v)
+            for w in ws.prefix(2) { phraseHits.append((w, approxWordFreq(w) + 200)) }
             if let cs = pinyinToChars[v] {
                 for c in cs.prefix(3) { charHits.append((c, charFreq[c] ?? 1)) }
             }
@@ -610,27 +892,36 @@ final class PinyinEngine {
         let score: Double
         let text: String
         let lastChar: String
+        let lastWord: String
     }
 
     private func composeSentenceWithScore(_ seq: [String]) -> (String, Double) {
         let n = seq.count
         guard n > 0 else { return ("", 0) }
         var dp: [SentNode?] = [SentNode?](repeating: nil, count: n + 1)
-        dp[0] = SentNode(score: 0, text: "", lastChar: "")
+        dp[0] = SentNode(score: 0, text: "", lastChar: "", lastWord: "")
         for i in 0..<n {
             guard let cur = dp[i] else { continue }
             for l in 1...min(6, n - i) {
                 let key = Array(seq[i..<(i + l)]).joined(separator: " ")
                 var options: [(String, Double)] = []
-                if let ps = phraseMap[key] {
+                let ps = words(forPinyinKey: key)
+                if !ps.isEmpty {
                     for (idx, w) in ps.prefix(4).enumerated() {
                         // 可信高频词享受长词加成；冷僻词不给，避免「曲面」压过「去+面」
+                        // 双刻度叠加：字频和（偏好多字词）+ 真实词频（决定同长词排序）。
+                        // 只用字频和会让「使+节」反超「世界」，只用词频会丢长度倾向。
                         var base = 0
                         for c in w { base += charFreq[String(c)] ?? 1 }
+                        let wf = freqValue(w) ?? 0
                         let hot = isTrusted(w)
-                        let b = hot ? Double(base) / 2.0 : Double(base) / 4.0
+                        let b = (hot ? Double(base) / 2.0 : Double(base) / 4.0) + Double(wf)
                         let bonus = Double(l - 1) * (hot ? 70 : 18)
-                        options.append((w, b + bonus + (hot ? 120 : 0) - 25 - Double(idx) * 10))
+                        // 明明 / 看看 / 渐渐 这类叠字词在口语里极常用，
+                        // 让它们压过同音的普通双字词（ming ming：明明 > 命名）
+                        let reduplication: Double = (w.count == 2 && w.first == w.last) ? 65 : 0
+                        options.append((w, b + bonus + (hot ? 120 : 0) + reduplication
+                                        - 25 - Double(idx) * 10))
                     }
                 }
                 if l == 1, let cs = charMap[seq[i]] {
@@ -641,11 +932,20 @@ final class PinyinEngine {
                 if let ud = userByPinyin[key] {
                     for (w, f) in ud { options.append((w, 160 + Double(min(300, f * 20)))) }
                 }
+                // 通讯录中文名（UILexicon）：打人名拼音直接出全名
+                if let names = supplementByPinyin[key] {
+                    for w in names { options.append((w, 200)) }
+                }
                 for (w, ws) in options {
                     guard let f = w.first, let last = w.last else { continue }
                     let trans = cur.lastChar.isEmpty ? 0 : bigramBonus(cur.lastChar, String(f))
-                    let total = cur.score + ws + trans
-                    let node = SentNode(score: total, text: cur.text + w, lastChar: String(last))
+                    // 「秘密+秘密」这类重复是碎片切分刷分的典型产物，重罚，
+                    // 让 ming'ming → 明明 稳稳压过 mi'mi'mi'mi → 秘密秘密。
+                    // 词频奖励（~200/词）进 base 后，惩罚量级同步放大。
+                    let repeatPenalty: Double = (w == cur.lastWord) ? 560 : 0
+                    let total = cur.score + ws + trans - repeatPenalty
+                    let node = SentNode(score: total, text: cur.text + w,
+                                        lastChar: String(last), lastWord: w)
                     if dp[i + l] == nil || total > dp[i + l]!.score { dp[i + l] = node }
                 }
             }

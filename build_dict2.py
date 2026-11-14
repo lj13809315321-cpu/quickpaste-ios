@@ -348,8 +348,10 @@ t9_raw = defaultdict(list)
 for syl in all_syl:
     if not syl or not syl.isalpha():
         continue
-    # 单字母辅音不当音节（避免 m/n/r 之类在 9 键上乱切）
-    if len(syl) < 2 and syl not in ('a', 'e', 'o'):
+    # 9 键不允许单个数字自成音节。
+    # 旧版放行了 a/e/o（对应 2/3/6 键），结果长数字串被切成
+    # ni'ye'o'e'o'e'o'ci 这种垃圾，还硬凑出「你也哦哦鄂哦此」。
+    if len(syl) < 2:
         continue
     dk = ''.join(LETTER_DIGIT.get(c, '') for c in syl)
     if len(dk) != len(syl):

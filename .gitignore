@@ -11,3 +11,7 @@ build/
 out/
 build.log
 .DS_Store
+
+# 语料缓存（可由 expand_lexicon.py 重新下载生成）
+.dict_cache.txt
+extra_phrases.txt

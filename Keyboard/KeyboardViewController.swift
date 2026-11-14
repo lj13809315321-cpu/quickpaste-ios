@@ -1,5 +1,4 @@
 import UIKit
-import AudioToolbox
 
 // 模式：只保留搜狗式的基础布局（中文9键/中文26键/英文/数字/符号/剪贴板），不再有双拼。
 enum KBMode {
@@ -12,7 +11,11 @@ enum KBMode {
 private let kSettingsPBKey = "app.mulberry6323.mozhi.kbcfg"
 private let kDiagPBKey = "app.mulberry6323.mozhi.kbdiag"
 
-class KeyboardViewController: UIInputViewController {
+class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
+
+    /// Apple 给自定义键盘的官方按键音开关。playInputClick() 由系统播放，
+    /// 不需要完全访问、不需要 AVAudioSession，音色就是系统键盘音。
+    var enableInputClicksWhenVisible: Bool { true }
 
     private var mode: KBMode = .chinese9
     private var compose: String = ""            // 中文输入缓冲（26键=字母，9键=数字）
@@ -34,13 +37,19 @@ class KeyboardViewController: UIInputViewController {
     private var candidateButtons: [UIButton] = []
 
     // 反馈（音 / 震），开关由主 App 设置页同步过来。
-    // 不用 AVAudioEngine / AVAudioSession：键盘扩展里激活音频会话会被系统直接终止，
-    // 且 AVAudioEngine.connect/start 抛的是 Objective-C 异常（Swift 无法捕获）。
-    // 改成 SystemSound 播放一段运行时生成的短 WAV，安全、零会话、零内存常驻。
-    private let impact = UIImpactFeedbackGenerator(style: .light)
-    private var clickSoundID: SystemSoundID = 0
-    private var clickVolumeCached: Float = -1
+    // 上一版用「自写 WAV + 自定义 SystemSound」实测在扩展里完全不出声；
+    // 现改用 UIDevice.playInputClick()（官方键盘音 API），保证一定响。
+    // 音量跟随系统音量键 /「设置 › 声音与触感 › 键盘反馈」，
+    // 主 App 的滑杆改作震动强度（这是扩展里唯一能自己调的反馈量）。
+    private lazy var impactSoft = UIImpactFeedbackGenerator(style: .soft)
+    private lazy var impactLight = UIImpactFeedbackGenerator(style: .light)
+    private lazy var impactMedium = UIImpactFeedbackGenerator(style: .medium)
+    private func currentImpact() -> UIImpactFeedbackGenerator {
+        let v = soundVol()
+        return v < 0.34 ? impactSoft : (v < 0.67 ? impactLight : impactMedium)
+    }
 
+    private var pinnedSyllable: String? = nil      // 点选搜狗式音节候选后锁定
     private let engine = PinyinEngine.shared
 
     // MARK: - 设置项
@@ -80,7 +89,6 @@ class KeyboardViewController: UIInputViewController {
         }
         // 只读不写回：键盘扩展写 UIPasteboard.items 既可能触发异常，
         // 也会把用户刚复制的内容清掉。配置本身是幂等的，重复读到无副作用。
-        clickVolumeCached = -1     // 音量变了，下次按键重新生成音效
     }
 
     /// 启动里程碑。键盘扩展和主 App 不共享 UserDefaults（没有 App Group），
@@ -102,7 +110,7 @@ class KeyboardViewController: UIInputViewController {
         setupUI()
         updateKeyArea()
         applyKeyboardHeight()
-        impact.prepare()
+        currentImpact().prepare()
         mark("2:ui-ready")
 
         // 关键修复：UI 先完整呈现，再把词库分两帧加载。
@@ -115,12 +123,20 @@ class KeyboardViewController: UIInputViewController {
             self.engine.loadCore()
             self.mark("3:core")
             self.refresh()
-            self.prepareClickSound()
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 self.engine.loadExtras()
                 self.mark("4:extras")
                 self.refresh()
+                // 苹果官方补充词库 API（UILexicon）：系统「文本替换」+ 通讯录姓名。
+                // 这是苹果唯一开放给第三方键盘的官方词库接口；异步获取，不占启动时间。
+                self.requestSupplementaryLexicon { [weak self] lexicon in
+                    let entries = lexicon.entries.map {
+                        (input: $0.userInput, document: $0.document)
+                    }
+                    self?.engine.ingestAppleLexicon(entries)
+                    self?.mark("5:lexicon")
+                }
             }
         }
     }
@@ -129,7 +145,7 @@ class KeyboardViewController: UIInputViewController {
         super.viewWillAppear(animated)
         syncSettingsFromApp()
         applyKeyboardHeight()
-        impact.prepare()
+        currentImpact().prepare()
     }
 
     private func applyKeyboardHeight() {
@@ -292,6 +308,7 @@ class KeyboardViewController: UIInputViewController {
         lastCommitted = ""
         didBackspace = false
         shiftOn = false
+        pinnedSyllable = nil
         updateModeBarTitles()
         updateKeyArea()
         refresh()
@@ -301,6 +318,15 @@ class KeyboardViewController: UIInputViewController {
 
     // MARK: - 候选刷新（按钮复用，不重建）
     private func refresh() {
+        // 点选了搜狗式音节候选（ming / ning / min / nin）后锁定该音节，
+        // 候选栏直接给它的常用字词 —— 按错数字也能一键改回来。
+        if let pin = pinnedSyllable {
+            currentDecode = DecodeResult(display: pin, candidates: [], key: "")
+            displayCandidates = engine.candidates(forSyllable: pin)
+            pinyinBar.text = pin + " · 选字上屏，再按数字键重新输入"
+            updateCandidateButtons()
+            return
+        }
         if isComposeMode, !compose.isEmpty {
             let r = engine.decode(compose, is9Key: mode == .chinese9, context: lastCommitted)
             currentDecode = r
@@ -329,14 +355,27 @@ class KeyboardViewController: UIInputViewController {
         b.widthAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
         b.addAction(UIAction { [weak self] a in
             guard let self = self, let btn = a.sender as? UIButton else { return }
-            let idx = btn.tag
-            if idx < self.displayCandidates.count { self.commit(self.displayCandidates[idx]) }
+            let t = btn.tag
+            if t >= 1000 {                    // 音节候选（蓝色）
+                let alts = self.currentDecode.alternates
+                let idx = t - 1000
+                guard idx < alts.count else { return }
+                self.pinnedSyllable = alts[idx]
+                self.compose = ""
+                self.refresh()
+                return
+            }
+            if t < self.displayCandidates.count { self.commit(self.displayCandidates[t]) }
         }, for: .touchUpInside)
         return b
     }
 
     private func updateCandidateButtons() {
-        let items = Array(displayCandidates.prefix(20))
+        // 9 键：把音节候选放在最前面（对应搜狗左侧 wen/zen/ye/ze 那一列）
+        let alts: [String] = (mode == .chinese9 && pinnedSyllable == nil)
+            ? Array(currentDecode.alternates.prefix(6)) : []
+        let words = Array(displayCandidates.prefix(max(4, 20 - alts.count)))
+        let items: [(String, Bool)] = alts.map { ($0, true) } + words.map { ($0, false) }
         for i in 0..<items.count {
             let b: UIButton
             if i < candidateButtons.count {
@@ -347,10 +386,15 @@ class KeyboardViewController: UIInputViewController {
                 candidateStack.addArrangedSubview(b)
             }
             b.isHidden = false
-            b.tag = i
-            b.setTitle(items[i], for: .normal)
-            let len = items[i].count
-            b.titleLabel?.font = UIFont.systemFont(ofSize: len > 8 ? 14 : (len > 4 ? 16 : 18))
+            let (text, isSyl) = items[i]
+            b.tag = isSyl ? (1000 + i) : (i - alts.count)
+            b.setTitle(isSyl ? "⌜\(text)⌝" : text, for: .normal)
+            b.setTitleColor(isSyl ? .systemBlue : .label, for: .normal)
+            b.backgroundColor = isSyl ? UIColor.systemBlue.withAlphaComponent(0.12) : .tertiarySystemFill
+            let len = text.count
+            b.titleLabel?.font = isSyl
+                ? UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)
+                : UIFont.systemFont(ofSize: len > 8 ? 14 : (len > 4 ? 16 : 18))
         }
         for i in items.count..<candidateButtons.count { candidateButtons[i].isHidden = true }
         candidateScroll.contentOffset = .zero
@@ -359,6 +403,7 @@ class KeyboardViewController: UIInputViewController {
 
     private func commit(_ text: String) {
         textDocumentProxy.insertText(text)
+        pinnedSyllable = nil
         if isComposeMode {
             engine.learn(text, pinyinKey: currentDecode.key, boost: didBackspace ? 3 : 1)
             lastCommitted = text
@@ -369,6 +414,7 @@ class KeyboardViewController: UIInputViewController {
     }
 
     private func backspace() {
+        pinnedSyllable = nil
         if isComposeMode && !compose.isEmpty {
             compose.removeLast()
             didBackspace = true
@@ -488,6 +534,7 @@ class KeyboardViewController: UIInputViewController {
             let t = l.isEmpty ? n : "\(n)\n\(l)"
             return key(t) { [weak self] in
                 guard let self = self else { return }
+                self.pinnedSyllable = nil
                 self.compose += n
                 self.refresh()
             }
@@ -646,65 +693,13 @@ class KeyboardViewController: UIInputViewController {
     // MARK: - 反馈（震动 + 按键音）
     private func feedback() {
         if hapticOn() {
-            impact.impactOccurred()
-            impact.prepare()          // 为下一次按键预准备，连打零延迟
+            let g = currentImpact()
+            g.impactOccurred()
+            g.prepare()               // 为下一次按键预准备，连打零延迟
         }
         guard soundOn() else { return }
-        if clickSoundID == 0 { prepareClickSound() }
-        if clickSoundID != 0 {
-            AudioServicesPlaySystemSound(clickSoundID)
-        } else {
-            AudioServicesPlaySystemSound(1104)   // 极端情况用系统按键音兜底
-        }
-    }
-
-    /// 生成 22ms 的清脆「嗒」并注册成 SystemSound。
-    /// 完全不碰 AVAudioEngine / AVAudioSession —— 键盘扩展里激活音频会话会被系统终止，
-    /// 且 AVAudioEngine.connect/start 抛的是 Swift 捕获不到的 ObjC 异常。
-    /// 振幅按主 App 的音量滑杆缩放，所以音量设置真实生效、音色仍是我们合成的清脆声。
-    private func prepareClickSound() {
-        let vol = soundVol()
-        if clickSoundID != 0, abs(clickVolumeCached - vol) < 0.02 { return }
-        guard let url = writeClickWav(volume: vol) else { return }
-        if clickSoundID != 0 {
-            AudioServicesDisposeSystemSoundID(clickSoundID)
-            clickSoundID = 0
-        }
-        var sid: SystemSoundID = 0
-        AudioServicesCreateSystemSoundID(url as CFURL, &sid)
-        if sid != 0 {
-            clickSoundID = sid
-            clickVolumeCached = vol
-        }
-    }
-
-    private func writeClickWav(volume: Float) -> URL? {
-        let sampleRate: UInt32 = 44100
-        let frames = 970                       // ≈ 22ms
-        let amp = 0.55 * max(0.0, min(1.0, volume))
-        var pcm: [Int16] = []
-        pcm.reserveCapacity(frames)
-        for i in 0..<frames {
-            let t = Double(i) / Double(sampleRate)
-            let env = exp(-t * 130.0)
-            let s = (sin(2.0 * .pi * 1350.0 * t) * 0.72 +
-                     sin(2.0 * .pi * 2700.0 * t) * 0.28) * env * Double(amp)
-            pcm.append(Int16(max(-1.0, min(1.0, s)) * 32767.0))
-        }
-        var d = Data()
-        func ascii(_ s: String) { d.append(contentsOf: s.utf8) }
-        func u32(_ v: UInt32) {
-            d.append(contentsOf: [UInt8(v & 0xff), UInt8((v >> 8) & 0xff),
-                                  UInt8((v >> 16) & 0xff), UInt8((v >> 24) & 0xff)])
-        }
-        func u16(_ v: UInt16) { d.append(contentsOf: [UInt8(v & 0xff), UInt8(v >> 8)]) }
-        let bytes = UInt32(frames * 2)
-        ascii("RIFF"); u32(36 + bytes); ascii("WAVE")
-        ascii("fmt "); u32(16); u16(1); u16(1)
-        u32(sampleRate); u32(sampleRate * 2); u16(2); u16(16)
-        ascii("data"); u32(bytes)
-        for s in pcm { u16(UInt16(bitPattern: s)) }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("kb_click.wav")
-        do { try d.write(to: url, options: .atomic); return url } catch { return nil }
+        // 官方键盘音：系统进程播放，键盘扩展里唯一确定出声的方式。
+        // 音量由系统音量键与「设置 › 声音与触感 › 键盘反馈 › 声音」控制。
+        UIDevice.current.playInputClick()
     }
 }

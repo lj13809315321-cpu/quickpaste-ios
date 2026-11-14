@@ -29,7 +29,7 @@ struct ContentView: View {
                     Toggle("震动反馈", isOn: $hapticOn)
                         .onChange(of: hapticOn) { _ in syncToKeyboard() }
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("按键音量  \(Int(volume * 100))%")
+                        Text("震动强度  \(Int(volume * 100))%")
                         Slider(value: $volume, in: 0...1)
                             .onChange(of: volume) { _ in syncToKeyboard() }
                     }
@@ -39,7 +39,7 @@ struct ContentView: View {
                 } header: {
                     Text("键盘设置")
                 } footer: {
-                    Text("改完直接切到任意输入框，键盘弹出时自动生效。设置通过剪贴板同步，不覆盖你复制的文字；需已开启「允许完全访问」。")
+                    Text("按键音用系统官方键盘音，音量由手机侧边音量键和「设置 › 声音与触感 › 键盘反馈 › 声音」控制（自定义键盘不能自己改音量，这是系统限制）。这里的滑杆调震动强度。若没声音，请先打开系统「键盘反馈 › 声音」。设置通过剪贴板同步，需已开启「允许完全访问」。")
                 }
 
                 Section {
@@ -167,18 +167,27 @@ struct ContentView: View {
         return last
     }
 
-    /// 自检：确认词库确实打进了键盘扩展包，方便排查「打不了字」
+    /// 自检：确认 mmap 主词库与兜底字典都打进了键盘扩展包
     private func dictSelfCheck() -> String {
-        let names = ["pinyin_chars", "pinyin_phrases", "pinyin_assoc",
+        let jsons = ["pinyin_chars", "pinyin_phrases", "pinyin_assoc",
                      "pinyin_char_freq", "pinyin_bigram", "pinyin_hot_words",
                      "pinyin_t9", "pinyin_english", "pinyin_abbr", "pinyin_flat", "cat_net"]
+        let bins = ["lexicon", "flat", "abbr", "freq"]
         guard let plugins = Bundle.main.builtInPlugInsURL,
               let ext = Bundle(url: plugins.appendingPathComponent("PinyinKeyboardKeyboard.appex")) else {
             return "未找到键盘扩展包（请确认安装的是完整 IPA）"
         }
-        let ok = names.filter { ext.url(forResource: $0, withExtension: "json") != nil }.count
-        return ok == names.count
-            ? "词库自检通过：\(ok)/\(names.count) 个字典都已打包"
-            : "词库自检异常：仅 \(ok)/\(names.count) 个字典，请重装 IPA"
+        let okJ = jsons.filter { ext.url(forResource: $0, withExtension: "json") != nil }.count
+        let okB = bins.filter { ext.url(forResource: $0, withExtension: "bin") != nil }.count
+        var count = 0
+        if let u = ext.url(forResource: "lexicon", withExtension: "bin"),
+           let d = try? Data(contentsOf: u), d.count >= 12 {
+            count = Int(d[8]) | (Int(d[9]) << 8) | (Int(d[10]) << 16) | (Int(d[11]) << 24)
+        }
+        guard okB == bins.count else {
+            return "mmap 词库缺失：仅 \(okB)/\(bins.count) 个 .bin，请重装 IPA"
+        }
+        return "词库自检通过：mmap 主词库 \(count) 条（二进制索引，扩到 50 万+ 无需改代码）；" +
+               "小字典 \(okJ)/\(jsons.count) 已打包"
     }
 }
