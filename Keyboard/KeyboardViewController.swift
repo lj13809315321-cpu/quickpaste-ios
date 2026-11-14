@@ -449,6 +449,15 @@ final class KeyboardViewController: UIInputViewController {
 
         var dirty = false
 
+        // v1.8.39：主 App 连续复制「清空输入法前端剪贴板」开关：键盘每次刷新
+        // 读到比自己上次应用更新的时间戳，就把前端栏（prefs.clips）清空一次。
+        let kbClearReq = QPSharedHistory.pendingKbClearAt()
+        if kbClearReq > prefs.kbClearedAt {
+            prefs.clearAllClips()
+            prefs.kbClearedAt = kbClearReq
+            dirty = true
+        }
+
         // ① 主 App 后台抓到的（画中画小窗）。这一项**每次都读**：
         //    它走的是共享通道，不需要剪贴板权限，键盘一弹起就该把 App
         //    在后台收的每一条都并进本机列表 —— 旧版只在 changeCount 变时才读，
@@ -2175,7 +2184,7 @@ final class KeyboardViewController: UIInputViewController {
         menuStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         view.bringSubviewToFront(menuOverlay)
         menuOverlay.isHidden = false
-        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.38 同步"))
+        menuStack.addArrangedSubview(menuTitle("快捷操作 · v1.8.39 同步"))
         menuStack.addArrangedSubview(menuRow("⚙ 打开完整设置界面") { [weak self] in
             self?.closeMenu()
             self?.settings.show(.root)

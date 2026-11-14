@@ -700,6 +700,42 @@ enum QPSharedHistory {
         }
     }
 
+    // MARK: v1.8.39 独立一次性「清空键盘前端剪贴板」指令
+
+    private struct KbClearMark: Codable { var at: Double = 0 }
+    private static let kbClearPBType = "app.mulberry6323.mozhi.kbclear"
+    private static let kbClearFile = "kbclear.json"
+
+    /// 主 App 连续复制「开启前清空输入法前端剪贴板」开关打开时调用：
+    /// 在共享通道里写一条「请求清空」时间戳。键盘每次刷新读到比自己上次
+    /// 应用时间更新的时间戳，就把自己的前端栏（prefs.clips）清空一次。
+    /// 走共享通道（App Group 文件 + 剪贴板兜底），不碰用户剪贴板正文。
+    static func markKbClear() {
+        let m = KbClearMark(at: Date().timeIntervalSince1970)
+        guard let data = try? JSONEncoder.encode(m) else { return }
+        if let url = groupURL() {
+            try? data.write(to: url.appendingPathComponent(kbClearFile), options: .atomic)
+        }
+        if pasteboardFallbackEnabled {
+            UIPasteboard.general.setData(data, forPasteboardType: kbClearPBType)
+        }
+    }
+
+    /// 键盘调用：返回主 App 请求清空键盘前端的时间戳（0 表示没有）。
+    /// 键盘用它和自身上次应用时间比较，只在有新请求时才清一次。
+    static func pendingKbClearAt() -> Double {
+        func decode() -> Double? {
+            if let url = groupURL()?.appendingPathComponent(kbClearFile),
+               let d = try? Data(contentsOf: url),
+               let m = try? JSONDecoder().decode(KbClearMark.self, from: d) { return m.at }
+            guard pasteboardFallbackEnabled,
+                  let d = UIPasteboard.general.data(forPasteboardType: kbClearPBType),
+                  let m = try? JSONDecoder().decode(KbClearMark.self, from: d) else { return nil }
+            return m.at
+        }
+        return decode() ?? 0
+    }
+
     // MARK: v1.8.31「最近一次宿主 App 包名」缓存
 
     /// 键盘每次出现时探测到宿主就写进来，长期有效（不清），

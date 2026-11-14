@@ -48,8 +48,8 @@ MAIN_APP_PLIST = {
     "CFBundleName": "Mozhi",
     "CFBundlePackageType": "APPL",
     "CFBundleSignature": "????",
-    "CFBundleShortVersionString": "1.8.38",
-    "CFBundleVersion": "58",
+    "CFBundleShortVersionString": "1.8.39",
+    "CFBundleVersion": "59",
     # v1.8.32：主 App 要跳回微信/抖音等来源 App，公开 open(URL) 必须声明白名单。
     # v1.8.31 只给键盘 plist 加了，主 App 缺这一份 —— 这就是「没跳回来」的硬伤之一。
     "LSApplicationQueriesSchemes": ["mozhi", "weixin", "snssdk1128", "mqq", "sinaweibo", "alipay", "taobao", "xhsdiscover", "sms", "mobilenotes"],
@@ -83,8 +83,8 @@ KEYBOARD_PLIST = {
     "CFBundleName": "Mozhi",
     "CFBundlePackageType": "XPC!",
     "CFBundleSignature": "????",
-    "CFBundleShortVersionString": "1.8.38",
-    "CFBundleVersion": "58",
+    "CFBundleShortVersionString": "1.8.39",
+    "CFBundleVersion": "59",
     "MinimumOSVersion": "16.0",
     # v1.8.26：键盘扩展要打开主 App 的 mozhi:// scheme，系统要求声明查询白名单。
     "LSApplicationQueriesSchemes": ["mozhi", "weixin", "snssdk1128", "mqq", "sinaweibo", "alipay", "taobao", "xhsdiscover", "sms", "mobilenotes"],

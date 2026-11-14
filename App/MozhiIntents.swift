@@ -21,22 +21,25 @@ final class StartContinuousCopyIntent: AppIntent {
     static var openAppWhenRun: Bool = true
 
     func perform() async throws -> some IntentResult {
-        // 冷启动时窗口可能还没成为 keyWindow，稍等片刻让场景就绪再启动画中画。
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        // 窗口就绪与画中画重试已内置于 PiPManager.start()，这里直接调即可。
         await MainActor.run { PiPManager.shared.start() }
         return .result()
     }
 }
 
-/// 关闭连续复制：关掉画中画小窗，无需切到前台。
+/// 关闭连续复制：关掉画中画小窗。用「就地停止」剪贴板指令实现，
+/// 后台主 App 每 0.4 秒自行消费并停掉画中画 —— 无需切到前台、真生效。
 final class StopContinuousCopyIntent: AppIntent {
     static var title: LocalizedStringResource = "关闭连续复制"
     static var description: LocalizedStringResource =
-        "关闭墨指画中画小窗，停止连续复制（无需切到前台）。"
+        "关闭墨指画中画小窗，停止连续复制（静默、无需切到前台）。"
     static var openAppWhenRun: Bool = false
 
     func perform() async throws -> some IntentResult {
-        await MainActor.run { PiPManager.shared.stop() }
+        // 只在确实在跑时才发停止指令，避免「已关闭」时残留指令在下次开启误触发。
+        if QPSharedHistory.livePipState() {
+            QPSharedHistory.markPipStopCommand()
+        }
         return .result()
     }
 }
@@ -49,10 +52,10 @@ final class ToggleContinuousCopyIntent: AppIntent {
     static var openAppWhenRun: Bool = true
 
     func perform() async throws -> some IntentResult {
-        // qp.autoPiP 是「是否希望连续复制开着」的持久标记（真正启动/停止时同步）。
-        let wanted = UserDefaults.standard.bool(forKey: "qp.autoPiP")
+        // 以主 App 真实的运行态为准翻转；意图随 App 启动在进程内运行，读得到。
+        let running = PiPManager.shared.running
         await MainActor.run {
-            if wanted {
+            if running {
                 PiPManager.shared.stop()
             } else {
                 PiPManager.shared.start()

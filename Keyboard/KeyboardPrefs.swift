@@ -394,6 +394,13 @@ struct KeyboardPrefs {
         store.double(forKey: "qp.clearedAt")
     }
 
+    /// v1.8.39：主 App「清空输入法前端剪贴板」指令的上次应用时间戳。
+    /// 与共享通道里主 App 写的时间戳比较，只在有新请求时清一次键盘前端栏。
+    var kbClearedAt: Double {
+        get { store.double(forKey: "qp.kbClearedAt") }
+        set { store.set(newValue, forKey: "qp.kbClearedAt") }
+    }
+
     mutating func togglePin(_ text: String) {
         if let i = pinned.firstIndex(of: text) { pinned.remove(at: i) }
         else { pinned.append(text) }

@@ -193,21 +193,40 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
 
     // MARK: - 开启
 
-    func start() {
+    func start() { start(retry: 8) }
+
+    /// v1.8.39：App/快捷指令刚拉起时窗口可能还没挂上，导致画中画直接 -1001 失败。
+    /// 这里窗口未就绪就稍等重试，就绪后再真正拉起；三种开启入口（App 按钮 /
+    /// 键盘跳 / 快捷指令）都走这套，无需各自 sleep。
+    private func start(retry: Int) {
         guard supported else {
             message = "这台设备或系统版本不支持画中画，无法跨 App 连续复制"
             return
         }
         guard !running, !starting else { return }
         guard let window = Self.keyWindow() else {
-            message = "找不到 App 窗口，请退回首页再点一次"
+            if retry > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    self?.start(retry: retry - 1)
+                }
+            } else {
+                message = "找不到 App 窗口，请退回首页再点一次"
+            }
             return
         }
+        setupAndStart(window: window)
+    }
 
-        // v1.8.38：「开启连续复制前清空」开关打开时，先把之前攒下的连续复制内容清空，再从头收集。
-        if UserDefaults.standard.bool(forKey: "qp.pipClearOnStart") {
-            Self.clearContinuousHistory()
-        }
+    private func setupAndStart(window: UIWindow) {
+        guard !running, !starting else { return }
+
+        // v1.8.38/1.8.39：「开启前清空」开关（清空 App 端）；「清空输入法前端」
+        // 开关（额外让键盘清空自己的前端栏）。两者任一打开都先把 App 端清掉，
+        // 因为键盘前端和 App 共用共享通道，不清 App 端键盘也会从通道把旧条目搬回。
+        let clearApp = UserDefaults.standard.bool(forKey: "qp.pipClearOnStart")
+        let clearKb = UserDefaults.standard.bool(forKey: "qp.pipClearKbOnStart")
+        if clearApp || clearKb { Self.clearContinuousHistory() }
+        if clearKb { QPSharedHistory.markKbClear() }
 
         starting = true
         message = "正在开启画中画…"
@@ -261,11 +280,22 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
 
         startAudioKeepAlive()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            guard let self = self, let c = self.pipController else { return }
-            c.startPictureInPicture()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-                guard let self = self, self.starting, !self.running else { return }
+        // v1.8.39：画中画起不来（AVKitErrorDomain -1001）多为系统路由/窗口还没就绪，
+        // 这里失败就重试几次（0.25s / 0.75s / 1.25s），把瞬时失败吃掉。
+        attemptStartPiP(attempt: 3)
+    }
+
+    private func attemptStartPiP(attempt: Int) {
+        guard let c = pipController else { starting = false; return }
+        guard !c.isPictureInPictureActive else { starting = false; return }
+        c.startPictureInPicture()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self = self else { return }
+            if self.pipController?.isPictureInPictureActive == true {
+                self.starting = false
+            } else if attempt > 1 {
+                self.attemptStartPiP(attempt: attempt - 1)
+            } else {
                 self.starting = false
                 self.message = "画中画没启动：请确认 设置 → 通用 → 画中画 → 自动开启画中画 已打开"
             }
@@ -704,6 +734,8 @@ struct PiPControlView: View {
     @State private var confirmDelete = false
     /// v1.8.38：「开启连续复制前清空之前的连续复制」开关（持久化到 UserDefaults）
     @AppStorage("qp.pipClearOnStart") private var clearBeforeStart = false
+    /// v1.8.39：「开启连续复制前清空输入法前端剪贴板」开关（持久化到 UserDefaults）
+    @AppStorage("qp.pipClearKbOnStart") private var clearKbOnStart = false
 
     /// 链接条目判断（与键盘侧 isLinkItem 同口径）
     private static func isLink(_ s: String) -> Bool {
@@ -834,6 +866,15 @@ struct PiPControlView: View {
                     Toggle("开启前清空之前的连续复制", isOn: $clearBeforeStart)
                         .font(.body)
                     Text("打开后，每次点「开启连续复制」会先把之前攒下的连续复制内容清空，再从头开始收集；关闭则接着之前的继续叠加（默认关闭，沿用现在的行为）。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+
+                // ── v1.8.39：开启连续复制前是否清空输入法前端剪贴板 ──
+                Section {
+                    Toggle("开启前清空输入法前端剪贴板", isOn: $clearKbOnStart)
+                        .font(.body)
+                    Text("打开后，每次开启连续复制会一并把输入法（键盘）前端栏里之前攒的条目也清空——因为键盘前端和 App 共用同一条共享通道，不清这一份，键盘栏还会把旧条目搬回来。关掉则只清 App 端（默认关闭）。")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }
