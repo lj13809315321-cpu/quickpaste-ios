@@ -193,6 +193,15 @@ struct AppRootView: View {
         return true
     }
 
+    /// v1.8.40：快捷指令「开启 / 切换（开）」启动画中画后，自动跳回来源 App。
+    /// 来源按「键盘最近记录的宿主」优先，其次用户设定的「默认返回 App」。
+    /// 与键盘点图标开启走的是同一套已验证回跳（jumpBackAfterPiP / openHostApp）。
+    static func returnToSourceAfterPipStart() {
+        let host = QPSharedHistory.cachedHostBundleId() ?? QPSharedHistory.defaultReturnBundleId()
+        guard let target = host, !target.isEmpty, target != "none" else { return }
+        Self.jumpBackAfterPiP(host: target)
+    }
+
     /// 等画中画真正起来（running 由启动回调置真）再跳回，最多等 3 秒；
     /// 没起来就留在本页看系统提示，不假装「已开好并跳回」。
     private static func jumpBackAfterPiP(host: String, triesLeft: Int = 15) {
@@ -715,7 +724,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("墨指 v1.8.39 · 真·系统输入法", systemImage: "keyboard")
+                        Label("墨指 v1.8.40 · 真·系统输入法", systemImage: "keyboard")
                             .font(.subheadline.weight(.semibold))
                         Text("按 HTML 最新版效果原生实现的系统键盘，不是网页、不是 WebView 壳、不是演示动画。")
                             .font(.footnote).foregroundColor(.secondary)
@@ -1307,7 +1316,7 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("墨指 v1.8.39 · 真·系统输入法").font(.headline)
+                Text("墨指 v1.8.40 · 真·系统输入法").font(.headline)
                 Text("iOS：键盘扩展 .appex（com.apple.keyboard-service）")
                 Text("安卓：系统输入法 InputMethodService")
             }

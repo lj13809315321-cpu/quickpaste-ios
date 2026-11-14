@@ -17,12 +17,15 @@ import AppIntents
 final class StartContinuousCopyIntent: AppIntent {
     static var title: LocalizedStringResource = "开启连续复制"
     static var description: LocalizedStringResource =
-        "拉起墨指画中画小窗，开始跨 App 连续复制（会短暂切到墨指前台以启动画中画）。"
+        "拉起墨指画中画小窗，开始跨 App 连续复制（会短暂切到墨指前台以启动画中画，随后自动跳回来源 App）。"
     static var openAppWhenRun: Bool = true
 
     func perform() async throws -> some IntentResult {
-        // 窗口就绪与画中画重试已内置于 PiPManager.start()，这里直接调即可。
-        await MainActor.run { PiPManager.shared.start() }
+        // 窗口就绪与画中画重试已内置于 PiPManager.start()；启动后自动跳回来源 App。
+        await MainActor.run {
+            PiPManager.shared.start()
+            AppRootView.returnToSourceAfterPipStart()
+        }
         return .result()
     }
 }
@@ -44,21 +47,30 @@ final class StopContinuousCopyIntent: AppIntent {
     }
 }
 
-/// 切换连续复制：在开 / 关之间翻转（开启时会短暂切到墨指前台）。
+/// 切换连续复制：在开 / 关之间翻转。
+/// ★ 关键点：关闭时无需切前台（走与「关闭」意图完全一致的静默停止指令，
+///   后台主 App 自行消费并停掉画中画），所以 openAppWhenRun 按「当前是否在跑」
+///   动态决定——在跑就 false（不拉前台、静默关），没跑才 true（拉前台开启）。
+///   这避开了旧写法「拉前台 → startIfWanted 又把 PiP 重启」导致关闭不生效的竞态。
 final class ToggleContinuousCopyIntent: AppIntent {
     static var title: LocalizedStringResource = "切换连续复制"
     static var description: LocalizedStringResource =
-        "在开 / 关之间翻转连续复制（开启时会短暂切到墨指前台）。"
-    static var openAppWhenRun: Bool = true
+        "在开 / 关之间翻转连续复制（开启时会短暂切到墨指前台，随后自动跳回来源 App）。"
+    static var openAppWhenRun: Bool {
+        // 当前正在跑 → 这次是要关 → 不用拉前台；没跑 → 这次是要开 → 必须拉前台。
+        // 用共享判活（而非进程内 running），在扩展/后台进程里也读得准。
+        !QPSharedHistory.livePipState()
+    }
 
     func perform() async throws -> some IntentResult {
-        // 以主 App 真实的运行态为准翻转；意图随 App 启动在进程内运行，读得到。
-        let running = PiPManager.shared.running
-        await MainActor.run {
-            if running {
-                PiPManager.shared.stop()
-            } else {
+        if QPSharedHistory.livePipState() {
+            // 当前在跑 → 关闭：与「关闭」意图同一套静默停止指令，真生效、不拉前台。
+            QPSharedHistory.markPipStopCommand()
+        } else {
+            // 当前没跑 → 开启：需前台窗口，启动后自动跳回来源 App。
+            await MainActor.run {
                 PiPManager.shared.start()
+                AppRootView.returnToSourceAfterPipStart()
             }
         }
         return .result()
