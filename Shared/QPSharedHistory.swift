@@ -712,9 +712,9 @@ enum QPSharedHistory {
     /// 走共享通道（App Group 文件 + 剪贴板兜底），不碰用户剪贴板正文。
     static func markKbClear() {
         let m = KbClearMark(at: Date().timeIntervalSince1970)
-        guard let data = try? JSONEncoder.encode(m) else { return }
+        guard let data = try? JSONEncoder().encode(m) else { return }
         if let url = groupURL() {
-            try? data.write(to: url.appendingPathComponent(kbClearFile), options: .atomic)
+            try? data.write(to: url.appendingPathComponent(kbClearFile), options: [.atomic])
         }
         if pasteboardFallbackEnabled {
             UIPasteboard.general.setData(data, forPasteboardType: kbClearPBType)
