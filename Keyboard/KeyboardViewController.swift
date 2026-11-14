@@ -101,7 +101,7 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
     // MARK: - 生命周期
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .systemBackground
+        view.backgroundColor = .systemGray5
         mark("1:init")
         if let ph = UserDefaults.standard.dictionary(forKey: "kb_custom_phrases") as? [String: String] {
             engine.setCustomPhrases(ph)
@@ -152,7 +152,7 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         guard view.constraints.first(where: { $0.identifier == "kbHeight" }) == nil else { return }
         let w = UIScreen.main.bounds.width
         let h = UIScreen.main.bounds.height
-        let kbH: CGFloat = (w > h) ? 220 : 300
+        let kbH: CGFloat = (w > h) ? 230 : 330
         let c = view.heightAnchor.constraint(equalToConstant: kbH)
         c.identifier = "kbHeight"
         c.priority = .required
@@ -165,7 +165,7 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         pinyinBar.translatesAutoresizingMaskIntoConstraints = false
         pinyinBar.font = UIFont.monospacedSystemFont(ofSize: 14, weight: .medium)
         pinyinBar.textColor = .systemBlue
-        pinyinBar.backgroundColor = .secondarySystemBackground
+        pinyinBar.backgroundColor = .clear
         pinyinBar.textAlignment = .left
         pinyinBar.adjustsFontSizeToFitWidth = true
         pinyinBar.minimumScaleFactor = 0.72
@@ -176,7 +176,7 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         candidateScroll.translatesAutoresizingMaskIntoConstraints = false
         candidateScroll.showsHorizontalScrollIndicator = false
         candidateScroll.alwaysBounceHorizontal = true
-        candidateScroll.backgroundColor = .secondarySystemBackground
+        candidateScroll.backgroundColor = .clear
         view.addSubview(candidateScroll)
 
         candidateStack.axis = .horizontal
@@ -477,18 +477,25 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
     // MARK: - 通用构件
     /// 关键手感改动：输入在 touchDown 触发（系统键盘就是按下即响应），
     /// 不再等 touchUpInside；并带回弹动画。快速连打不丢键、不拖沓。
-    private func key(_ title: String, action: @escaping () -> Void) -> UIButton {
+    private func key(_ title: String, height: CGFloat = 48, action: @escaping () -> Void) -> UIButton {
         let b = UIButton(type: .system)
         b.setTitle(title, for: .normal)
         b.setTitleColor(.label, for: .normal)
-        b.backgroundColor = .secondarySystemBackground
-        b.layer.cornerRadius = 6
+        // 搜狗质感：灰底上浮白键 + 轻投影，暗色模式自动取反
+        b.backgroundColor = .secondarySystemGroupedBackground
+        b.layer.cornerRadius = 8
+        b.layer.shadowColor = UIColor.black.cgColor
+        b.layer.shadowOpacity = 0.10
+        b.layer.shadowRadius = 1
+        b.layer.shadowOffset = CGSize(width: 0, height: 1)
         b.titleLabel?.font = UIFont.systemFont(ofSize: 17)
         b.titleLabel?.numberOfLines = 0
         b.titleLabel?.textAlignment = .center
         b.contentVerticalAlignment = .center
         b.contentHorizontalAlignment = .center
-        b.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        let hc = b.heightAnchor.constraint(equalToConstant: height)
+        hc.priority = UILayoutPriority(995)   // 空间不足时允许压缩，避免约束冲突
+        hc.isActive = true
 
         b.addAction(UIAction { [weak self] _ in
             guard let self = self else { return }
@@ -520,38 +527,84 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         return s
     }
 
-    // MARK: - 9键（T9拼音）
+    // MARK: - 9键（T9拼音）—— 搜狗式布局
+    // 左侧竖排标点列（，。？！打字中随手够到）＋ 3×3 纯字母大键 ＋
+    // 右侧功能列（⌫ / 清空 / 换行竖跨两行）。对标搜狗/百度/讯飞/豆包的通用 9 键结构。
     private func nineKeys() -> [UIStackView] {
-        let map: [(String, String)] = [
-            ("1", ""), ("2", "abc"), ("3", "def"),
-            ("4", "ghi"), ("5", "jkl"), ("6", "mno"),
-            ("7", "pqrs"), ("8", "tuv"), ("9", "wxyz"),
-        ]
-        func k(_ i: Int) -> UIButton {
-            let (n, l) = map[i]
-            if n == "1" {
-                // 9 键的 1 不再往拼音缓冲里塞无效数字，改成中文标点键
-                return key("1\n，") { [weak self] in self?.punctuationCommit("，") }
-            }
-            let t = l.isEmpty ? n : "\(n)\n\(l)"
-            return key(t) { [weak self] in
+        func letterKey(_ n: String, _ l: String) -> UIButton {
+            let b = key(l, height: 50) { [weak self] in
                 guard let self = self else { return }
                 self.pinnedSyllable = nil
                 self.compose += n
                 self.refresh()
             }
+            b.titleLabel?.font = UIFont.systemFont(ofSize: 19, weight: .medium)
+            return b
         }
-        let r1 = row([k(0), k(1), k(2)])
-        let r2 = row([k(3), k(4), k(5)])
-        let r3 = row([k(6), k(7), k(8)])
-        let r4 = row([
-            key("⌫") { [weak self] in self?.backspace() },
-            key("0 空格") { [weak self] in
-                if self?.isComposeMode == true { self?.confirm() } else { self?.textDocumentProxy.insertText(" ") }
+        func punct(_ p: String) -> UIButton {
+            let b = key(p, height: 50) { [weak self] in self?.punctuationCommit(p) }
+            b.titleLabel?.font = UIFont.systemFont(ofSize: 20)
+            return b
+        }
+        func funcKey(_ t: String, height: CGFloat = 50, _ a: @escaping () -> Void) -> UIButton {
+            let b = key(t, height: height) {}
+            // 功能键字体小一号、灰一点，突出字母键
+            b.setTitleColor(.secondaryLabel, for: .normal)
+            b.titleLabel?.font = UIFont.systemFont(ofSize: 14)
+            b.removeActions(for: .touchDown)
+            b.addAction(UIAction { [weak self] _ in
+                guard let self = self else { return }
+                a()
+                self.feedback()
+            }, for: .touchDown)
+            return b
+        }
+
+        // 左标点列
+        let leftCol = UIStackView(arrangedSubviews: [punct("，"), punct("。"), punct("？"), punct("！")])
+        leftCol.axis = .vertical; leftCol.spacing = 6; leftCol.alignment = .fill
+        leftCol.translatesAutoresizingMaskIntoConstraints = false
+        leftCol.widthAnchor.constraint(equalToConstant: 44).isActive = true
+
+        // 中间字母区
+        let g1 = row([letterKey("2", "ABC"), letterKey("3", "DEF"),
+                      funcKey("符") { [weak self] in self?.switchMode(.symbol) }])
+        let g2 = row([letterKey("4", "GHI"), letterKey("5", "JKL"), letterKey("6", "MNO")])
+        let g3 = row([letterKey("7", "PQRS"), letterKey("8", "TUV"), letterKey("9", "WXYZ")])
+        let g4 = row([
+            funcKey("123") { [weak self] in self?.switchMode(.number) },
+            funcKey("空格") { [weak self] in
+                guard let self = self else { return }
+                if self.isComposeMode { self.confirm() } else { self.textDocumentProxy.insertText(" ") }
             },
-            key("⏎") { [weak self] in self?.textDocumentProxy.insertText("\n") },
+            funcKey("中英") { [weak self] in
+                guard let self = self else { return }
+                self.switchMode(self.mode == .chinese9 ? .english : .chinese9)
+            },
         ])
-        return [r1, r2, r3, r4]
+        let mainCol = UIStackView(arrangedSubviews: [g1, g2, g3, g4])
+        mainCol.axis = .vertical; mainCol.spacing = 6
+
+        // 右功能列：⌫ / 清空 / 换行（竖跨两行高度）
+        let bk = funcKey("⌫") { [weak self] in self?.backspace() }
+        bk.titleLabel?.font = UIFont.systemFont(ofSize: 18)
+        let clear = funcKey("清空") { [weak self] in
+            guard let self = self else { return }
+            self.pinnedSyllable = nil
+            self.compose = ""
+            self.refresh()
+        }
+        let ret = funcKey("换\n行", height: 106) { [weak self] in
+            self?.textDocumentProxy.insertText("\n")
+        }
+        let rightCol = UIStackView(arrangedSubviews: [bk, clear, ret])
+        rightCol.axis = .vertical; rightCol.spacing = 6; rightCol.alignment = .fill
+        rightCol.translatesAutoresizingMaskIntoConstraints = false
+        rightCol.widthAnchor.constraint(equalToConstant: 62).isActive = true
+
+        let panel = UIStackView(arrangedSubviews: [leftCol, mainCol, rightCol])
+        panel.axis = .horizontal; panel.spacing = 6; panel.alignment = .fill
+        return [panel]
     }
 
     // MARK: - QWERTY（中文26 / 英文26）
