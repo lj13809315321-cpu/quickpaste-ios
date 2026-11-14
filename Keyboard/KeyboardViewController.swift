@@ -963,9 +963,9 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
 
     /// 上滑清空：正文前后文各拍一份快照，再从光标处一路删到头；同时清掉拼音缓冲
     private func clearAllText() {
-        // documentTextBefore/AfterInput 是 UIInputViewController 的属性（iOS 15+）
-        let before = textDocumentProxy.documentTextBeforeInput ?? ""
-        let after = textDocumentProxy.documentTextAfterInput ?? ""
+        // documentContextBefore/AfterInput 是 UITextDocumentProxy 的属性（iOS 8+ 全 SDK 可用）
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        let after = textDocumentProxy.documentContextAfterInput ?? ""
         if !before.isEmpty || !after.isEmpty { clearSnapshot = (before, after) }
         if !compose.isEmpty || !lockedSylls.isEmpty {
             lastPreeditCleared = rawInputString()
@@ -976,7 +976,7 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         var n = 0, prevLen = -1, stable = 0
         while textDocumentProxy.hasText, n < 4000 {
             textDocumentProxy.deleteBackward()
-            let len = (textDocumentProxy.documentTextBeforeInput ?? "").count
+            let len = (textDocumentProxy.documentContextBeforeInput ?? "").count
             if len == prevLen { stable += 1; if stable > 3 { break } } else { stable = 0 }
             prevLen = len
             n += 1
@@ -1064,7 +1064,7 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
                 return (false, raw)
             }
         }
-        let before = textDocumentProxy.documentTextBeforeInput ?? ""
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
         textDocumentProxy.deleteBackward()
         let ch = before.isEmpty ? "" : String(before.suffix(1))
         return (true, ch.isEmpty ? " " : ch)
