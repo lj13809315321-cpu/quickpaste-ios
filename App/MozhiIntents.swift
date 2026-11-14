@@ -67,23 +67,25 @@ final class ToggleContinuousCopyIntent: AppIntent {
 // 注册后：打开「快捷指令」App → 右上角「+」→ 搜索「墨指」即可看到下列动作；
 // 也可在「自动化」里引用，或用 Siri 念出短语唤起。
 struct MozhiAppShortcuts: AppShortcutsProvider {
+    @AppShortcutsBuilder
     static var appShortcuts: [AppShortcut] {
-        [
-            AppShortcut(
-                intent: ToggleContinuousCopyIntent(),
-                phrases: ["切换连续复制", "翻转墨指连续复制", "连续复制 开关"],
-                shortTitle: "切换连续复制"
-            ),
-            AppShortcut(
-                intent: StartContinuousCopyIntent(),
-                phrases: ["开启连续复制", "打开墨指连续复制", "开始墨指连续复制"],
-                shortTitle: "开启连续复制"
-            ),
-            AppShortcut(
-                intent: StopContinuousCopyIntent(),
-                phrases: ["关闭连续复制", "停止墨指连续复制", "结束墨指连续复制"],
-                shortTitle: "关闭连续复制"
-            ),
-        ]
+        AppShortcut(
+            intent: ToggleContinuousCopyIntent(),
+            phrases: ["切换连续复制", "翻转墨指连续复制", "连续复制 开关"],
+            shortTitle: "切换连续复制",
+            systemImageName: "arrow.triangle.2.circlepath"
+        )
+        AppShortcut(
+            intent: StartContinuousCopyIntent(),
+            phrases: ["开启连续复制", "打开墨指连续复制", "开始墨指连续复制"],
+            shortTitle: "开启连续复制",
+            systemImageName: "play.circle"
+        )
+        AppShortcut(
+            intent: StopContinuousCopyIntent(),
+            phrases: ["关闭连续复制", "停止墨指连续复制", "结束墨指连续复制"],
+            shortTitle: "关闭连续复制",
+            systemImageName: "stop.circle"
+        )
     }
 }
