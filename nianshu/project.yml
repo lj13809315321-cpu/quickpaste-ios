@@ -32,7 +32,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.mulberry6323.nianshu
         GENERATE_INFOPLIST_FILE: NO
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # 暂不设 App 图标：图标待定稿后再放入 Assets.xcassets。
+        # 不指定 ASSETCATALOG_COMPILER_APPICON_NAME，Xcode 用默认占位图标，不影响功能与签名安装。
 
 schemes:
   Nianshu:

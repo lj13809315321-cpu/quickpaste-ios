@@ -60,7 +60,7 @@ MAIN_APP_PLIST = {
         "CFBundleURLName": APP_ID,
         "CFBundleURLSchemes": ["nianshu"],
     }],
-    "CFBundleIconName": "AppIcon",
+    # 暂不设图标：CFBundleIconName 留给以后放好 Assets.xcassets 再补。
     "UIRequiredDeviceCapabilities": ["arm64"],
     "UISupportedInterfaceOrientations": ORIENTATIONS,
 }
