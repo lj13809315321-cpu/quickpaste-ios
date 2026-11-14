@@ -1,3 +1,4 @@
+import Foundation
 import AppIntents
 
 // MARK: - 连续复制 · 快捷指令接入
@@ -70,12 +71,20 @@ final class ToggleContinuousCopyIntent: AppIntent {
             // 本进程真实状态优先；剪贴板心跳只作冷启动残留状态的兜底。
             let isRunning = mgr.isActive || QPSharedHistory.livePipState()
             if isRunning {
-                // 关闭：同步清干净所有「还想开」的标记，随后跳回来源 App。
+                // 关闭：同步清干净所有「还想开」的标记。
                 mgr.forceStopFromShortcut()
-                let host = QPSharedHistory.cachedHostBundleId()
-                    ?? QPSharedHistory.defaultReturnBundleId()
-                if let target = host, !target.isEmpty, target != "none" {
-                    AppRootView.openHostApp(target)
+                // v1.8.43：开关控制「关完是否自动跳回来源 App」。
+                //   默认关（不跳）→ 停在墨指主 App，用户说这样挺好，能看到状态；
+                //   打开 → 关完立刻回来源 App，和单独「关闭」一样不离开当前界面。
+                //   注意 openAppWhenRun=true 那一次拉起是系统静态要求，开关管不了。
+                if UserDefaults.standard.bool(forKey: "qp.pipToggleReturnOnClose") {
+                    let host = QPSharedHistory.cachedHostBundleId()
+                        ?? QPSharedHistory.defaultReturnBundleId()
+                    if let target = host, !target.isEmpty, target != "none" {
+                        AppRootView.openHostApp(target)
+                    } else {
+                        PiPManager.shared.note("没识别出来源 App：可在本页「返回来源 App」设个默认目标")
+                    }
                 }
             } else {
                 // 开启：画中画必须要前台窗口，启动后自动跳回来源 App。

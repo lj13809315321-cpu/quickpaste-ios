@@ -377,6 +377,44 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     static func clearContinuousHistory() {
         saveLocal([])
         QPSharedHistory.clearItemsKeepingClipboard()
+        // v1.8.43：历史都清了，轮次也从头算，新收的条目才是「本次」。
+        resetPipSessionStarts()
+    }
+
+    // MARK: v1.8.43「一轮连续复制算一次」——按开启轮次给条目标记
+    //
+    // 一次连续复制 = 画中画从起到停的这一轮。同一轮里抓到的所有条目
+    // 都算「本次」，不是按 1/2/3/4 条逐个编号（用户明确说那样没意义）。
+    // 只记最近 3 轮的开启时刻，靠每条的收录时间落在哪个区间来判轮次，
+    // 不用给每条历史记录加字段，旧数据也能直接显示。
+    private static let sessionStartsKey = "qp.app.pipSessionStarts"
+
+    /// 最近 3 轮连续复制的开启时刻（秒），降序：[本次, 上次, 上上次]。
+    static func pipSessionStarts() -> [Double] {
+        let raw = UserDefaults.standard.array(forKey: sessionStartsKey) ?? []
+        return Array(raw.compactMap { ($0 as? NSNumber)?.doubleValue }.prefix(3))
+    }
+
+    /// 画中画真正起来 = 新一轮开始。2 秒内的重复回调算同一轮，不重复记。
+    static func markPipSessionStart() {
+        let now = Date().timeIntervalSince1970
+        var a = pipSessionStarts()
+        if let last = a.first, now - last < 2 { return }
+        a.insert(now, at: 0)
+        UserDefaults.standard.set(Array(a.prefix(3)), forKey: sessionStartsKey)
+    }
+
+    static func resetPipSessionStarts() {
+        UserDefaults.standard.set([Date().timeIntervalSince1970], forKey: sessionStartsKey)
+    }
+
+    /// 老版本升级上来从没记过轮次：把「现在列表里这批」整体当作本次，
+    /// 否则首次打开会一条标签都不显示（本次 0 条），用户以为标记没了。
+    /// 之后每开启一轮会往数组前面插新起点，这批自然退化成「上次」。
+    static func ensureSessionBaseline() {
+        guard pipSessionStarts().isEmpty else { return }
+        let oldest = mergedItems().map { $0.ts }.min() ?? Date().timeIntervalSince1970
+        UserDefaults.standard.set([oldest - 1], forKey: sessionStartsKey)
     }
 
     /// 指纹：**用完整内容**。墓碑按指纹过滤，之前只取前 140 字，
@@ -413,9 +451,16 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         let marks = deletedMarks()
         var seen = Set<String>()
         var arr = localHistory().map { ($0.t, $0.ts) }
+        // v1.8.43：共享通道 append() 本来就逐条写了真实时间戳（秒），
+        // 以前这里给的是「每次调用重新算」的递减伪时间 → 列表每条永远显示
+        // 「刚刚」，时间标记毫无意义。现在优先用真实 times，只有旧版本
+        // 缺时间戳的条目才退回伪时间。
+        let shared = QPSharedHistory.read()
+        let times = shared.times ?? []
         var pseudo = Date().timeIntervalSince1970 - 1
-        for t in QPSharedHistory.read().items {
-            arr.append((t, pseudo))
+        for (i, t) in shared.items.enumerated() {
+            let real = i < times.count ? times[i] : 0
+            arr.append((t, real > 0 ? real : pseudo))
             pseudo -= 1
         }
         var out: [(String, Double)] = []
@@ -706,6 +751,8 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
             // v1.8.15：画中画真正启动 = 本次会话开始，计数归零重新累加
             self.capturedCount = 0
             self.contentVC?.update(blocked: self.blocked, count: self.capturedCount)
+            // v1.8.43：记下这一轮连续复制的起点，列表按轮次统一标「本次/上次/上上次」
+            Self.markPipSessionStart()
         }
     }
 
@@ -757,6 +804,11 @@ struct PiPControlView: View {
     @AppStorage("qp.pipClearOnStart") private var clearBeforeStart = false
     /// v1.8.39：「开启连续复制前清空输入法前端剪贴板」开关（持久化到 UserDefaults）
     @AppStorage("qp.pipClearKbOnStart") private var clearKbOnStart = false
+    /// v1.8.43：快捷指令「切换」关掉连续复制后，要不要自动跳回来源 App。
+    /// 默认【关】= 留在墨指主 App（用户明确说这样挺好）；打开 = 关完立刻回抖音等来源 App。
+    /// 注意：这个开关控制的是「关完再跳回去」，管不了 openAppWhenRun 那一次拉起
+    /// （静态常量，且画中画必须前台窗口），所以不会真做到「完全不跳」。
+    @AppStorage("qp.pipToggleReturnOnClose") private var toggleReturnOnClose = false
 
     /// 链接条目判断（与键盘侧 isLinkItem 同口径）
     private static func isLink(_ s: String) -> Bool {
@@ -776,29 +828,40 @@ struct PiPControlView: View {
         ["全部", "文本", "链接"][filterKind]
     }
 
-    // MARK: v1.8.42「哪条是刚复制的」——文字徽标 + 颜色 + 相对时间，三样一起给
+    // MARK: v1.8.43「一轮连续复制算一次」——按开启轮次统一标，不再逐条编号
     /// 包一层 Identifiable，避免 SwiftUI 里对元组用 keypath（Swift 不支持）。
     private struct RankedItem: Identifiable {
         let id: String
         let text: String
         let ts: Double
-        let rank: Int
+        let session: Int
     }
 
-    /// 列表本来就是「新 → 旧」，rank 0 就是本次（最近一次）复制。
+    /// session：0=本次开启这一轮、1=上一轮、2=上上轮、3=更早（不标）。
+    /// 同一轮抓到的所有条目 session 相同 → 标签和颜色完全一样。
     private var ranked: [RankedItem] {
-        filtered.enumerated().map {
-            RankedItem(id: $0.element.text, text: $0.element.text,
-                       ts: $0.element.ts, rank: $0.offset)
+        filtered.map {
+            RankedItem(id: $0.text, text: $0.text, ts: $0.ts,
+                       session: Self.sessionRank($0.ts))
         }
     }
 
-    private func rankLabel(_ i: Int) -> String {
-        switch i {
+    /// 靠「收录时刻落在哪一轮的区间里」判轮次，不用给每条历史加字段。
+    private static func sessionRank(_ ts: Double) -> Int {
+        let s = PiPManager.pipSessionStarts()
+        guard !s.isEmpty, ts > 0 else { return 3 }
+        if ts >= s[0] { return 0 }
+        if s.count > 1, ts >= s[1] { return 1 }
+        if s.count > 2, ts >= s[2] { return 2 }
+        return 3
+    }
+
+    private func sessionLabel(_ r: Int) -> String? {
+        switch r {
         case 0: return "本次"
         case 1: return "上次"
         case 2: return "上上次"
-        default: return "第\(i + 1)条"
+        default: return nil
         }
     }
 
@@ -937,6 +1000,15 @@ struct PiPControlView: View {
                         .foregroundColor(.secondary)
                 }
 
+                // ── v1.8.43：快捷指令「切换」关闭后，是否自动跳回来源 App ──
+                Section {
+                    Toggle("切换关闭后自动跳回来源 App", isOn: $toggleReturnOnClose)
+                        .font(.body)
+                    Text("只管快捷指令里的「切换」动作。默认关闭：用「切换」关掉连续复制后会停在墨指主 App（能顺眼看一眼状态），单独「关闭」本来就不跳，不受影响。打开后：关完立刻自动跳回你刚才所在的 App（抖音等）。注意：画中画必须由前台窗口承载，触发「切换」时系统一定会短暂拉起墨指，这个开关控制的是关完要不要再跳回去，不能阻止那一次拉起。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+
                 // ── v1.8.14 收录列表：筛选 / 批量选择 / 删除 / 复制 / 导出 ──
                 Section {
                     HStack(spacing: 16) {
@@ -995,7 +1067,7 @@ struct PiPControlView: View {
                     Text("「选择」后点条目勾选，可批量删除；导出范围 = 有选择时导出所选，否则导出当前筛选下的全部。「设置 → 局域网同步 → 导出到电脑」开着时导出文件直接发电脑（下载\\墨指导出），关着时走系统分享。主 App 历史只收文字，图片只在键盘端。")
                 }
 
-                Section("已收录 \(filtered.count) 条") {
+                Section("已收录 \(filtered.count) 条 · 本次 \(ranked.filter { $0.session == 0 }.count) 条") {
                     if filtered.isEmpty {
                         Text("还没有收录。开启连续复制后，在别的 App 里复制的文字会出现在这里，也会出现在键盘的剪贴板列表里。")
                             .font(.footnote)
@@ -1030,19 +1102,22 @@ struct PiPControlView: View {
                                               ? "checkmark.circle.fill" : "circle")
                                             .foregroundColor(.accentColor)
                                     }
-                                    // v1.8.42：文字徽标 + 颜色一起标先后 ——
-                                    // 本次=蓝底白字、上次=浅蓝、上上次及更早=灰。
-                                    Text(rankLabel(e.rank))
-                                        .font(.caption2)
-                                        .fontWeight(.semibold)
-                                        .foregroundColor(e.rank == 0 ? .white : (e.rank == 1 ? .blue : .secondary))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 3)
-                                        .background(Capsule().fill(
-                                            e.rank == 0 ? Color.blue
-                                                : (e.rank == 1 ? Color.blue.opacity(0.15)
-                                                   : Color(UIColor.systemGray5))
-                                        ))
+                                    // v1.8.43：标签按「一轮连续复制」统一 ——
+                                    // 本轮抓到的所有条目都是「本次」，上一轮都是「上次」；
+                                    // 更早的不标，不再出现「第4条/第5条」这种没意义的编号。
+                                    if let label = sessionLabel(e.session) {
+                                        Text(label)
+                                            .font(.caption2)
+                                            .fontWeight(.semibold)
+                                            .foregroundColor(e.session == 0 ? .white : (e.session == 1 ? .blue : .secondary))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 3)
+                                            .background(Capsule().fill(
+                                                e.session == 0 ? Color.blue
+                                                    : (e.session == 1 ? Color.blue.opacity(0.15)
+                                                       : Color(UIColor.systemGray5))
+                                            ))
+                                    }
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(e.text)
                                             .lineLimit(2)
@@ -1062,10 +1137,6 @@ struct PiPControlView: View {
                                 .padding(.vertical, 2)
                             }
                             .buttonStyle(.plain)
-                            .listRowBackground(
-                                e.rank == 0 ? Color.blue.opacity(0.08)
-                                            : Color(UIColor.secondarySystemGroupedBackground)
-                            )
                         }
                     }
                 }
@@ -1081,7 +1152,10 @@ struct PiPControlView: View {
                 entries = PiPManager.mergedItems()
                 pip.refreshCount()
             }
-            .onAppear { pip.startIfWanted() }
+            .onAppear {
+                pip.startIfWanted()
+                PiPManager.ensureSessionBaseline()
+            }
             .sheet(isPresented: Binding(
                 get: { sharePayload != nil },
                 set: { if !$0 { sharePayload = nil } })) {
