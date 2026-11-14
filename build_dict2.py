@@ -1,38 +1,34 @@
 # -*- coding: utf-8 -*-
-"""增强版词库生成（内存安全版）。
+"""增强版词库生成（内存安全版 / 联想与整句解码专用）。
 
-旧版把 phrase_raw 全量 4 万多条短语 + 近 4 万条联想全部打进包，
-解析成 Swift 嵌套字典后内存远超 iOS 键盘扩展 ~30MB 上限，
-导致扩展进程被系统杀死（现象：切到拼音「弹一下就没了」）。
+相对上一版的关键改动：
+- 联想表 pinyin_assoc.json 语义改为「上屏词 -> 后续词」。
+  旧版存的是「以某字开头的短语」，所以打完「你好」会冒出「好事之徒/好事多悭」。
+  数据来源改为旧引擎 dict.json 里自带的 930 条词级搭配（你好→吗、今天→天气、我→想），
+  再叠加手工高频搭配、短语派生后缀，并用真实词频过滤冷僻成语。
+- pinyin_hot_words.json 由 [词] 改成 {词: 真实词频}，供整句 viterbi 打分，不新增文件。
+- 新增 pinyin_t9.json：数字串 -> 音节列表（离线预计算，运行时不再做 3^N 字母展开）。
+- 新增 pinyin_english.json：常用英文词，26 键中英混输判断用。
 
-本版策略（对齐旧引擎「极致轻量化」原则）：
-- 单字表：每个音节只保留词频最高的前 40 个汉字（覆盖日常即可）。
-- 短语表：优先保留短词（2/3 字最常用），键总数压到 MAX_PHRASE_KEYS。
-- 联想表：只保留高频前缀上下文，每上下文封顶。
-- bigram：每上下文后继封顶。
-- 不再生成 pinyin_phrase_freq.json（引擎并未使用，纯浪费）。
-- 额外合并一个小型「分类/常用」词库，覆盖短视频/电商/IT/生活等高频词。
+内存预算：包内 JSON 合计控制在 ~1.5MB，Swift 解析后远低于键盘扩展 ~30MB 上限。
 """
 import json, os
-from collections import Counter
+from collections import Counter, defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets")
 OUT = os.path.join(HERE, "Keyboard")
 
-# 旧引擎自带的「真实语料词频」词库（借鉴对象，仅取数据，不取界面/排版）：
-#   entries: [[词, 拼音, 词频], ...]，含 12,850 条多字短语与全部常用单字。
-# 用它取代「字出现在多少短语里」这一失真信号，让『你好』压过『内行』、『谢谢』压过『泄泻』。
+# 旧引擎自带的「真实语料词频 + 词级搭配 + 常用英文」词库（仅取数据）：
 OLD_DICT = r"E:\紧急通知\输入法引擎\README.md等5个文件\dict.json"
 
-# 内存预算上限（解析后 Swift 字典远小于此即安全）：包内 JSON 合计 < 2MB
-MAX_PHRASE_KEYS = 20000      # 短语键总数上限
-PHRASE_PER_KEY = 10          # 同一拼音下候选短语数上限
-MAX_ASSOC = 4000             # 联想上下文总数上限
-ASSOC_PER_CTX = 10           # 每联想上下文短语数上限
-BIGRAM_PER_CTX = 30          # 每字后继数上限
-BIGRAM_TOP_CTX = 2000        # bigram 仅保留最高频字上下文（省内存）
-CHARS_PER_SYL = 40           # 每音节单字数上限
+MAX_PHRASE_KEYS = 20000
+PHRASE_PER_KEY = 10
+BIGRAM_PER_CTX = 30
+BIGRAM_TOP_CTX = 2000
+CHARS_PER_SYL = 40
+ASSOC_PER_CTX = 16
+T9_PER_KEY = 14
 
 TONE = {
     'ā':'a','á':'a','ǎ':'a','à':'a','ē':'e','é':'e','ě':'e','è':'e',
@@ -43,11 +39,17 @@ TONE = {
 def toneless(s):
     return ''.join(TONE.get(c, c) for c in s).lower()
 
+# 9 键字母 -> 数字
+LETTER_DIGIT = {}
+for _d, _ls in [('2','abc'),('3','def'),('4','ghi'),('5','jkl'),
+                ('6','mno'),('7','pqrs'),('8','tuv'),('9','wxyz')]:
+    for _c in _ls:
+        LETTER_DIGIT[_c] = _d
+
 chars_map = {}
 phrase_map = {}
-assoc_map = {}
 char_bigram = {}
-phrase_order = []   # 记录短语键出现顺序，便于按「短词优先」裁剪
+phrase_order = []
 
 # ---- 单字拼音表 ----
 with open(os.path.join(ASSETS, "pinyin_raw.txt"), encoding="utf-8") as f:
@@ -73,7 +75,7 @@ with open(os.path.join(ASSETS, "pinyin_raw.txt"), encoding="utf-8") as f:
         if ch not in chars_map[syl]:
             chars_map[syl].append(ch)
 
-# ---- 词组 + 联想 + bigram ----
+# ---- 词组 + 字符 bigram ----
 with open(os.path.join(ASSETS, "phrase_raw.txt"), encoding="utf-8") as f:
     for line in f:
         line = line.rstrip("\n")
@@ -85,9 +87,7 @@ with open(os.path.join(ASSETS, "phrase_raw.txt"), encoding="utf-8") as f:
         phrase = phrase.strip()
         pinyin = pinyin.split("#")[0].strip()
         syllables = pinyin.split()
-        if not phrase or not syllables:
-            continue
-        if len(phrase) > 6:
+        if not phrase or not syllables or len(phrase) > 6:
             continue
         if not all('\u4e00' <= c <= '\u9fff' for c in phrase):
             continue
@@ -100,35 +100,22 @@ with open(os.path.join(ASSETS, "phrase_raw.txt"), encoding="utf-8") as f:
         lst = phrase_map[key]
         if len(lst) < PHRASE_PER_KEY and phrase not in lst:
             lst.append(phrase)
-        # 联想：首字/前两字开头
-        for pre in (phrase[0], phrase[:2]):
-            if len(pre) < 1:
-                continue
-            al = assoc_map.setdefault(pre, [])
-            if len(al) < ASSOC_PER_CTX and phrase not in al:
-                al.append(phrase)
-        # 字符 bigram
         for i in range(len(phrase) - 1):
-            a, b = phrase[i], phrase[i+1]
-            char_bigram.setdefault(a, Counter())[b] += 1
+            char_bigram.setdefault(phrase[i], Counter())[phrase[i+1]] += 1
 
-# ---- 小型分类/常用词库（借鉴旧引擎 domain_dict 思路）----
+# ---- 小型分类/常用词库 ----
 DOMAIN = {
-    # 生活/社交
     "你好":"ni hao", "谢谢":"xie xie", "对不起":"dui bu qi", "没关系":"mei guan xi",
     "不好意思":"bu hao yi si", "麻烦您":"ma fan nin", "辛苦了":"xin ku le",
-    # 短视频/电商
     "直播间":"zhi bo jian", "主播":"zhu bo", "上链接":"shang lian jie", "秒杀":"miao sha",
     "优惠券":"you hui quan", "下单":"xia dan", "发货":"fa huo", "物流":"wu liu",
     "好评":"hao ping", "差评":"cha ping", "退款":"tui kuan", "客服":"ke fu",
     "粉丝":"fen si", "关注":"guan zhu", "点赞":"dian zan", "评论":"ping lun",
     "收藏":"shou cang", "分享":"fen xiang", "私信":"si xin", "弹幕":"dan mu",
-    # IT/办公
     "代码":"dai ma", "程序":"cheng xu", "服务器":"fu wu qi", "数据库":"shu ju ku",
     "接口":"jie kou", "前端":"qian duan", "后端":"hou duan", "算法":"suan fa",
     "需求":"xu qiu", "方案":"fang an", "会议":"hui yi", "周报":"zhou bao",
     "文档":"wen dang", "表格":"biao ge", "演示":"yan shi", "进度":"jin du",
-    # 通用长词（简拼/整词命中）
     "中华人民共和国":"zhong hua ren min gong he guo",
     "中国特色社会主义":"zhong guo te se she hui zhu yi",
     "人工智能":"ren gong zhi neng", "机器学习":"ji qi xue xi",
@@ -136,16 +123,18 @@ DOMAIN = {
     "元宇宙":"yuan yu zhou", "碳中和":"tan zhong he", "乡村振兴":"xiang cun zhen xing",
 }
 for ph, py in DOMAIN.items():
-    key = py
-    if key not in phrase_map:
-        phrase_map[key] = []
-        phrase_order.append(key)
-    if ph not in phrase_map[key]:
-        phrase_map[key].insert(0, ph)
+    if py not in phrase_map:
+        phrase_map[py] = []
+        phrase_order.append(py)
+    if ph not in phrase_map[py]:
+        phrase_map[py].insert(0, ph)
 
-# ---- 加载旧引擎「真实语料词频」 ----
+# ---- 加载旧引擎真实语料数据 ----
 real_freq = {}
-old_multis = []          # [(词, "shi jie", 词频)]
+old_multis = []
+word_bigrams = []       # [[前词, 后词, 频次], ...]
+english_words = []
+std_syllables = []
 try:
     with open(OLD_DICT, encoding="utf-8") as f:
         _d = json.load(f)
@@ -153,16 +142,15 @@ try:
         real_freq[_w] = max(real_freq.get(_w, 0), int(_f))
         if len(_w) > 1:
             old_multis.append((_w, _py, int(_f)))
-    print("已加载旧引擎真实词频：%d 条（单字 %d / 多字 %d）" % (
-        len(real_freq),
-        sum(1 for w in real_freq if len(w) == 1),
-        len(old_multis)))
+    word_bigrams = _d.get("bigrams", [])
+    english_words = _d.get("english", [])
+    std_syllables = _d.get("syllables", [])
+    print("已加载旧引擎：词频 %d 条 / 词级搭配 %d 条 / 英文 %d / 标准音节 %d" % (
+        len(real_freq), len(word_bigrams), len(english_words), len(std_syllables)))
 except Exception as e:
-    print("警告：旧引擎词库读取失败，回退到出现次数：%s" % e)
+    print("警告：旧引擎词库读取失败：%s" % e)
 
-# 把旧引擎的多字高频日常词并入短语库。
-# phrase_raw.txt 是成语/词组库，缺「世界/今天/时候/自己」这类最常用的词；
-# 旧引擎 dict.json 恰好有 1.2 万条带真实词频的日常词，正好补齐。
+# 把旧引擎多字高频日常词并入短语库
 old_multi_keys = set()
 for w, py, f in old_multis:
     key = toneless(py.replace("'", "")).strip()
@@ -174,30 +162,26 @@ for w, py, f in old_multis:
     old_multi_keys.add(key)
     lst = phrase_map[key]
     if w not in lst:
-        lst.insert(0, w)      # 高频日常词置顶，压过成语库里的冷僻同音词
+        lst.insert(0, w)
     if len(lst) > 16:
         del lst[16:]
 
-# ---- 单字频率信号（供运行时 score() 使用）----
+# ---- 单字频率信号 ----
 raw_count = Counter()
 for ph_list in phrase_map.values():
     for w in ph_list:
         for ch in w:
             if '\u4e00' <= ch <= '\u9fff':
                 raw_count[ch] += 1
-# 注意：不要遍历裁剪前的 chars_map —— pinyin_raw.txt 含 4 万多个 CJK 扩展区生僻字，
-# 会把词频表撑到 44440 条（Swift 字典 ~4MB）。只统计实际会用到的短语用字即可；
-# sort_chars 里 freq_chars.get(c, 0) 对未收录字自然兜底排后，不影响正确性。
 freq_chars = Counter()
 for ch, cnt in raw_count.items():
     freq_chars[ch] = real_freq.get(ch, min(80, cnt // 4))
 
-# 独立的小文件：只存「可信高频日常词」集合，供运行时整句合成判定，
-# 避免把冷僻同音词拼进长句（我+癌肿+过 → 我+爱+中国）。
-# 单独存放可让 char_freq 保持精简（不塞 5 万条词进 Swift 字典）。
-hot_words = sorted({w for w, py, f in old_multis if f >= 150 and 2 <= len(w) <= 6})
+# 可信高频日常词：{词: 真实词频}，整句 viterbi 与联想过滤都用它
+hot_words = {w: f for w, py, f in old_multis if f >= 150 and 2 <= len(w) <= 6}
+hot_set = set(hot_words)
 
-# ---- 短语裁剪：真实高频日常词优先，其次短词，键总数压到上限 ----
+# ---- 短语裁剪 ----
 phrase_order_uniq = []
 seen = set()
 for k in phrase_order:
@@ -210,16 +194,10 @@ def key_weight(k):
 
 phrase_order_uniq.sort(key=lambda k: (-min(key_weight(k), 300) // 10, len(k.split()), order_index[k]))
 kept = set(phrase_order_uniq[:MAX_PHRASE_KEYS])
-# 保护：分类词库 + 旧引擎真实高频日常词（f >= 200，约 6000 条）不被裁剪
 kept.update(DOMAIN.values())
 kept.update(k for k in old_multi_keys if key_weight(k) >= 200)
 trimmed_phrase = {k: v for k, v in phrase_map.items() if k in kept}
-
-# 短语级真实词频离线预排序（运行时 score() 排序的双保险）
-trimmed_phrase = {
-    k: sorted(v, key=lambda w: -real_freq.get(w, 0))
-    for k, v in trimmed_phrase.items()
-}
+trimmed_phrase = {k: sorted(v, key=lambda w: -real_freq.get(w, 0)) for k, v in trimmed_phrase.items()}
 
 override = {
  "ni":["你","尼","泥","逆"], "ta":["他","她","它","塌","塔"],
@@ -252,41 +230,165 @@ def sort_chars(syl, lst):
 
 new_chars = {syl: sort_chars(syl, lst) for syl, lst in chars_map.items()}
 
-# ---- 联想裁剪：只保留高频前缀上下文 ----
-assoc_freq = sorted(assoc_map.keys(), key=lambda p: -freq_chars.get(p[0] if p else "", 0))
-kept_assoc = set(assoc_freq[:MAX_ASSOC])
-trimmed_assoc = {k: v[:ASSOC_PER_CTX] for k, v in assoc_map.items() if k in kept_assoc}
+# ---- 联想表：上屏词 -> 后续词（搜狗式语境联想） ----
+# 结构：key -> {后词: 权重}，权重越大越靠前。手工表权重最高。
+assoc_next = defaultdict(dict)
 
-# ---- bigram 裁剪（仅按「单字」的高频上下文，避免被多字词频挤出） ----
+# 1) 手工高频搭配：覆盖问候、句首、时间、语气、办公等最常接续的场景
+MANUAL = {
+ "你好": ["，","！","吗","呀","啊","世界","在吗","哦","～","。","？","您好","呀"],
+ "您好": ["，","！","请","麻烦","我","请问","。"],
+ "谢谢": ["你","！","啦","，","大家","老板","您","。","～"],
+ "不客气": ["，","～","哈","应该的"],
+ "对不起": ["，","我","。","实在","不是"],
+ "我": ["想","要","们","在","也","就","不","的","今天","明天","去","来","觉得","知道","可以","没有","已经","现在","刚","把","给","跟","和","是"],
+ "你": ["好","们","在","要","说","看","知道","觉得","可以","是不是","的","怎么","去","来","有没有","今天","明天","先","别","能"],
+ "他": ["们","在","说","是","的","要","也","已经","不"],
+ "她": ["们","在","说","是","的","要","也","已经","不"],
+ "我们": ["的","在","要","可以","一起","现在","先","都","就","明天","今天","去","来","把","还是"],
+ "你们": ["的","在","要","可以","都","先","怎么","是不是"],
+ "今天": ["天气","晚上","上午","下午","是","的","要","去","有","我","就","真","好","不","已经","几点"],
+ "明天": ["上午","下午","晚上","见","去","要","有","的","再","几点","吧"],
+ "现在": ["在","就","可以","是","有","要","去","已经","几点","开始","还"],
+ "什么": ["时候","意思","地方","问题","都","也","叫","样","都行","情况","原因"],
+ "怎么": ["了","办","样","回事","说","能","不","才","这么","写","做","去"],
+ "为什么": ["不","要","会","呢","没有","这么","我","你"],
+ "可以": ["吗","吗？","的","了","不","直接","先","再","一起","帮","给"],
+ "请": ["问","你","帮","把","稍","注意","不要","在"],
+ "好的": ["，","！","那","我","谢谢","收到","。","～"],
+ "收到": ["，","！","谢谢","。","～"],
+ "没问题": ["，","！","的","我","。"],
+ "中国": ["人","的","共产党","移动","电信","联通","银行","邮政","大陆","话"],
+ "世界": ["上","的","杯","第一","各地","很大","真小"],
+ "时间": ["的","到","了","不够","安排","多久","紧"],
+ "工作": ["的","了","忙","顺利","中","上","报告","安排","时间","效率"],
+ "问题": ["是","的","在","很","不大","解决","了","这","没有"],
+ "时候": ["，","的","就","还","我","要","能","已经","候"],
+ "地方": ["的","在","有","去","很","这","找","人"],
+ "东西": ["的","了","吗","在","很","买","收拾","放"],
+ "感觉": ["很","不","挺","好","有点","自己","像"],
+ "知道": ["了","吗","的","不","你","我","怎么","为什么"],
+ "觉得": ["很","不","还","挺","有点","怎么样","对"],
+ "因为": ["我","所以","他","这","为","今天","没有","是"],
+ "所以": ["我","就","说","要","不","才","这","大家"],
+ "但是": ["我","他","这","是","不","如果","也","还"],
+ "如果": ["你","我","有","不","是","没有","要","能","就"],
+ "马上": ["就","要","到","来","出发","开始","给","可以"],
+ "已经": ["在","了","有","不","是","完成","开始","发"],
+ "一起": ["去","来","看","吃饭","走","吧","讨论","努力"],
+ "这个": ["是","在","我","不","可以","问题","东西","人","地方","很","真的","要"],
+ "那个": ["是","人","地方","时候","不","我","我"],
+ "真的": ["吗","很","不","是","好","假的","太","有"],
+ "非常": ["好","感谢","重要","不错","喜欢","抱歉","适合"],
+ "特别": ["是","好","感谢","想","喜欢","要注意"],
+ "哈哈": ["哈哈","，","！","～","太","好","是的"],
+ "加油": ["！","～","，","吧","打气","努力"],
+ "面试": ["的","时候","通过","结果","问题","准备","通知","顺利","加油"],
+ "输入法": ["的","打不了","候选","联想","词库","设置","切换","很好用"],
+}
+for k, vs in MANUAL.items():
+    for i, v in enumerate(vs):
+        w = 100000 - i * 100
+        if assoc_next[k].get(v, 0) < w:
+            assoc_next[k][v] = w
+
+# 2) 旧引擎词级搭配（真实语料统计：你好→吗、今天→天气、我→想）
+for row in word_bigrams:
+    try:
+        a, b, f = row[0], row[1], int(row[2])
+    except Exception:
+        continue
+    if not a or not b:
+        continue
+    w = 50000 + f * 100
+    if assoc_next[a].get(b, 0) < w:
+        assoc_next[a][b] = w
+
+# 3) 短语派生后缀：高频词 W 若在更长的短语里做前缀，则后半段是合理后续词。
+#    只接受可信高频词/常用单字，冷僻成语（好事之徒/好事多悭）会被过滤掉。
+common_chars = set(c for c, _ in freq_chars.most_common(1200))
+for words in trimmed_phrase.values():
+    for w in words:
+        if not (3 <= len(w) <= 6):
+            continue
+        for L in range(1, min(3, len(w) - 1) + 1):
+            pre, suf = w[:L], w[L:]
+            if not suf:
+                continue
+            # 前缀必须是常用词/常用字，后缀必须可信
+            if pre not in hot_set and pre not in common_chars:
+                continue
+            if suf not in hot_set and not (len(suf) == 1 and suf in common_chars):
+                continue
+            wgt = min(9000, real_freq.get(w, 20))
+            if assoc_next[pre].get(suf, 0) < wgt:
+                assoc_next[pre][suf] = wgt
+
+# 输出：每 key 只留前 ASSOC_PER_CTX 个，按权重降序
+assoc_out = {}
+for k, d in assoc_next.items():
+    if len(k) > 6:
+        continue
+    arr = sorted(d.items(), key=lambda kv: -kv[1])[:ASSOC_PER_CTX]
+    if arr:
+        assoc_out[k] = [a for a, _ in arr]
+
+# ---- 字符 bigram 裁剪 ----
 top_ctx = [c for c, _ in freq_chars.most_common() if len(c) == 1][:BIGRAM_TOP_CTX]
 bigram_out = {}
 for a in top_ctx:
     cnt = char_bigram.get(a)
-    if not cnt: continue
-    items = cnt.most_common(BIGRAM_PER_CTX)
-    bigram_out[a] = {b: c for b, c in items}
+    if not cnt:
+        continue
+    bigram_out[a] = {b: c for b, c in cnt.most_common(BIGRAM_PER_CTX)}
+
+# ---- T9 数字串 -> 音节列表（离线预计算） ----
+all_syl = set(new_chars.keys()) | set(std_syllables)
+t9_raw = defaultdict(list)
+for syl in all_syl:
+    if not syl or not syl.isalpha():
+        continue
+    # 单字母辅音不当音节（避免 m/n/r 之类在 9 键上乱切）
+    if len(syl) < 2 and syl not in ('a', 'e', 'o'):
+        continue
+    dk = ''.join(LETTER_DIGIT.get(c, '') for c in syl)
+    if len(dk) != len(syl):
+        continue
+    top = (new_chars.get(syl) or [''])[0]
+    t9_raw[dk].append((freq_chars.get(top, 0), syl))
+t9_out = {k: [s for _, s in sorted(v, key=lambda x: -x[0])[:T9_PER_KEY]]
+          for k, v in t9_raw.items()}
+
+# ---- 英文常用词 ----
+eng_out = sorted({w.lower() for w in english_words
+                  if isinstance(w, str) and 2 <= len(w) <= 12 and w.isalpha()})
 
 os.makedirs(OUT, exist_ok=True)
-json.dump(new_chars, open(os.path.join(OUT, "pinyin_chars.json"),"w",encoding="utf-8"), ensure_ascii=False, separators=(",",":"))
-json.dump(trimmed_phrase, open(os.path.join(OUT, "pinyin_phrases.json"),"w",encoding="utf-8"), ensure_ascii=False, separators=(",",":"))
-json.dump(trimmed_assoc, open(os.path.join(OUT, "pinyin_assoc.json"),"w",encoding="utf-8"), ensure_ascii=False, separators=(",",":"))
-json.dump(bigram_out, open(os.path.join(OUT, "pinyin_bigram.json"),"w",encoding="utf-8"), ensure_ascii=False, separators=(",",":"))
-json.dump(dict(freq_chars), open(os.path.join(OUT, "pinyin_char_freq.json"),"w",encoding="utf-8"), ensure_ascii=False, separators=(",",":"))
-json.dump(hot_words, open(os.path.join(OUT, "pinyin_hot_words.json"),"w",encoding="utf-8"), ensure_ascii=False, separators=(",",":"))
+def dump(name, obj):
+    with open(os.path.join(OUT, name), "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, separators=(",", ":"))
 
-# 报告包内体量
-import os as _os
-def sz(fn):
-    p = os.path.join(OUT, fn)
-    return _os.path.getsize(p) if _os.path.exists(p) else 0
-total = sum(sz(f) for f in ["pinyin_chars.json","pinyin_phrases.json","pinyin_assoc.json","pinyin_bigram.json","pinyin_char_freq.json","pinyin_hot_words.json","cat_net.json"])
+dump("pinyin_chars.json", new_chars)
+dump("pinyin_phrases.json", trimmed_phrase)
+dump("pinyin_assoc.json", assoc_out)
+dump("pinyin_bigram.json", bigram_out)
+dump("pinyin_char_freq.json", dict(freq_chars))
+dump("pinyin_hot_words.json", hot_words)
+dump("pinyin_t9.json", t9_out)
+dump("pinyin_english.json", eng_out)
+
+files = ["pinyin_chars.json","pinyin_phrases.json","pinyin_assoc.json",
+         "pinyin_bigram.json","pinyin_char_freq.json","pinyin_hot_words.json",
+         "pinyin_t9.json","pinyin_english.json","cat_net.json"]
+total = sum(os.path.getsize(os.path.join(OUT, f)) for f in files if os.path.exists(os.path.join(OUT, f)))
 print("=== 生成完成 ===")
-print("chars syllables:", len(new_chars))
-print("phrase keys:", len(trimmed_phrase), " (上限", MAX_PHRASE_KEYS, ")")
-print("assoc keys:", len(trimmed_assoc), " (上限", MAX_ASSOC, ")")
-print("bigram entries:", len(bigram_out))
+print("chars syllables:", len(new_chars), " phrase keys:", len(trimmed_phrase))
+print("assoc keys(词->后续词):", len(assoc_out), " bigram:", len(bigram_out))
+print("hot words:", len(hot_words), " t9 keys:", len(t9_out), " english:", len(eng_out))
 print("包内 JSON 合计: %.2f MB" % (total/1024/1024))
-print("单字总条数:", sum(len(v) for v in new_chars.values()))
-print("短语总条数:", sum(len(v) for v in trimmed_phrase.values()))
-for k in ["ni hao","wo men","zhong guo","xie xie","hao","ni","zhong hua ren min gong he guo"]:
+for k in ["ni hao","gan jin","mian shi","zhong guo","shi jie"]:
     print("  校验 '%s' ->" % k, trimmed_phrase.get(k, "缺失"))
+for k in ["你好","我","今天","什么","中国"]:
+    print("  联想 '%s' ->" % k, assoc_out.get(k, "缺失"))
+print("  T9 '426'(hao) ->", t9_out.get("426", "缺失"))
+print("  T9 '64'(ni) ->", t9_out.get("64", "缺失"))

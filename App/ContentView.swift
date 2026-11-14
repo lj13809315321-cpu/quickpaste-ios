@@ -5,6 +5,7 @@ import UIKit
 // 键盘（开启「完全访问」）读取后写进自己的 UserDefaults 并移除该 item。
 // 这样不需要 App Group entitlement —— 手机端重签工具通常不会保留自定义 entitlement。
 private let kSettingsPBKey = "app.mulberry6323.mozhi.kbcfg"
+private let kPhrasesKey = "kb_custom_phrases"
 
 struct ContentView: View {
     @AppStorage("kb_sound_on") private var soundOn = true
@@ -13,6 +14,9 @@ struct ContentView: View {
 
     @State private var syncTip = ""
     @State private var dictCheck = ""
+    @State private var phrases: [String: String] = [:]
+    @State private var newKey = ""
+    @State private var newValue = ""
 
     var body: some View {
         NavigationView {
@@ -36,6 +40,41 @@ struct ContentView: View {
                     Text("改完直接切到任意输入框，键盘弹出时自动生效。设置通过剪贴板同步，不覆盖你复制的文字；需已开启「允许完全访问」。")
                 }
 
+                Section {
+                    ForEach(phrases.keys.sorted(), id: \.self) { k in
+                        HStack {
+                            Text(k)
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundColor(.blue)
+                            Text(phrases[k] ?? "")
+                                .lineLimit(1)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button {
+                                phrases.removeValue(forKey: k)
+                                savePhrases()
+                            } label: {
+                                Image(systemName: "trash").foregroundColor(.red)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                    HStack {
+                        TextField("缩写 addr", text: $newKey)
+                            .textInputAutocapitalization(.never)
+                            .disableAutocorrection(true)
+                            .frame(maxWidth: 110)
+                        TextField("完整内容 / 地址 / 话术", text: $newValue)
+                        Button("添加") { addPhrase() }
+                            .disabled(newKey.isEmpty || newValue.isEmpty)
+                            .buttonStyle(.borderless)
+                    }
+                } header: {
+                    Text("自定义短语")
+                } footer: {
+                    Text("在中文键盘里敲缩写即可一键上屏，也支持只打缩写前半段提示。适合地址、手机号、客服话术、邮箱签名。")
+                }
+
                 Section("状态") {
                     Text(dictCheck.isEmpty ? "检测中…" : dictCheck)
                         .font(.footnote)
@@ -49,25 +88,46 @@ struct ContentView: View {
                     Text("4. 在任意输入框长按 🌐 切换到本键盘。")
                 }
 
-                Section("功能") {
-                    Text("· 中文 9 键（T9 拼音）/ 中文 26 键：点「中9 / 中26」互切")
-                    Text("· 英文 26 键 / 数字 / 符号 / 剪贴板")
-                    Text("· 长句拼音、超级简拼（nh→你好）、模糊音、中英混输")
-                    Text("· 语境联想 + 个人词频学习 + 网络热词细胞词库")
+                Section("打字能力") {
+                    Text("· 整句拼音智能切分，首位直接给长句；候选顺序随上文自动调整")
+                    Text("· 词库自学习：选过的词自动靠前，退格改选后学得更快")
+                    Text("· 容错纠错：邻键按错、漏键、多键、字母对调、平翘舌/前后鼻音")
+                    Text("· 中文 9 键 / 中文 26 键 / 英文 / 数字 / 符号 / 剪贴板")
+                    Text("· U 模式拆字（umumu→林）、V 模式（v123、vrq、v1+2*3）")
+                    Text("· 按下即响应 + 按键音/震动，长按不丢键、连打不卡顿")
                 }
 
                 Section {
-                    Text("词库全部内置、本地运行，不联网。已去掉双拼功能，键盘面板不再放设置入口。")
+                    Text("词库全部内置、本地运行，不联网。键盘面板不放设置入口。")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }
             }
             .navigationTitle("九宫格拼音")
             .onAppear {
+                loadPhrases()
                 dictCheck = dictSelfCheck()
                 syncToKeyboard()
             }
         }
+    }
+
+    private func loadPhrases() {
+        phrases = UserDefaults.standard.dictionary(forKey: kPhrasesKey) as? [String: String] ?? [:]
+    }
+
+    private func addPhrase() {
+        let k = newKey.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let v = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !k.isEmpty, !v.isEmpty else { return }
+        phrases[k] = v
+        newKey = ""; newValue = ""
+        savePhrases()
+    }
+
+    private func savePhrases() {
+        UserDefaults.standard.set(phrases, forKey: kPhrasesKey)
+        syncToKeyboard()
     }
 
     /// 把当前设置同步给键盘扩展
@@ -76,6 +136,7 @@ struct ContentView: View {
             "sound": soundOn,
             "haptic": hapticOn,
             "vol": Double(volume),
+            "phrases": phrases,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: cfg) else { return }
         let pb = UIPasteboard.general
@@ -89,7 +150,8 @@ struct ContentView: View {
     /// 自检：确认词库确实打进了键盘扩展包，方便排查「打不了字」
     private func dictSelfCheck() -> String {
         let names = ["pinyin_chars", "pinyin_phrases", "pinyin_assoc",
-                     "pinyin_char_freq", "pinyin_bigram", "pinyin_hot_words", "cat_net"]
+                     "pinyin_char_freq", "pinyin_bigram", "pinyin_hot_words",
+                     "pinyin_t9", "pinyin_english", "cat_net"]
         guard let plugins = Bundle.main.builtInPlugInsURL,
               let ext = Bundle(url: plugins.appendingPathComponent("PinyinKeyboardKeyboard.appex")) else {
             return "未找到键盘扩展包（请确认安装的是完整 IPA）"
