@@ -71,19 +71,34 @@ struct MozhiAppShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: ToggleContinuousCopyIntent(),
-            phrases: ["切换连续复制", "翻转墨指连续复制", "连续复制 开关"],
+            phrases: [
+                "用 \(.applicationName) 切换连续复制",
+                "切换连续复制",
+                "翻转墨指连续复制",
+                "连续复制 开关"
+            ],
             shortTitle: "切换连续复制",
             systemImageName: "arrow.triangle.2.circlepath"
         )
         AppShortcut(
             intent: StartContinuousCopyIntent(),
-            phrases: ["开启连续复制", "打开墨指连续复制", "开始墨指连续复制"],
+            phrases: [
+                "用 \(.applicationName) 开启连续复制",
+                "开启连续复制",
+                "打开墨指连续复制",
+                "开始墨指连续复制"
+            ],
             shortTitle: "开启连续复制",
             systemImageName: "play.circle"
         )
         AppShortcut(
             intent: StopContinuousCopyIntent(),
-            phrases: ["关闭连续复制", "停止墨指连续复制", "结束墨指连续复制"],
+            phrases: [
+                "用 \(.applicationName) 关闭连续复制",
+                "关闭连续复制",
+                "停止墨指连续复制",
+                "结束墨指连续复制"
+            ],
             shortTitle: "关闭连续复制",
             systemImageName: "stop.circle"
         )
