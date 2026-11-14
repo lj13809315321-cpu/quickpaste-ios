@@ -371,11 +371,13 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
     }
 
     private func updateCandidateButtons() {
-        // 9 键：把音节候选放在最前面（对应搜狗左侧 wen/zen/ye/ze 那一列）
-        let alts: [String] = (mode == .chinese9 && pinnedSyllable == nil)
-            ? Array(currentDecode.alternates.prefix(6)) : []
-        let words = Array(displayCandidates.prefix(max(4, 20 - alts.count)))
-        let items: [(String, Bool)] = alts.map { ($0, true) } + words.map { ($0, false) }
+        // 汉字候选永远在前 —— 正常打字绝不能被音节块挡住；
+        // 音节候选（hao/gao/han…）是 9 键纠错的辅助入口，放最后、只留 4 个，
+        // 向左滑到底才看得到，对应搜狗把它放侧栏的做法。
+        let words = Array(displayCandidates.prefix(20))
+        let alts: [String] = (mode == .chinese9 && pinnedSyllable == nil && words.count >= 4)
+            ? Array(currentDecode.alternates.prefix(4)) : []
+        let items: [(String, Bool)] = words.map { ($0, false) } + alts.map { ($0, true) }
         for i in 0..<items.count {
             let b: UIButton
             if i < candidateButtons.count {
@@ -387,10 +389,10 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
             }
             b.isHidden = false
             let (text, isSyl) = items[i]
-            b.tag = isSyl ? (1000 + i) : (i - alts.count)
-            b.setTitle(isSyl ? "⌜\(text)⌝" : text, for: .normal)
+            b.tag = isSyl ? (1000 + i - words.count) : i
+            b.setTitle(text, for: .normal)
             b.setTitleColor(isSyl ? .systemBlue : .label, for: .normal)
-            b.backgroundColor = isSyl ? UIColor.systemBlue.withAlphaComponent(0.12) : .tertiarySystemFill
+            b.backgroundColor = isSyl ? UIColor.systemBlue.withAlphaComponent(0.10) : .tertiarySystemFill
             let len = text.count
             b.titleLabel?.font = isSyl
                 ? UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)
