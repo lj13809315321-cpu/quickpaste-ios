@@ -47,6 +47,7 @@ for _d, _ls in [('2','abc'),('3','def'),('4','ghi'),('5','jkl'),
         LETTER_DIGIT[_c] = _d
 
 chars_map = {}
+char_readings = {}   # 字 -> 全部读音（多音字，词组注入用）
 phrase_map = {}
 char_bigram = {}
 phrase_order = []
@@ -64,16 +65,26 @@ with open(os.path.join(ASSETS, "pinyin_raw.txt"), encoding="utf-8") as f:
         if ":" not in code_part:
             continue
         _, pinyin_part = code_part.split(":", 1)
-        pinyin = pinyin_part.split(",")[0].strip()
         ch = char_part.strip()
         if not ch:
             continue
-        syl = toneless(pinyin)
-        if not syl or not syl.isalpha():
+        # 双轨制：chars_map（单字候选池）只收第一个读音——保持候选顺序稳定，
+        # 全读音进 char_readings（词组注入 _pys_of 用）。
+        # 旧版只取第一读音导致「凡人修仙传」在 zhuan 读音下永远组不出来。
+        readings = []
+        for pinyin in [p.strip() for p in pinyin_part.split(",")]:
+            syl = toneless(pinyin)
+            if syl and syl.isalpha():
+                readings.append(syl)
+        if not readings:
             continue
-        chars_map.setdefault(syl, [])
-        if ch not in chars_map[syl]:
-            chars_map[syl].append(ch)
+        chars_map.setdefault(readings[0], [])
+        if ch not in chars_map[readings[0]]:
+            chars_map[readings[0]].append(ch)
+        char_readings.setdefault(ch, [])
+        for syl in readings:
+            if syl not in char_readings[ch]:
+                char_readings[ch].append(syl)
 
 # ---- 词组 + 字符 bigram ----
 with open(os.path.join(ASSETS, "phrase_raw.txt"), encoding="utf-8") as f:
@@ -228,16 +239,72 @@ colloquial = {
     "订单", "订单号", "退款", "那现在", "一会儿", "一杯", "一下",
     "一起", "一点", "羽绒服", "可乐", "空调", "上链接", "优惠券",
     "咖啡", "谢谢", "高铁", "酒店", "预订", "稍等", "信号", "宾馆",
+    # 「啥」字口语词族（用户真机截图回归：chi'sha'ya 出「赤沙呀/痴傻」，
+    # jin'tian'wan'shang'ci'sha'ya 出「今天晚上刺杀呀」——语料里「刺杀」是
+    # 新闻高频词，词库没有「吃啥」时它必赢，必须词级兜底压过去）
+    "吃啥", "吃啥呀", "喝啥", "干啥呀", "玩啥", "做啥", "说啥", "想吃啥",
+    "晚上吃啥", "今天晚上吃啥", "有啥", "啥呀", "吃点啥", "喝点啥", "干点啥",
+    "啥时候", "为啥", "干啥呢", "吃啥呢",
+    # 「火锅」词族（gui'mi'chi'huo'guo 出「闺蜜吃活活」——吃火锅 同码竞争）
+    "火锅", "吃火锅", "涮火锅", "火锅店", "闺蜜吃火锅", "麻辣烫", "烧烤",
+    "今天晚上", "今晚", "明晚",
+    # 正反问 V不V（cibuci → 吃不吃；9 键同码竞争激烈，语料组合频次极低）
+    "吃不吃", "喝不喝", "去不去", "要不要", "好不好", "是不是", "行不行",
+    "能不能", "有没有", "来不来", "做不做", "看不看", "听不听", "买不买",
+    "走不走", "想不想", "用不用", "在不在",
+    # 真机长句回归缺词：在哪/交了/领了/看过来/信号不好/睡得早/一会儿见/哪一站
+    "交了", "叫了", "领了", "在哪", "在哪里", "在哪儿", "看过来",
+    "信号不好", "睡得早", "睡得晚", "起得早", "一会儿见", "哪一站",
 }
+
+# ---- 专有名词热词层（对标搜狗的整词直出）----
+# 用户真机实测：fan'ren'xiu'xian'zhuan 出「道人注意按一套」、dou'po'cang'qiong
+# 出「都破保护」——小说/游戏/剧名/App 名/明星名不在词库时整句必然碎掉。
+# 全部成词进 hot 层，词图整词输出（凡人修仙传 5 字整词加成巨大，稳压碎片）。
+proper_nouns = {
+    # 网文/小说
+    "斗破苍穹", "凡人修仙传", "遮天", "完美世界", "斗罗大陆", "全职高手",
+    "盗墓笔记", "鬼吹灯", "三体", "诛仙", "天官赐福", "魔道祖师",
+    # 武侠/名著
+    "射雕英雄传", "神雕侠侣", "倚天屠龙记", "天龙八部", "笑傲江湖", "鹿鼎记",
+    "西游记", "红楼梦", "水浒传", "三国演义",
+    # 影视综艺
+    "甄嬛传", "庆余年", "琅琊榜", "狂飙", "三生三世", "非诚勿扰",
+    "快乐大本营", "中国好声音", "春节联欢晚会", "西游记之大圣归来",
+    # 动漫
+    "火影忍者", "海贼王", "名侦探柯南", "蜡笔小新", "喜羊羊", "灰太狼",
+    "熊出没", "奥特曼", "皮卡丘", "数码宝贝", "葫芦娃", "黑猫警长",
+    # 游戏
+    "王者荣耀", "和平精英", "原神", "我的世界", "迷你世界", "蛋仔派对",
+    "三国杀", "狼人杀", "剧本杀", "密室逃脱", "你画我猜", "荒野行动",
+    "明日之后", "阴阳师", "开心消消乐", "植物大战僵尸",
+    # App/平台
+    "抖音", "快手", "小红书", "哔哩哔哩", "微博", "知乎", "豆瓣",
+    "淘宝", "天猫", "拼多多", "京东", "美团", "饿了么", "滴滴",
+    "高德地图", "百度地图", "支付宝", "微信", "朋友圈", "视频号", "公众号",
+    # 明星/公众人物（高频口语会提到）
+    "刘德华", "周杰伦", "林俊杰", "陈奕迅", "邓紫棋", "王一博", "肖战",
+    "杨幂", "迪丽热巴", "易烊千玺", "赵丽颖", "杨紫", "成龙", "周星驰",
+    "吴京", "沈腾", "贾玲", "郭德纲", "岳云鹏", "董宇辉", "李子柒",
+}
+colloquial.update(proper_nouns)
+
 COLLOQUIAL_FREQ = 340   # 接近词频表上限，保证压过单字碎片
 for w in colloquial:
-    if w not in hot_words:
-        hot_words[w] = COLLOQUIAL_FREQ
+    # 关键修复（原版"不在才加"）：一杯=213/预订=183 在老词频表里被保留，
+    # 结果被语料词 以北=223/预定=204 反杀（真机：以北可乐/预定明晚的酒店）。
+    # 改为取 max：口语词一律 ≥340。
+    hot_words[w] = max(hot_words.get(w, 0), COLLOQUIAL_FREQ)
 hot_set = set(hot_words)
 # 口语词的相邻字对也喂给字级 bigram（清理不掉 → 不→掉 有真实共现）
 for w in colloquial:
     for i in range(len(w) - 1):
         char_bigram.setdefault(w[i], Counter())[w[i+1]] += 30000
+
+# 只喂 bigram 不成词的搭配（成词会出现怪候选，这里只修接续）：
+# 买件羽绒服/房租该交了/地铁上信号/订单号/哪一站下
+for pair in ["买件", "该交", "上信", "单号", "一站", "预订", "站下"]:
+    char_bigram.setdefault(pair[0], Counter())[pair[1]] += 30000
 
 # ---- 短语裁剪 ----
 phrase_order_uniq = []
@@ -258,27 +325,42 @@ trimmed_phrase = {k: v for k, v in phrase_map.items() if k in kept}
 trimmed_phrase = {k: sorted(v, key=lambda w: -real_freq.get(w, 0)) for k, v in trimmed_phrase.items()}
 
 # 口语粒子词直接注入短语库（绕过裁剪），保证词图能查到
+# 多音字白名单：第一读音之外、口语/专名真正需要的读音。
+# 不做全读音展开——pinyin-data 有冷僻读音垃圾（完: wán,kuān），
+# 全展开会把「完了」注到 kuan le 键下（实测：退款了 → 退完了）。
+POLY_EXTRA = {
+    "传": ["zhuan"],   # 凡人修仙传/水浒传/甄嬛传
+    "都": ["dou"],     # 拼多多
+    "地": ["di"],      # 地方
+    "行": ["hang"],    # 银行
+    "长": ["zhang"],   # 长大
+    "还": ["hai"],     # 还钱/还好
+}
+
 def _pys_of(word):
-    syls = []
+    """词 -> 拼音 key 列表。第一读音 + POLY_EXTRA 白名单读音组合（封顶 16）。
+    旧版只取第一读音（传=chuan），「凡人修仙传」在 zhuan 读音下组不出来；
+    全读音展开又会把冷僻读音（完=kuan）注进词库。"""
+    per_char = []
     for ch in word:
-        found = None
-        for syl, chars in chars_map.items():
-            if chars and chars[0] == ch:
-                found = syl
-                break
-        if not found:
-            for syl, chars in chars_map.items():
-                if ch in chars:
-                    found = syl
-                    break
-        if not found:
-            return None
-        syls.append(found)
-    return " ".join(syls)
+        first = char_readings.get(ch)
+        syls = [first[0]] if first else []
+        for s in POLY_EXTRA.get(ch, []):
+            if s not in syls:
+                syls.append(s)
+        if not syls:
+            return []
+        per_char.append(syls)
+    combos = [""]
+    for opts in per_char:
+        combos = [(a + " " + b).strip() for a in combos for b in opts]
+        if len(combos) > 16:
+            combos = combos[:16]
+    return combos
+
 
 for w in colloquial:
-    k = _pys_of(w)
-    if k:
+    for k in _pys_of(w):
         cur = trimmed_phrase.setdefault(k, [])
         if w in cur:
             cur.remove(w)
@@ -455,6 +537,35 @@ for syl in all_syl:
 t9_out = {k: [s for _, s in sorted(v, key=lambda x: -x[0])[:T9_PER_KEY]]
           for k, v in t9_raw.items()}
 
+# ---- 9 键整词直查表（数字串 -> hot 长词）----
+# 真机教训：18 位长串的 beam/lattice 会把正确切分挤掉（fan'ren'xiu'xian'zhuan
+# 被同码音节同分竞争裁掉），整词永远出不来。竞品 9 键长串整词直出靠的就是
+# 这张表：词的数字签名 -> 词。只收 3-8 字 hot 词（2 字词走词图足够稳）。
+word_pys = {}  # word -> set(拼音key)
+for w, py, f in old_multis:
+    if w in hot_words and py:
+        word_pys.setdefault(w, set()).add(py)
+for w in colloquial:
+    for k in _pys_of(w):
+        word_pys.setdefault(w, set()).add(k)
+t9word_raw = defaultdict(list)
+for w, keys in word_pys.items():
+    if not (3 <= len(w) <= 8):
+        continue
+    for k in keys:
+        syls = k.split()
+        if len(syls) < 2:
+            continue
+        dk = ''.join(LETTER_DIGIT[c] for s in syls for c in s if c.isalpha())
+        if len(dk) != sum(len(s) for s in syls):
+            continue
+        t9word_raw[dk].append((hot_words.get(w, 0), w, k))
+t9_word_out = {}
+for dk, lst in t9word_raw.items():
+    lst.sort(key=lambda x: -x[0])
+    # 同数字串只留前 6 个词，值格式 [[词, 拼音key], ...]（按词频降序）
+    t9_word_out[dk] = [[w, k] for _, w, k in lst[:6]]
+
 # ---- 英文常用词 ----
 eng_out = sorted({w.lower() for w in english_words
                   if isinstance(w, str) and 2 <= len(w) <= 12 and w.isalpha()})
@@ -501,13 +612,14 @@ dump("pinyin_bigram.json", bigram_out)
 dump("pinyin_char_freq.json", dict(freq_chars))
 dump("pinyin_hot_words.json", hot_words)
 dump("pinyin_t9.json", t9_out)
+dump("pinyin_t9_word.json", t9_word_out)
 dump("pinyin_english.json", eng_out)
 dump("pinyin_abbr.json", abbr_out)
 dump("pinyin_flat.json", flat_out)
 
 files = ["pinyin_chars.json","pinyin_phrases.json","pinyin_assoc.json",
          "pinyin_bigram.json","pinyin_char_freq.json","pinyin_hot_words.json",
-         "pinyin_t9.json","pinyin_english.json","pinyin_abbr.json",
+         "pinyin_t9.json","pinyin_t9_word.json","pinyin_english.json","pinyin_abbr.json",
          "pinyin_flat.json","cat_net.json"]
 total = sum(os.path.getsize(os.path.join(OUT, f)) for f in files if os.path.exists(os.path.join(OUT, f)))
 print("=== 生成完成 ===")

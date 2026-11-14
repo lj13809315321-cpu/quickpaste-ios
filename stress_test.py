@@ -52,6 +52,18 @@ CASES = [
     ("日常聊天", "ni chi le ma", "你吃了吗"), ("日常聊天", "gan ma qu ya", "干嘛去呀"),
     ("日常聊天", "zuo tian shui de zao", "昨天睡得早"), ("日常聊天", "gei wo da dian hua", "给我打电话"),
     ("日常聊天", "yi hui er jian", "一会儿见"), ("日常聊天", "zhu yi an quan", "注意安全"),
+    # ---- 口语"啥"字词族 / 正反问（真机截图回归 IMG_1808/1809）----
+    ("日常聊天", "chi sha ya", "吃啥呀"),
+    ("日常聊天", "jin tian wan shang chi sha ya", "今天晚上吃啥呀"),
+    ("日常聊天", "wan shang chi sha", "晚上吃啥"),
+    ("日常聊天", "chi bu chi", "吃不吃"),
+    # ---- 火锅（真机截图回归 IMG_1802）----
+    ("衣食住行", "gui mi chi huo guo", "闺蜜吃火锅"),
+    # ---- 专有名词（真机截图回归 IMG_1810/1811/1813/1814：搜狗直出专名）----
+    ("日常聊天", "dou po cang qiong", "斗破苍穹"),
+    ("日常聊天", "fan ren xiu xian zhuan", "凡人修仙传"),
+    # ---- 相邻位换位纠错（真机 948 打成 984，搜狗能救我们也必须能救）----
+    ("纠错换位", "326736984942694826", "凡人修仙传"),
     # ---- 长句 8-12 字 ----
     ("长句", "wo ming tian yao qu shang hai chu chai", "我明天要去上海出差"),
     ("长句", "xia wu san dian zhong kai hui", "下午三点钟开会"),
@@ -84,7 +96,8 @@ for scene, py, want in CASES:
     is9 = py[0].isdigit()
     buf = py if is9 else to9(py)
     t0 = time.perf_counter()
-    d, c = decode(buf, True) if is9 else decode(py.replace(" ", ""), False)
+    # deep=True：模拟真机「打完停顿 0.3s」后的深度纠错结果（键盘层停顿触发）
+    d, c = decode(buf, True, deep=True) if is9 else decode(py.replace(" ", ""), False)
     dt = (time.perf_counter() - t0) * 1000
     cand = c[:3] if c else []
     if cand and cand[0] == want:

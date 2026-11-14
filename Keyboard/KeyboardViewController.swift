@@ -1,4 +1,5 @@
 import UIKit
+import AVFoundation
 
 // 模式：只保留搜狗式的基础布局（中文9键/中文26键/英文/数字/符号/剪贴板），不再有双拼。
 enum KBMode {
@@ -346,12 +347,21 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
     }
 
     // MARK: - 候选刷新（按钮复用，不重建）
-    private func refresh() {
+    /// deep=true：停顿 0.3s 后的深度纠错重算（9键四类按键纠错全位扫描 +
+    /// 整词直查，真机体感：打完停一下，候选自动变好——搜狗同款）。
+    private var deepTimer: Timer?
+    private var deepAppliedKey = ""
+
+    private func refresh(deep: Bool = false) {
         if isComposeMode, (!compose.isEmpty || !lockedSylls.isEmpty) {
+            let key = compose + "|" + lockedSylls.joined(separator: " ")
+            if deep && key == deepAppliedKey { return }   // 已应用过，不重复算
             let r = engine.decode(compose, is9Key: mode == .chinese9,
-                                  context: lastCommitted, locked: lockedSylls)
+                                  context: lastCommitted, locked: lockedSylls,
+                                  deep: deep && mode == .chinese9)
             currentDecode = r
             displayCandidates = r.candidates
+            if deep { deepAppliedKey = key }
             // 引擎 display 已含锁定音节（best.seq = locked + 新切分），这里只需
             // 给锁定段画下划线区分（竞品 PreeditStyle::Pinned 同款），不要重复拼接
             let rest = r.display.isEmpty ? compose : r.display
@@ -375,6 +385,17 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         }
         updateCandidateButtons()
         updateSyllableColumn()
+        scheduleDeepRefresh()
+    }
+
+    /// 每次按键刷新后重置停顿计时：0.3s 无新输入 → 9键深度纠错重算一轮
+    /// （换位全位扫描 + 漏键插入 + 整词直查），搜狗「打完停一下变好」的体感。
+    private func scheduleDeepRefresh() {
+        deepTimer?.invalidate()
+        guard isComposeMode, mode == .chinese9, !compose.isEmpty || !lockedSylls.isEmpty else { return }
+        deepTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
+            self?.refresh(deep: true)
+        }
     }
 
     private func makeCandidateButton() -> UIButton {
@@ -457,6 +478,10 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
             } else if let last = lockedSylls.popLast() {
                 // 锁定的音节先退回数字串（可以重选音节）
                 compose = (mode == .chinese9 ? t9Digits(last) : last) + compose
+            } else {
+                // 关键修复（用户实测：中文模式下缓冲一空 ⌫ 就"按不动了"）：
+                // 缓冲删完后必须继续删宿主 App 里已上屏的正文
+                textDocumentProxy.deleteBackward()
             }
             didBackspace = true
             refresh()
@@ -516,7 +541,9 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
     // MARK: - 通用构件
     /// 关键手感改动：输入在 touchDown 触发（系统键盘就是按下即响应），
     /// 不再等 touchUpInside；并带回弹动画。快速连打不丢键、不拖沓。
-    private func key(_ title: String, height: CGFloat = 48, action: @escaping () -> Void) -> UIButton {
+    /// triggerOnDown=false 仅供带手势的键（⌫/清空/空格）：必须等 touchUpInside，
+    /// 否则手指刚按下就先执行了点按动作，上滑/下滑/滑行手势全被抢先触发。
+    private func key(_ title: String, height: CGFloat = 48, triggerOnDown: Bool = true, action: @escaping () -> Void) -> UIButton {
         let b = UIButton(type: .system)
         b.setTitle(title, for: .normal)
         b.setTitleColor(.label, for: .normal)
@@ -540,7 +567,7 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
             guard let self = self else { return }
             action()
             self.feedback()
-        }, for: .touchDown)
+        }, for: triggerOnDown ? .touchDown : .touchUpInside)
         b.addAction(UIAction { a in
             guard let btn = a.sender as? UIButton else { return }
             UIView.animate(withDuration: 0.05) {
@@ -566,18 +593,17 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         return s
     }
 
-    // MARK: - 长按连删（搜狗同款）
-    // ⌫ 长按：先删完候选缓冲，再连续删备忘录里已上屏的文字；
-    // 清空 长按：直接连续删已上屏文字（用户反馈：清空只能清候选栏清不了正文）。
+    // MARK: - 长按连删（搜狗同款，逐字带震动+键音）
+    // ⌫ / 清空 长按：先删完候选缓冲，再连续删备忘录里已上屏的文字（backspace 内已打通正文）。
     private var holdTimer: Timer?
     private var holdBlocks: [ObjectIdentifier: () -> Void] = [:]
 
-    /// 给按钮挂长按连发。tap 行为照旧（touchDown 已由 key() 处理）。
+    /// 给按钮挂长按连发。tap 行为照旧（手势键已改为 touchUpInside 触发）。
     private func attachHold(_ b: UIButton, _ block: @escaping () -> Void) {
         holdBlocks[ObjectIdentifier(b)] = block
         let lp = UILongPressGestureRecognizer(target: self, action: #selector(holdGesture(_:)))
         lp.minimumPressDuration = 0.35
-        lp.cancelsTouchesInView = false
+        lp.cancelsTouchesInView = true   // 长按连删开始后吞掉点按，抬起时不再多删一个
         b.addGestureRecognizer(lp)
     }
 
@@ -586,9 +612,10 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         switch g.state {
         case .began:
             block()
-            feedback()
-            holdTimer = Timer.scheduledTimer(withTimeInterval: 0.11, repeats: true) { _ in
+            tick()
+            holdTimer = Timer.scheduledTimer(withTimeInterval: 0.11, repeats: true) { [weak self] _ in
                 block()
+                self?.tick()          // 每删一个字：轻震一下 + 键音一声（用户点名要的逐字震动）
             }
         case .ended, .cancelled, .failed:
             holdTimer?.invalidate()
@@ -612,12 +639,9 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
             b.titleLabel?.font = UIFont.systemFont(ofSize: 19, weight: .medium)
             return b
         }
-        func funcKey(_ t: String, height: CGFloat = 50, _ a: @escaping () -> Void) -> UIButton {
-            let b = key(t, height: height) { [weak self] in
-                guard let self = self else { return }
-                a()
-                self.feedback()
-            }
+        func funcKey(_ t: String, height: CGFloat = 50, triggerOnDown: Bool = true, _ a: @escaping () -> Void) -> UIButton {
+            // key() 本身在触发时会调 feedback()，这里不再叠加（旧版功能键按一次响两声震两下）
+            let b = key(t, height: height, triggerOnDown: triggerOnDown) { a() }
             // 功能键字体小一号、灰一点，突出字母键
             b.setTitleColor(.secondaryLabel, for: .normal)
             b.titleLabel?.font = UIFont.systemFont(ofSize: 14)
@@ -659,12 +683,15 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         let g1 = row([fen, letterKey("2", "ABC"), letterKey("3", "DEF")])
         let g2 = row([letterKey("4", "GHI"), letterKey("5", "JKL"), letterKey("6", "MNO")])
         let g3 = row([letterKey("7", "PQRS"), letterKey("8", "TUV"), letterKey("9", "WXYZ")])
+        // 空格：点按=确认首选；滑行=移动光标（逐字带震感，搜狗同款）
+        let sp9 = funcKey("空格", triggerOnDown: false) { [weak self] in
+            guard let self = self else { return }
+            if self.isComposeMode { self.confirm() } else { self.textDocumentProxy.insertText(" ") }
+        }
+        attachSpacePan(sp9)
         let g4 = row([
             funcKey("123") { [weak self] in self?.switchMode(.number) },
-            funcKey("空格") { [weak self] in
-                guard let self = self else { return }
-                if self.isComposeMode { self.confirm() } else { self.textDocumentProxy.insertText(" ") }
-            },
+            sp9,
             funcKey("中英") { [weak self] in
                 guard let self = self else { return }
                 self.switchMode(self.mode == .chinese9 ? .english : .chinese9)
@@ -674,20 +701,17 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         mainCol.axis = .vertical; mainCol.spacing = 6
 
         // 右功能列：⌫ / 清空 / 符号 / 确认（蓝色，竞品同款）
-        let bk = funcKey("⌫") { [weak self] in self?.backspace() }
+        // ⌫ 与 清空 全套手势（用户点名）：
+        //   点按=逐删缓冲→正文；长按=逐字连删带震动；
+        //   左滑=光标跟随逐字滑删（滑回来还能逐字还原）；
+        //   上滑=清空全部（缓冲+正文，可下滑恢复）；下滑=恢复刚清掉的内容。
+        let bk = funcKey("⌫", triggerOnDown: false) { [weak self] in self?.backspace() }
         bk.titleLabel?.font = UIFont.systemFont(ofSize: 18)
-        attachHold(bk) { [weak self] in self?.backspace() }   // 长按连删正文
-        let clear = funcKey("清空") { [weak self] in
-            guard let self = self else { return }
-            self.lockedSylls = []
-            self.compose = ""
-            self.refresh()
-        }
-        // 长按清空 = 连续删除已上屏文字（备忘录/聊天记录一键清，搜狗同款）
-        attachHold(clear) { [weak self] in
-            guard let self = self else { return }
-            self.textDocumentProxy.deleteBackward()
-        }
+        attachHold(bk) { [weak self] in self?.backspace() }
+        attachClearGestures(bk)
+        let clear = funcKey("清空", triggerOnDown: false) { [weak self] in self?.clearPreeditOrAll() }
+        attachHold(clear) { [weak self] in self?.backspace() }
+        attachClearGestures(clear)
         let sym = funcKey("符号") { [weak self] in self?.switchMode(.symbol) }
         let ok = funcKey("确认") { [weak self] in
             guard let self = self else { return }
@@ -767,21 +791,26 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
                 btns.insert(key("⇧") { [weak self] in
                     self?.shiftOn.toggle(); self?.updateKeyArea()
                 }, at: 0)
-                btns.append(key("⌫") { [weak self] in self?.backspace() })
-                if let bkBtn = btns.last { attachHold(bkBtn) { [weak self] in self?.backspace() } }
+                btns.append(backspaceKey())
             }
             rows.append(row(btns))
         }
         let r4: UIStackView
         if insertDirectly {
+            let spEn = key("空格", triggerOnDown: false) { [weak self] in
+                self?.textDocumentProxy.insertText(" ")
+            }
+            attachSpacePan(spEn)
             r4 = row([
-                key("空格") { [weak self] in self?.textDocumentProxy.insertText(" ") },
+                spEn,
                 key("⏎") { [weak self] in self?.textDocumentProxy.insertText("\n") },
             ])
         } else {
+            let sp26 = key("空格/确认", triggerOnDown: false) { [weak self] in self?.confirm() }
+            attachSpacePan(sp26)
             r4 = row([
                 key("，") { [weak self] in self?.punctuationCommit("，") },
-                key("空格/确认") { [weak self] in self?.confirm() },
+                sp26,
                 key("。") { [weak self] in self?.punctuationCommit("。") },
                 key("⏎") { [weak self] in self?.textDocumentProxy.insertText("\n") },
             ])
@@ -796,7 +825,7 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         let r2 = row((4...6).map { n in key("\(n)") { [weak self] in self?.textDocumentProxy.insertText("\(n)") } })
         let r3 = row((7...9).map { n in key("\(n)") { [weak self] in self?.textDocumentProxy.insertText("\(n)") } })
         let r4 = row([
-            key("⌫") { [weak self] in self?.textDocumentProxy.deleteBackward() },
+            backspaceKey(),
             key("0") { [weak self] in self?.textDocumentProxy.insertText("0") },
             key(".") { [weak self] in self?.textDocumentProxy.insertText(".") },
             key("⏎") { [weak self] in self?.textDocumentProxy.insertText("\n") },
@@ -821,9 +850,11 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
                 return b
             }))
         }
+        let spSym = key("空格", triggerOnDown: false) { [weak self] in self?.textDocumentProxy.insertText(" ") }
+        attachSpacePan(spSym)
         rows.append(row([
-            key("⌫") { [weak self] in self?.textDocumentProxy.deleteBackward() },
-            key("空格") { [weak self] in self?.textDocumentProxy.insertText(" ") },
+            backspaceKey(),
+            spSym,
             key("⏎") { [weak self] in self?.textDocumentProxy.insertText("\n") },
         ]))
         return rows
@@ -890,16 +921,317 @@ class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
         return pb.string
     }
 
+    // MARK: - 清除/光标手势引擎（用户点名：搜狗同款）
+    // ⌫ / 清空 键：
+    //   上滑 = 清空全部（拼音缓冲 + 已上屏正文），下滑 = 恢复刚清掉的内容；
+    //   左滑 = 光标跟随逐字滑删（每约16pt删一字，滑回来逐字还原，逐字震动）；
+    //   长按 = 逐字连删带震动。
+    // 空格键：左右滑行 = 移动光标（每约13pt一字，逐字震动）。
+
+    private var clearSnapshot: (before: String, after: String)?  // 上滑清空前的正文快照（下滑恢复用）
+    private var lastPreeditCleared: String = ""                  // 刚清掉的原始输入串（下滑恢复用）
+    private var slideAnchorX: CGFloat = 0
+    private var slideUndo: [(fromText: Bool, text: String)] = [] // 本次左滑删掉的字（右滑逐字还原）
+    private var spaceAnchorX: CGFloat = 0
+    private let slideStep: CGFloat = 16
+    private let spaceStep: CGFloat = 13
+
+    /// 通用退格键：点按逐删（缓冲→正文）/ 长按连删 / 左滑滑删 / 上滑清空 / 下滑恢复
+    private func backspaceKey(title: String = "⌫", height: CGFloat = 48) -> UIButton {
+        let b = key(title, height: height, triggerOnDown: false) { [weak self] in self?.backspace() }
+        attachHold(b) { [weak self] in self?.backspace() }
+        attachClearGestures(b)
+        return b
+    }
+
+    /// 清空键点按：有拼音缓冲就只清缓冲；缓冲是空的就直接清空整个输入框正文（用户实测痛点：
+    /// "清除键只能清候选栏，输入栏一个字都清不掉"）。两种情况都记快照，下滑可恢复。
+    private func clearPreeditOrAll() {
+        if !compose.isEmpty || !lockedSylls.isEmpty {
+            lastPreeditCleared = rawInputString()
+            compose = ""; lockedSylls = []; didBackspace = false
+            refresh()
+        } else {
+            clearAllText()
+        }
+    }
+
+    /// 原始输入串（9键=数字，26键=字母），清掉缓冲后下滑恢复时原样放回 compose
+    private func rawInputString() -> String {
+        lockedSylls.map { mode == .chinese9 ? t9Digits($0) : $0 }.joined() + compose
+    }
+
+    /// 上滑清空：正文前后文各拍一份快照，再从光标处一路删到头；同时清掉拼音缓冲
+    private func clearAllText() {
+        let before = textDocumentProxy.documentTextBeforeInput ?? ""
+        let after = textDocumentProxy.documentTextAfterInput ?? ""
+        if !before.isEmpty || !after.isEmpty { clearSnapshot = (before, after) }
+        if !compose.isEmpty || !lockedSylls.isEmpty {
+            lastPreeditCleared = rawInputString()
+            compose = ""; lockedSylls = []; didBackspace = false
+        }
+        // 连删正文。hasText 只会反映光标前文本，删空后个别 App 仍返回 true，
+        // 所以再加"连续 4 轮没变化就停"的保险，外加 4000 字硬上限。
+        var n = 0, prevLen = -1, stable = 0
+        while textDocumentProxy.hasText, n < 4000 {
+            textDocumentProxy.deleteBackward()
+            let len = (textDocumentProxy.documentTextBeforeInput ?? "").count
+            if len == prevLen { stable += 1; if stable > 3 { break } } else { stable = 0 }
+            prevLen = len
+            n += 1
+        }
+        refresh()
+        tick()
+    }
+
+    /// 下滑恢复：优先恢复正文快照（连带刚清掉的拼音缓冲），其次恢复拼音缓冲
+    private func restoreCleared() {
+        if let snap = clearSnapshot {
+            textDocumentProxy.insertText(snap.before + snap.after)
+            clearSnapshot = nil
+            if !lastPreeditCleared.isEmpty { compose = lastPreeditCleared; lastPreeditCleared = "" }
+            refresh()
+            tick()
+        } else if !lastPreeditCleared.isEmpty {
+            compose = lastPreeditCleared
+            lastPreeditCleared = ""
+            refresh()
+            tick()
+        }
+    }
+
+    /// 挂清除键手势：上滑清空 / 下滑恢复 / 左滑滑删
+    private func attachClearGestures(_ b: UIButton) {
+        let up = UISwipeGestureRecognizer(target: self, action: #selector(clearAllGesture(_:)))
+        up.direction = .up
+        b.addGestureRecognizer(up)
+        let down = UISwipeGestureRecognizer(target: self, action: #selector(restoreGesture(_:)))
+        down.direction = .down
+        b.addGestureRecognizer(down)
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(deletePan(_:)))
+        pan.delegate = self
+        b.addGestureRecognizer(pan)
+    }
+
+    @objc private func clearAllGesture(_ g: UISwipeGestureRecognizer) { clearAllText() }
+    @objc private func restoreGesture(_ g: UISwipeGestureRecognizer) { restoreCleared() }
+
+    /// 左滑逐字滑删（每滑约一个键宽删一字，滑回来逐字还原），逐字轻震
+    @objc private func deletePan(_ g: UIPanGestureRecognizer) {
+        switch g.state {
+        case .began:
+            slideAnchorX = 0
+            slideUndo = []
+        case .changed:
+            let x = g.translation(in: g.view).x
+            var guardCount = 0
+            while x - slideAnchorX <= -slideStep, guardCount < 20 {
+                slideAnchorX -= slideStep
+                slideUndo.append(deleteOneForSlide())
+                tick()
+                guardCount += 1
+            }
+            guardCount = 0
+            while x - slideAnchorX >= slideStep, !slideUndo.isEmpty, guardCount < 20 {
+                slideAnchorX += slideStep
+                let d = slideUndo.removeLast()
+                if d.fromText {
+                    textDocumentProxy.insertText(d.text)
+                } else {
+                    compose += d.text
+                    refresh()
+                }
+                tick()
+                guardCount += 1
+            }
+        default:
+            break
+        }
+    }
+
+    /// 滑删一步：先删拼音缓冲（数字/字母），缓冲空了删正文（记下被删的字用于还原）
+    private func deleteOneForSlide() -> (fromText: Bool, text: String) {
+        if isComposeMode {
+            if !compose.isEmpty {
+                let c = String(compose.removeLast())
+                refresh()
+                return (false, c)
+            }
+            if let last = lockedSylls.popLast() {
+                let raw = mode == .chinese9 ? t9Digits(last) : last
+                refresh()
+                return (false, raw)
+            }
+        }
+        let before = textDocumentProxy.documentTextBeforeInput ?? ""
+        textDocumentProxy.deleteBackward()
+        let ch = before.isEmpty ? "" : String(before.suffix(1))
+        return (true, ch.isEmpty ? " " : ch)
+    }
+
+    /// 挂空格滑行：左右移动光标（逐字震动）
+    private func attachSpacePan(_ b: UIButton) {
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(spacePan(_:)))
+        pan.delegate = self
+        b.addGestureRecognizer(pan)
+    }
+
+    @objc private func spacePan(_ g: UIPanGestureRecognizer) {
+        // 正在组词时滑空格不做光标移动（点按仍是确认首选）
+        guard compose.isEmpty, lockedSylls.isEmpty else { return }
+        switch g.state {
+        case .began:
+            spaceAnchorX = 0
+        case .changed:
+            let x = g.translation(in: g.view).x
+            var guardCount = 0
+            while x - spaceAnchorX >= spaceStep, guardCount < 30 {
+                spaceAnchorX += spaceStep
+                moveCursor(1)
+                guardCount += 1
+            }
+            guardCount = 0
+            while x - spaceAnchorX <= -spaceStep, guardCount < 30 {
+                spaceAnchorX -= spaceStep
+                moveCursor(-1)
+                guardCount += 1
+            }
+        default:
+            break
+        }
+    }
+
+    private func moveCursor(_ n: Int) {
+        textDocumentProxy.adjustTextPosition(byCharacterOffset: n)
+        tick()   // 每移一字轻震一下（用户点名："滑一个字节有震感"）
+    }
+
     // MARK: - 反馈（震动 + 按键音）
+    private lazy var impactSoft = UIImpactFeedbackGenerator(style: .soft)
+    private lazy var impactLight = UIImpactFeedbackGenerator(style: .light)
+    private lazy var impactMedium = UIImpactFeedbackGenerator(style: .medium)
+    private lazy var selectionGen = UISelectionFeedbackGenerator()
+    private func currentImpact() -> UIImpactFeedbackGenerator {
+        let v = soundVol()
+        return v < 0.34 ? impactSoft : (v < 0.67 ? impactLight : impactMedium)
+    }
+
     private func feedback() {
         if hapticOn() {
             let g = currentImpact()
             g.impactOccurred()
             g.prepare()               // 为下一次按键预准备，连打零延迟
         }
+        playClick()
+    }
+
+    /// 手势逐字反馈（滑删/滑移光标/长按连删）：轻震 + 键音
+    private func tick() {
+        if hapticOn() {
+            selectionGen.selectionChanged()
+            selectionGen.prepare()
+        }
+        playClick()
+    }
+
+    // ---- 键音引擎 ----
+    // 实测教训：playInputClick() 在第三方键盘扩展里多数时候不响（用户反馈"没有声音"）；
+    // 自写 WAV + AudioServicesCreateSystemSoundID 也不响。
+    // 这里走第三条路：合成一段"嗒"声 WAV 缓存到沙盒，AVAudioPlayer + .playback 会话播放
+    // （.playback + mixWithOthers：静音拨片打开也照响，音量跟随 App 设置的滑杆）。
+    // 首次按键后异步懒加载，不在键盘弹出帧做重活（watchdog 教训）。
+    private var clickPlayer: AVAudioPlayer?
+    private var clickSetupTried = false
+
+    private func playClick() {
         guard soundOn() else { return }
-        // 官方键盘音：系统进程播放，键盘扩展里唯一确定出声的方式。
-        // 音量由系统音量键与「设置 › 声音与触感 › 键盘反馈 › 声音」控制。
-        UIDevice.current.playInputClick()
+        if let p = clickPlayer {
+            p.volume = max(0.1, min(1, soundVol()))
+            p.currentTime = 0
+            p.play()
+        } else {
+            UIDevice.current.playInputClick()   // 兜底（部分机型/系统有效）
+            setupClickSoundAsync()
+        }
+    }
+
+    private func setupClickSoundAsync() {
+        guard !clickSetupTried else { return }
+        clickSetupTried = true
+        DispatchQueue.main.async { [weak self] in self?.setupClickSound() }
+        // 只尝试一次；若激活会话失败（极少数），维持 playInputClick 兜底
+    }
+
+    private func setupClickSound() {
+        guard clickPlayer == nil else { return }
+        do {
+            let s = AVAudioSession.sharedInstance()
+            try s.setCategory(.playback, options: [.mixWithOthers])
+            try s.setActive(true)
+            let p = try AVAudioPlayer(contentsOf: cachedClickWav())
+            p.prepareToPlay()
+            clickPlayer = p
+        } catch {
+            clickPlayer = nil
+        }
+    }
+
+    /// 合成键音缓存文件（第一次用写入，之后直接复用）
+    private func cachedClickWav() -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("kb_click.wav")
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? makeClickWav().write(to: url)
+        }
+        return url
+    }
+
+    /// 短促"嗒"声：1750→1200Hz 下扫正弦 + 快速指数衰减 + 4ms 起振噪声，50ms
+    private func makeClickWav() -> Data {
+        let sr = 22050.0
+        let dur = 0.05
+        let n = Int(sr * dur)
+        var samples = [Int16](repeating: 0, count: n)
+        let phase = Double.random(in: 0..<(2 * .pi))
+        for i in 0..<n {
+            let t = Double(i) / sr
+            let env = exp(-t * 110) * min(1, t * 2000)
+            let f = 1750.0 - 550.0 * (t / dur)
+            var v = sin(2 * Double.pi * f * t + phase) * 0.55 * env
+            if t < 0.004 {
+                v += (Double((i & 1023)) / 1024.0 - 0.5) * 0.5 * (1 - t / 0.004)
+            }
+            samples[i] = Int16(max(-1, min(1, v)) * 32000)
+        }
+        func le32(_ v: UInt32) -> [UInt8] { [UInt8(v & 255), UInt8((v >> 8) & 255), UInt8((v >> 16) & 255), UInt8((v >> 24) & 255)] }
+        func le16(_ v: UInt16) -> [UInt8] { [UInt8(v & 255), UInt8((v >> 8) & 255)] }
+        var d = Data()
+        d.append(contentsOf: Data("RIFF".utf8))
+        d.append(contentsOf: le32(UInt32(36 + n * 2)))
+        d.append(contentsOf: Data("WAVE".utf8))
+        d.append(contentsOf: Data("fmt ".utf8))
+        d.append(contentsOf: le32(16))
+        d.append(contentsOf: le16(1))                     // PCM
+        d.append(contentsOf: le16(1))                     // 单声道
+        d.append(contentsOf: le32(UInt32(sr)))
+        d.append(contentsOf: le32(UInt32(Int(sr) * 2)))   // byte rate
+        d.append(contentsOf: le16(2))                     // block align
+        d.append(contentsOf: le16(16))                    // 位深
+        d.append(contentsOf: Data("data".utf8))
+        d.append(contentsOf: le32(UInt32(n * 2)))
+        samples.withUnsafeBufferPointer { d.append(Data(buffer: $0)) }
+        return d
+    }
+}
+
+// MARK: - 手势代理
+extension KeyboardViewController: UIGestureRecognizerDelegate {
+    /// 滑行/滑删的 pan 只吃横向手势，纵向留给 上滑/下滑 swipe（清空/恢复），
+    /// 否则手指稍带一点上下抖动就会把两个手势都触发。
+    func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+        if let p = g as? UIPanGestureRecognizer {
+            let v = p.velocity(in: p.view)
+            return abs(v.x) > abs(v.y)
+        }
+        return true
     }
 }

@@ -65,6 +65,7 @@ charFreq = load("pinyin_char_freq.json")
 wordFreq = load("pinyin_hot_words.json")
 bigram = load("pinyin_bigram.json")
 t9Map = load("pinyin_t9.json")
+t9Words = load("pinyin_t9_word.json")   # 9键数字串 -> [[词, 拼音key], ...]
 english = set(load("pinyin_english.json"))
 
 _wordsForCache = {}
@@ -195,8 +196,11 @@ def trimBeamBucket(arr, per=8):
         out += sorted(buckets[c], key=lambda x: -x[1])[:per]
     return out
 
-def syllableLattices(buf, is9, level=0):
-    n, W = len(buf), 10
+def syllableLattices(buf, is9, level=0, wide=False):
+    """wide=True：停顿深度纠错用——桶宽/总数翻倍，防止正确切分被
+    同码音节同分挤掉（真机：fan'ren'xiu'xian'zhuan 被裁剪出局，
+    而 dao'ren'zhu... 垃圾路径全保留）。"""
+    n, W = len(buf), 20 if wide else 10
     beam = {0: [((), 0.0, "")]}
     finished = []
     for i in range(n):
@@ -225,7 +229,7 @@ def syllableLattices(buf, is9, level=0):
                         beam.setdefault(j, []).append((nseq, ns, top))
         for j in range(i+1, min(n, i+6)+1):
             if j in beam and len(beam[j]) > W:
-                beam[j] = trimBeamBucket(beam[j])
+                beam[j] = trimBeamBucket(beam[j], per=(16 if wide else 8))
         tail = buf[i:n]
         viable = tail in t9Prefixes if is9 else tail in sylPrefixes
         if viable and len(tail) <= 6:
@@ -243,8 +247,8 @@ def syllableLattices(buf, is9, level=0):
     uniq = []
     for c in sorted(byCount):
         # 每桶 6 个：同码音节（62=ma/na）同分时不能挤掉正确切分（与 Swift 一致）
-        uniq += byCount[c][:6]
-    return uniq[:24]
+        uniq += byCount[c][:(12 if wide else 6)]
+    return uniq[:(48 if wide else 24)]
 
 def trusted(w):
     """hot 精选词表专属（与 Swift isTrusted 一致）——93 万语料词不算 trusted。"""
@@ -299,7 +303,10 @@ def composeSentence(seq):
                     # 「去呀」被「去要」压过就是因为要(2000频)碾压呀(200频)。
                     # 竞品靠 n-gram 知道句末分布，我们用句末位置先验补。
                     if i + l == n and c in ("呀", "嘛", "吧", "啦", "哦", "呢", "啊", "吗", "哈", "哟"):
-                        sc += 460
+                        # 裸元音音节（a/o/e）句末多是长音节拆尾的垃圾（jian→ji+a 的"啊"、
+                        # hao→ha+o 的"哦"、xia→xi+a 的"啊"），足额 460 会压过整音节正确路径
+                        # （真机：订单哈哦/哪一站西啊/一会儿家年），降为 150
+                        sc += 60 if seq[i] in ("a", "o", "e") else 460
                     opts.append((c, sc))
             for w, ws in opts:
                 trans = bigramBonus(last, w[0]) if last else 0
@@ -375,41 +382,114 @@ def prefixCandidates(buf, is9, fallback):
     if not out: out.append(fallback)
     return out[:16]
 
-def decode(buf, is9, locked=()):
+def decode(buf, is9, locked=(), deep=False):
+    """deep=True：停顿后的深度纠错（全位换位/尾位插入）。
+    逐键打字走轻量尾位策略（性能），停顿 0.3s 由键盘层触发 deep 重算——
+    这就是搜狗「打完停一下出好结果」的体感。"""
     buf = buf.lower()
     if not buf and not locked:
         return "", []
     lats = syllableLattices(buf, is9, 0)
-    if is9 and not any(not lat[1] for lat in lats):
-        l1 = syllableLattices(buf, True, 1)
-        if any(not lat[1] for lat in l1):
-            lats = l1
-        else:
-            # 多按一键/按错相邻键纠错。长串只试尾位（打字中按错几乎都在
-            # 最后一键，全位扫描会让逐键耗时爆炸：17键句从 3ms/键 → 30ms/键）。
-            rescue = []
-            positions = range(len(buf)) if len(buf) <= 8 else (len(buf) - 1,)
-            for i in positions:
-                cand = buf[:i] + buf[i+1:]
-                if len(cand) >= 2:
+    if is9 and not locked:
+        complete0 = [x for x in lats if not x[1]]
+        # 触发条件：
+        # 1) 没有任何完整切分（切不出）——必救；
+        # 2) deep 模式下头部完整路径全是碎片（没有任何「词长==音节数」的
+        #    整词命中）——真机：984 打成 dao'ren'zui'xiao'yi'tao，
+        #    含 trusted 碎片词但整句是垃圾，搜狗能救回 凡人修仙传。
+        #    轻量模式（逐键）不查整词，保持打字跟手。
+        need_rescue = not complete0
+        weak_sentences = False
+        if not need_rescue and deep:
+            weak_sentences = not any(
+                any(len(w) == len(x[0]) and trusted(w)
+                    for w in (words_for(" ".join(x[0])) or [])[:4])
+                for x in complete0[:6])
+            need_rescue = weak_sentences
+        if need_rescue:
+            # 「切不出」才走放宽切分 l1；「deep 无整词」的场景 l1 只会切出
+            # 更多垃圾完整路径提前接管（实测 984 被切成 dao'ren'zui'xiao'yi'tao），
+            # 直接进按键层纠错。
+            l1 = syllableLattices(buf, True, 1)
+            if not weak_sentences and any(not x[1] for x in l1):
+                lats = l1
+            else:
+                # 按键层纠错（搜狗五类中的四类，最多 1 次编辑错误）：
+                #   邻键替换(惩罚最低) / 换位(中) / 多键删位(高) / 漏键插入(高)
+                # 惩罚通过 lattice score 扣分实现（排名权重 ×0.05）。
+                # 长串只试尾位（打字中按错几乎都在最后一键，全位扫描会让
+                # 逐键耗时爆炸：17键句 3ms/键 → 30ms/键）。
+                rescue = []
+
+                def _t9hit(cand, pen):
+                    # 候选数字串整词直查（O(1)）：长串正确切分会被 beam 挤掉，
+                    # 数字签名直查是唯一可靠通道（真机：984→948 换位救回凡人修仙传）
+                    out = []
+                    for hit in (t9Words.get(cand) or [])[:2]:
+                        if len(hit) < 2:
+                            continue
+                        seq = tuple(hit[1].split())
+                        out.append((seq, "", 8000.0 - pen))
+                    return out
+
+                positions = range(len(buf)) if len(buf) <= 8 else (len(buf) - 1,)
+                # 多键（多按一下）：删掉每个位置的键重试，惩罚 300
+                for i in positions:
+                    cand = buf[:i] + buf[i+1:]
+                    rescue.extend(_t9hit(cand, 6000))
+                    if len(cand) >= 2:
+                        for lv in (0, 1):
+                            lr = syllableLattices(cand, True, lv, wide=deep)
+                            ok = [x for x in lr if not x[1]]
+                            if ok:
+                                rescue.extend((x[0], x[1], x[2] - 6000) for x in ok)
+                                break
+                # 邻键替换（最容易误触，惩罚最低 200）
+                for i in positions:
+                    for nb in t9DigitNeighbors.get(buf[i], ""):
+                        cand = buf[:i] + nb + buf[i+1:]
+                        rescue.extend(_t9hit(cand, 4000))
+                        for lv in (0, 1):
+                            lr = syllableLattices(cand, True, lv, wide=deep)
+                            ok = [x for x in lr if not x[1]]
+                            if ok:
+                                rescue.extend((x[0], x[1], x[2] - 4000) for x in ok)
+                                break
+                # 相邻位换位（Damerau，手速快顺序颠倒）：惩罚 250。
+                # 轻量模式长串只试尾两位；deep（停顿）模式全位扫描——
+                # 真机错位多在中段（xiu 948→984），全位 lattice 成本高，
+                # 只能放到停顿后跑。
+                if deep:
+                    swap_positions = list(range(max(0, len(buf) - 1)))
+                else:
+                    swap_positions = list(positions) if len(buf) <= 8 else [len(buf) - 2]
+                for i in swap_positions:
+                    if i + 1 >= len(buf):
+                        continue
+                    cand = buf[:i] + buf[i+1] + buf[i] + buf[i+2:]
+                    rescue.extend(_t9hit(cand, 5000))
                     for lv in (0, 1):
-                        lr = syllableLattices(cand, True, lv)
+                        lr = syllableLattices(cand, True, lv, wide=deep)
                         ok = [x for x in lr if not x[1]]
                         if ok:
-                            rescue.extend(ok)
+                            rescue.extend((x[0], x[1], x[2] - 5000) for x in ok)
                             break
-            for i in positions:
-                for nb in t9DigitNeighbors.get(buf[i], ""):
-                    cand = buf[:i] + nb + buf[i+1:]
-                    for lv in (0, 1):
-                        lr = syllableLattices(cand, True, lv)
-                        ok = [x for x in lr if not x[1]]
-                        if ok:
-                            rescue.extend(ok)
-                            break
-            if rescue:
-                rescue.sort(key=lambda x: -x[2])
-                lats = rescue
+                # 漏键（手快漏按一位）：尾位插入全部数字重试，惩罚 300。
+                # 插入候选数 ×8 成本高，长串只在 deep（停顿）模式做。
+                if deep or len(buf) <= 10:
+                    for d in "23456789":
+                        cand = buf + d
+                        rescue.extend(_t9hit(cand, 6000))
+                        for lv in (0, 1):
+                            lr = syllableLattices(cand, True, lv, wide=deep)
+                            ok = [x for x in lr if not x[1]]
+                            if ok:
+                                rescue.extend((x[0], x[1], x[2] - 6000) for x in ok)
+                                break
+                if rescue:
+                    rescue.sort(key=lambda x: -x[2])
+                    # 与原始路径合并统一排名（编辑惩罚已扣在 lattice score 里）
+                    lats = rescue + lats
     if not is9 and not lats:
         l1 = syllableLattices(buf, False, 1)
         if l1:
@@ -457,12 +537,31 @@ def decode(buf, is9, locked=()):
         key = " ".join(full)
         w = words_for(key)
         whole = 200 if any(trusted(x) for x in (w or [])[:4]) else 0
+        # 整串全词命中（词长 == 音节数，5字专名「凡人修仙传」整词直出）：
+        # 必须明显压过「犯人+休息+按住」这类碎片拼接，提到 450
+        if w and len(w[0]) == len(full) and trusted(w[0]):
+            whole = 450
         complete = (300 if not lat[1] else -160) if is9 else (20 if not lat[1] else 0)
+        # 26键尾格是裸元音（a/o/e/n）时只能补出 啊/哦/额/嗯 语气字垃圾
+        # （jian→ji+a、hao→ha+o 的拆尾），正确路径几乎总是整音节，压 200
+        bareTail = (not is9) and lat[1] in ("a", "o", "e", "n")
         # 每音节固定成本：碎片化切分（hua->hu+a 多出一个音节）整体出局，
         # 这就是 qingjian「音节少优先」原则，也是竞品整句连贯的排序根基
         length_cost = len(lat[0]) * (120 if is9 else 150)
-        final = sc - length_cost + whole + complete + lat[2] * 0.05
+        final = sc - length_cost + whole + complete + lat[2] * 0.05 - (200 if bareTail else 0)
         ranked.append(((full, lat[1], sc), text, final))
+    # 9 键整词直查（搜狗长串直出原理）：长串 beam 会把正确切分挤掉
+    # （fan'ren'xiu'xian'zhuan 被同码音节同分竞争裁掉），数字签名直查 O(1)。
+    if is9 and not locked:
+        for hit in (t9Words.get(buf) or [])[:3]:
+            if len(hit) < 2:
+                continue
+            wtext, wkey = hit[0], hit[1]
+            seq = tuple(wkey.split())
+            text2, sc2 = composeSentence(list(seq))
+            wsc = len(seq) * 120
+            final2 = sc2 - wsc + 450 + 300
+            ranked.append(((seq, "", sc2), text2, final2))
     ranked.sort(key=lambda x: -x[2])
     lats = [r[0] for r in ranked]
     sentences = [r[1] for r in ranked]

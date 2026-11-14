@@ -128,6 +128,7 @@ final class PinyinEngine {
     private var bigram: [String: [String: Int]] = [:]      // 字 -> 后继字 -> 次数
     private var englishSet: Set<String> = []
     private var t9Map: [String: [String]] = [:]            // 数字串 -> 音节(离线预计算)
+    private var t9WordTable: [String: [[String]]] = [:]    // 数字串 -> [[词, 拼音key], ...] 9键整词直查
     private var pinyinToChars: [String: [String]] = [:]     // 单音节 -> 常用字(纠错用)
     private var customPhrases: [String: String] = [:]      // 自定义短语：缩写 -> 长文本
 
@@ -249,6 +250,7 @@ final class PinyinEngine {
         guard coreLoaded, !extrasLoaded else { return }
         extrasLoaded = true
         if let m = loadJSON("pinyin_assoc", as: [String: [String]].self) { assocNext = m }
+        if let m = loadJSON("pinyin_t9_word", as: [String: [[String]]].self) { t9WordTable = m }
         if let m = loadJSON("pinyin_bigram", as: [String: [String: Int]].self) { bigram = m }
         if let m = loadJSON("pinyin_english", as: [String].self) { englishSet = Set(m) }
         flatTable = MappedTable(name: "flat")
@@ -425,7 +427,7 @@ final class PinyinEngine {
     /// - locked: 用户已通过左列音节候选 / 分词键锁定的音节（搜狗式连贯输入）。
     ///   锁定音节与新数字串在词图里拼接打分：gui + mi 可以成词「闺蜜」，
     ///   点一下音节继续打字，正是竞品「越打越顺」的关键交互。
-    func decode(_ buffer: String, is9Key: Bool, context: String = "", locked: [String] = []) -> DecodeResult {
+    func decode(_ buffer: String, is9Key: Bool, context: String = "", locked: [String] = [], deep: Bool = false) -> DecodeResult {
         let buf = buffer.lowercased()
         guard !buf.isEmpty || !locked.isEmpty else { return DecodeResult(display: "", candidates: [], key: "") }
         if locked.isEmpty {
@@ -443,9 +445,10 @@ final class PinyinEngine {
         }
         let ckey = String(context.suffix(2))
         let lk = locked.joined(separator: " ")
-        let ck = (is9Key ? "9|" : "26|") + buf + "|c=" + ckey + "|L=" + lk
+        var ck = (is9Key ? "9|" : "26|") + buf + "|c=" + ckey + "|L=" + lk
+        if deep { ck += "|D" }   // deep（停顿深度纠错）结果单独缓存
         if let hit = decodeCache[ck] { return hit }
-        var result = computeDecode(buf, is9Key: is9Key, locked: locked)
+        var result = computeDecode(buf, is9Key: is9Key, locked: locked, deep: deep)
         result = DecodeResult(display: result.display,
                               candidates: rerankByContext(result.candidates, context: ckey),
                               key: result.key, alternates: result.alternates)
@@ -512,49 +515,106 @@ final class PinyinEngine {
         decodeCache.removeAll()
     }
 
-    private func computeDecode(_ buf: String, is9Key: Bool, locked: [String] = []) -> DecodeResult {
+    private func computeDecode(_ buf: String, is9Key: Bool, locked: [String] = [], deep: Bool = false) -> DecodeResult {
         var lats = syllableLattices(buf, is9Key: is9Key, level: 0)
-        // 9 键模糊纠错：精确切分若没有任何「完整切完」的路径，
-        // 允许数字串 1 次误触（相邻键按错 / 漏按 / 多按）再切一次。
-        if is9Key, !lats.contains(where: { $0.tail.isEmpty }) {
-            let l1 = syllableLattices(buf, is9Key: true, level: 1)
-            if l1.contains(where: { $0.tail.isEmpty }) {
-                lats = l1
-            } else {
-                // 多按一键 / 按错相邻键：整串删位或换位重试。
-                // level1 只救「切不出的子串」，救不了「尾部是合法前缀」的场景
-                // （64426 按成 64425，尾键 5 是合法前缀，tail 路径吞掉整串）。
-                // 长串只试尾位：打字中按错几乎都在最后一键，全位扫描会让
-                // 逐键耗时爆炸（17键句 3ms/键 → 30ms/键 的实测教训）。
-                var rescue: [Lattice] = []
-                let digits = Array(buf)
-                let positions: [Int] = digits.count <= 8
-                    ? Array(0..<digits.count) : [digits.count - 1]
-                for i in positions {
-                    let del = String(digits[0..<i]) + String(digits[(i+1)...])
-                    if del.count >= 2 {
-                        for lv in 0...1 {
-                            let lr = syllableLattices(del, is9Key: true, level: lv)
-                            rescue.append(contentsOf: lr.filter { $0.tail.isEmpty })
-                            if !rescue.isEmpty { break }
+        // 9 键按键层纠错（最多 1 次编辑错误，与搜狗同类实现）。
+        // 触发条件：
+        // 1) 没有任何完整切分（切不出）——必救；
+        // 2) deep（停顿深度纠错）下头部完整路径全是碎片（没有任何「词长==音节数」
+        //    整词命中）——真机：984 打成 dao'ren'zui'xiao'yi'tao 含 trusted 碎片词
+        //    但整句是垃圾，搜狗能救回 凡人修仙传。
+        // 锁定音节组词（用户明确意图）不进纠错。
+        if is9Key, locked.isEmpty {
+            let complete0 = lats.filter { $0.tail.isEmpty }
+            var needRescue = complete0.isEmpty
+            var weakSentences = false
+            if !needRescue, deep {
+                weakSentences = !complete0.prefix(6).contains { lat in
+                    let full = lat.seq
+                    let k = full.joined(separator: " ")
+                    let w = words(forPinyinKey: k)
+                    return w.prefix(4).contains { $0.count == full.count && isTrusted($0) }
+                }
+                needRescue = weakSentences
+            }
+            if needRescue {
+                // 「切不出」才走放宽切分 l1；「deep 无整词」场景 l1 只会切出
+                // 更多垃圾完整路径提前接管，直接进按键层纠错。
+                let l1 = syllableLattices(buf, is9Key: true, level: 1, wide: deep)
+                if !weakSentences, l1.contains(where: { $0.tail.isEmpty }) {
+                    lats = l1
+                } else {
+                    // 四类按键纠错（搜狗五类中的四类，惩罚差异化）：
+                    //   邻键替换(低) / 换位(中) / 多键删位(高) / 漏键插入(高)
+                    var rescue: [Lattice] = []
+                    let digits = Array(buf)
+                    let positions: [Int] = digits.count <= 8
+                        ? Array(0..<digits.count) : [digits.count - 1]
+
+                    // 候选数字串整词直查（O(1)）：长串正确切分会被 beam 挤掉，
+                    // 数字签名直查是唯一可靠通道（真机：984→948 换位救回凡人修仙传）
+                    func t9Hit(_ cand: String, pen: Double) {
+                        guard !t9WordTable.isEmpty else { return }
+                        for hit in (t9WordTable[cand] ?? []).prefix(2) where hit.count >= 2 {
+                            rescue.append(Lattice(seq: hit[1].split(separator: " ").map(String.init),
+                                                  tail: "", score: 8000 - pen))
                         }
                     }
-                }
-                let nb: [Character: String] = ["2":"13","3":"246","4":"357","5":"468",
-                                              "6":"359","7":"48","8":"579","9":"68"]
-                for i in positions {
-                    for d in nb[digits[i]] ?? "" {
-                        let cand = String(digits[0..<i]) + String(d) + String(digits[(i+1)...])
+                    // 统一的候选串重切：lv0 找到完整路径即停（性能）
+                    func reseek(_ cand: String, pen: Double) {
                         for lv in 0...1 {
-                            let lr = syllableLattices(cand, is9Key: true, level: lv)
-                            rescue.append(contentsOf: lr.filter { $0.tail.isEmpty })
-                            if !rescue.isEmpty { break }
+                            let lr = syllableLattices(cand, is9Key: true, level: lv, wide: deep)
+                            let ok = lr.filter { $0.tail.isEmpty }
+                            if !ok.isEmpty {
+                                rescue.append(contentsOf: ok.map {
+                                    Lattice(seq: $0.seq, tail: "", score: $0.score - pen)
+                                })
+                                break
+                            }
                         }
                     }
-                }
-                if !rescue.isEmpty {
-                    rescue.sort { $0.score > $1.score }
-                    lats = rescue
+
+                    // 多键（多按一下）：删位重试，惩罚 300
+                    for i in positions {
+                        let cand = String(digits[0..<i]) + String(digits[(i+1)...])
+                        t9Hit(cand, pen: 6000)
+                        if cand.count >= 2 { reseek(cand, pen: 6000) }
+                    }
+                    // 邻键替换（最容易误触，惩罚最低 200）
+                    let nb: [Character: String] = ["2":"13","3":"246","4":"357","5":"468",
+                                                   "6":"359","7":"48","8":"579","9":"68"]
+                    for i in positions {
+                        for d in nb[digits[i]] ?? "" {
+                            let cand = String(digits[0..<i]) + String(d) + String(digits[(i+1)...])
+                            t9Hit(cand, pen: 4000)
+                            reseek(cand, pen: 4000)
+                        }
+                    }
+                    // 相邻位换位（Damerau，手速快顺序颠倒）：惩罚 250。
+                    // 轻量模式长串只试尾两位；deep 全位扫描（真机错位多在中段）。
+                    let swapPositions: [Int] = deep
+                        ? Array(0..<max(0, digits.count - 1))
+                        : (digits.count <= 8 ? Array(0..<max(0, digits.count - 1)) : [digits.count - 2])
+                    for i in swapPositions where i + 1 < digits.count {
+                        let cand = String(digits[0..<i]) + String(digits[i+1]) + String(digits[i])
+                            + String(digits[(i+2)...])
+                        t9Hit(cand, pen: 5000)
+                        reseek(cand, pen: 5000)
+                    }
+                    // 漏键（手快漏按一位）：尾位插入全部数字重试，惩罚 300。
+                    // 插入候选 ×8 成本高，长串只在 deep 模式做。
+                    if deep || digits.count <= 10 {
+                        for d in "23456789" {
+                            let cand = buf + String(d)
+                            t9Hit(cand, pen: 6000)
+                            reseek(cand, pen: 6000)
+                        }
+                    }
+                    if !rescue.isEmpty {
+                        rescue.sort { $0.score > $1.score }
+                        // 与原始路径合并统一排名（编辑惩罚已扣在 lattice score 里）
+                        lats = rescue + lats
+                    }
                 }
             }
         }
@@ -627,20 +687,39 @@ final class PinyinEngine {
             let (text, sc) = composeSentenceWithScore(full)
             let key = full.joined(separator: " ")
             // 整串词表前 4 里任一可信词即给 whole 加成（明明常排在命名后面）
-            let whole: Double = words(forPinyinKey: key).prefix(4).contains { isTrusted($0) } ? 200 : 0
+            var whole: Double = words(forPinyinKey: key).prefix(4).contains { isTrusted($0) } ? 200 : 0
+            // 整串全词命中（词长 == 音节数，5字专名「凡人修仙传」整词直出）：
+            // 必须明显压过「犯人+休息+按住」这类碎片拼接，提到 450
+            if let first = words(forPinyinKey: key).first,
+               first.count == full.count, isTrusted(first) {
+                whole = 450
+            }
             // 9 键必须优先「数字串完整切完」的路径。旧版让 mi'mi'mi'64 靠
             // 重复「秘密」刷分压过 ming'ming，于是出现「你也哦哦鄂哦此」。
             // 26 键的尾部半截音节是正常输入（ni'gan'jin'...'mian's），保持轻权重。
             let completeBonus: Double = is9Key
                 ? (lat.tail.isEmpty ? 300 : -160)
                 : (lat.tail.isEmpty ? 20 : 0)
+            // 26键尾格是裸元音（a/o/e/n）时只能补出 啊/哦/额/嗯 语气字垃圾
+            // （jian→ji+a、hao→ha+o 的拆尾，真机：麻烦提供订单哈哦），压 200
+            let bareTailPenalty: Double = (!is9Key && ["a","o","e","n"].contains(lat.tail)) ? -200 : 0
             // 每音节固定成本（qingjian「音节少优先」原则）：碎片化切分
             // （hua→hu+a 多出一个音节、ni×4 叠音节刷分）整体出局，
             // 这是竞品整句连贯排序的根基。26 键比 9 键更重（长句路径更长）。
             let lengthCost: Double = Double(lat.seq.count) * (is9Key ? 120 : 150)
             let finalScore = sc - lengthCost + whole
-                             + completeBonus + lat.score * 0.05
+                             + completeBonus + lat.score * 0.05 + bareTailPenalty
             ranked.append((Lattice(seq: full, tail: lat.tail, score: sc), text, finalScore))
+        }
+        // 9 键整词直查（搜狗长串直出原理）：长串 beam 会把正确切分挤掉
+        // （fan'ren'xiu'xian'zhuan 被同码音节同分竞争裁掉），数字签名 O(1) 直查。
+        if is9Key, locked.isEmpty, !t9WordTable.isEmpty {
+            for hit in (t9WordTable[buf] ?? []).prefix(3) where hit.count >= 2 {
+                let seq = hit[1].split(separator: " ").map(String.init)
+                let (text2, sc2) = composeSentenceWithScore(seq)
+                let final2 = sc2 - Double(seq.count) * 120 + 450 + 300
+                ranked.append((Lattice(seq: seq, tail: "", score: sc2), text2, final2))
+            }
         }
         ranked.sort { $0.2 > $1.2 }
         let ordered = ranked.map { $0.0 }
@@ -772,7 +851,9 @@ final class PinyinEngine {
         return out
     }
 
-    private func syllableLattices(_ buf: String, is9Key: Bool, level: Int) -> [Lattice] {
+    private func syllableLattices(_ buf: String, is9Key: Bool, level: Int, wide: Bool = false) -> [Lattice] {
+        // wide（停顿深度纠错用）：桶宽/总数翻倍，防止正确切分被同码音节
+        // 同分挤掉（真机：fan'ren'xiu'xian'zhuan 被裁剪出局）
         let chars = Array(buf)
         let n = chars.count
         guard n > 0 else { return [] }
@@ -832,7 +913,10 @@ final class PinyinEngine {
             // 宽度 10：同码音节对（62=ma/na × 9426=xian/xiao…）中间层会到
             // 十几个状态，太窄会把正确切分挤出（那现在 被吗现在挤掉的实测）。
             for j in (i + 1)...min(n, i + 6) {
-                if let arr = beam[j], arr.count > 10 { beam[j] = trimBeam(arr) }
+                let cap = wide ? 20 : 10
+                if let arr = beam[j], arr.count > cap {
+                    beam[j] = trimBeam(arr, per: wide ? 16 : 8)
+                }
             }
             // 尾部未成音节：允许继续输入（ni'gan'jin'wo'qu'mian's）
             let tail = String(chars[i..<n])
@@ -862,9 +946,10 @@ final class PinyinEngine {
         for c in byCount.keys.sorted() {
             // 每个音节数桶留 6 个：同码音节（62=ma/na）经常同分，
             // 只留 4 个会把正确切分挤出、留下同分的兄弟切分（搜狗对比用例实测）
-            if let lst = byCount[c] { uniq.append(contentsOf: lst.prefix(6)) }
+            let per = wide ? 12 : 6
+            if let lst = byCount[c] { uniq.append(contentsOf: lst.prefix(per)) }
         }
-        return Array(uniq.prefix(24))
+        return Array(uniq.prefix(wide ? 48 : 24))
     }
 
     private func sylScore(_ syl: String) -> Double {
@@ -1103,9 +1188,11 @@ final class PinyinEngine {
                         // 超高频单字封顶，防止「一」字频碾压「一杯」整词
                         var sc = Double(min(charFreq[c] ?? 1, 1200)) / 4.0 - 25 - Double(idx) * 6
                         // 句末语气词加成：口语收尾几乎都是 呀/吗/吧/啦，
-                        // 「去呀」被「去要」压过就是因为字频差距。句末位置先验补齐
+                        // 「去呀」被「去要」压过就是因为字频差距。句末位置先验补齐。
+                        // 裸元音音节（a/o/e）句末多是长音节拆尾垃圾（jian→ji+a 的"啊"、
+                        // hao→ha+o 的"哦"，真机：订单哈哦/哪一站西啊），降为 60
                         if i + l == n, ["呀","嘛","吧","啦","哦","呢","啊","吗","哈","哟"].contains(c) {
-                            sc += 460
+                            sc += (seq[i] == "a" || seq[i] == "o" || seq[i] == "e") ? 60 : 460
                         }
                         options.append((c, sc))
                     }
