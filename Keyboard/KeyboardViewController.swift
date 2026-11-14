@@ -1,16 +1,23 @@
 import UIKit
 import AVFoundation
 
+// 模式：只保留搜狗式的基础布局（中文9键/中文26键/英文/数字/符号/剪贴板），不再有双拼。
 enum KBMode {
-    case chinese9, chinese26, shuangpin, english, number, symbol, clipboard
+    case chinese9, chinese26, english, number, symbol, clipboard
 }
+
+// 主 App ↔ 键盘的设置同步通道。
+// 不依赖 App Group（手机端重签工具通常不会保留自定义 entitlement），
+// 改用系统剪贴板里追加一个自定义 item；键盘开启「完全访问」后读取并移除，
+// 不覆盖用户复制的文字。重签后依然可用。
+private let kSettingsPBKey = "app.mulberry6323.mozhi.kbcfg"
 
 class KeyboardViewController: UIInputViewController {
 
     private var mode: KBMode = .chinese9
     private var compose: String = ""            // 中文输入缓冲（26键=字母，9键=数字）
     private var lastCommitted: String = ""      // 最近提交的词，用于语境联想
-    private var displayCandidates: [String] = []// 当前候选条（拼音候选 or 联想）
+    private var displayCandidates: [String] = []
     private var shiftOn = false
 
     private let candidateScroll = UIScrollView()
@@ -21,21 +28,15 @@ class KeyboardViewController: UIInputViewController {
     private let modeBar = UIStackView()
     private let bufferLabel = UILabel()
 
-    // 设置页
-    private let settingsOverlay = UIView()
-    private var soundSwitch = UISwitch()
-    private var hapticSwitch = UISwitch()
-    private var volumeSlider = UISlider()
-
-    // 反馈（音/震）
+    // 反馈（音 / 震），开关由主 App 设置页同步过来
     private let impact = UIImpactFeedbackGenerator(style: .light)
     private var audioEngine: AVAudioEngine?
     private var clickPlayer: AVAudioPlayerNode?
     private var clickBuffer: AVAudioPCMBuffer?
 
-    private var engine = PinyinEngine.shared
+    private let engine = PinyinEngine.shared
 
-    // MARK: - 设置项
+    // MARK: - 设置项（键盘读自己的 UserDefaults；主 App 通过剪贴板写入后同步）
     private func soundOn() -> Bool {
         if UserDefaults.standard.object(forKey: "kb_sound_on") == nil { return true }
         return UserDefaults.standard.bool(forKey: "kb_sound_on")
@@ -49,48 +50,89 @@ class KeyboardViewController: UIInputViewController {
         return Float(UserDefaults.standard.double(forKey: "kb_sound_vol"))
     }
 
+    /// 读取主 App 放在剪贴板里的配置；读到后写进键盘自己的 UserDefaults 并移除该 item。
+    /// 没有「完全访问」时 items 为空，直接跳过（用默认设置，不影响打字）。
+    private func syncSettingsFromApp() {
+        let pb = UIPasteboard.general
+        let items = pb.items
+        guard !items.isEmpty else { return }
+        var found: String?
+        var kept: [[String: Any]] = []
+        for item in items {
+            if let s = item[kSettingsPBKey] as? String { found = s; continue }
+            if let d = item[kSettingsPBKey] as? Data,
+               let s = String(data: d, encoding: .utf8) { found = s; continue }
+            kept.append(item)
+        }
+        guard let json = found,
+              let data = json.data(using: .utf8),
+              let cfg = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+        if let v = cfg["sound"] as? Bool { UserDefaults.standard.set(v, forKey: "kb_sound_on") }
+        if let v = cfg["haptic"] as? Bool { UserDefaults.standard.set(v, forKey: "kb_haptic_on") }
+        if let v = cfg["vol"] as? Double { UserDefaults.standard.set(v, forKey: "kb_sound_vol") }
+        UserDefaults.standard.synchronize()
+        // 只移除我们自己的配置 item，用户复制的内容原样保留
+        pb.items = kept
+    }
+
     // MARK: - 生命周期
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
+        syncSettingsFromApp()
         setupUI()
-        buildSettingsOverlay()
         updateKeyArea()
         refresh()
         applyKeyboardHeight()
     }
 
-    /// 强制键盘有一个确定的总高度，避免某些时机高度塌成 0（整片空白）
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        syncSettingsFromApp()
+        applyKeyboardHeight()
+    }
+
+    /// 强制键盘有确定总高，避免某些时机高度塌成 0（整片空白）
     private func applyKeyboardHeight() {
+        guard view.constraints.first(where: { $0.identifier == "kbHeight" }) == nil else { return }
         let w = UIScreen.main.bounds.width
         let h = UIScreen.main.bounds.height
-        let isLandscape = w > h
-        let kbH: CGFloat = isLandscape ? 220 : 300
+        let kbH: CGFloat = (w > h) ? 220 : 300
         let c = view.heightAnchor.constraint(equalToConstant: kbH)
+        c.identifier = "kbHeight"
         c.priority = .required
         c.isActive = true
     }
 
+    // MARK: - 界面骨架
     private func setupUI() {
-        // 候选条
-        candidateStack.axis = .horizontal
-        candidateStack.spacing = 8
-        candidateStack.alignment = .center
-        candidateStack.layoutMargins = UIEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
-        candidateStack.isLayoutMarginsRelativeArrangement = true
-        candidateScroll.addSubview(candidateStack)
+        // ---- 候选条 ----
         candidateScroll.translatesAutoresizingMaskIntoConstraints = false
         candidateScroll.showsHorizontalScrollIndicator = false
+        candidateScroll.alwaysBounceHorizontal = true
         candidateScroll.backgroundColor = .secondarySystemBackground
         view.addSubview(candidateScroll)
 
-        // 缓冲提示（证明按键已响应）
-        bufferLabel.font = UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)
-        bufferLabel.textColor = .systemBlue
-        bufferLabel.setContentHuggingPriority(.required, for: .horizontal)
-        bufferLabel.isHidden = true
+        candidateStack.axis = .horizontal
+        candidateStack.spacing = 8
+        candidateStack.alignment = .center
+        candidateStack.distribution = .fill
+        candidateStack.layoutMargins = UIEdgeInsets(top: 5, left: 10, bottom: 5, right: 10)
+        candidateStack.isLayoutMarginsRelativeArrangement = true
+        // 【关键修复】之前漏了这一句：autoresizing mask 与手动约束冲突，
+        // 候选栏尺寸会塌成 0，导致候选词看不见也点不到 —— 英文不经过候选栏所以照样能打。
+        candidateStack.translatesAutoresizingMaskIntoConstraints = false
+        candidateScroll.addSubview(candidateStack)
 
-        // 键盘区域（自适应填充，不溢出）
+        // 拼音缓冲提示（证明按键已响应）
+        bufferLabel.font = UIFont.monospacedSystemFont(ofSize: 14, weight: .medium)
+        bufferLabel.textColor = .systemBlue
+        bufferLabel.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.10)
+        bufferLabel.layer.cornerRadius = 6
+        bufferLabel.clipsToBounds = true
+        bufferLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        // ---- 按键区 ----
         keyStack.axis = .vertical
         keyStack.spacing = 6
         keyStack.distribution = .fillEqually
@@ -107,7 +149,7 @@ class KeyboardViewController: UIInputViewController {
         keyArea.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(keyArea)
 
-        // 模式栏
+        // ---- 模式栏（无双拼、无设置） ----
         modeBar.axis = .horizontal
         modeBar.spacing = 4
         modeBar.distribution = .fillEqually
@@ -120,7 +162,7 @@ class KeyboardViewController: UIInputViewController {
             candidateScroll.topAnchor.constraint(equalTo: guide.topAnchor),
             candidateScroll.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
             candidateScroll.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
-            candidateScroll.heightAnchor.constraint(equalToConstant: 44),
+            candidateScroll.heightAnchor.constraint(equalToConstant: 46),
 
             keyArea.topAnchor.constraint(equalTo: candidateScroll.bottomAnchor),
             keyArea.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
@@ -137,18 +179,23 @@ class KeyboardViewController: UIInputViewController {
             modeBar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             modeBar.heightAnchor.constraint(equalToConstant: 40),
         ])
+
+        // 【关键修复】UIScrollView + UIStackView 的标准约束：
+        // 上下左右钉到 contentLayoutGuide，高度钉到 frameLayoutGuide，
+        // 这样候选区宽度由内容撑开、可横向滚动，且尺寸绝不为 0。
         NSLayoutConstraint.activate([
-            candidateStack.topAnchor.constraint(equalTo: candidateScroll.topAnchor),
-            candidateStack.bottomAnchor.constraint(equalTo: candidateScroll.bottomAnchor),
-            candidateStack.leadingAnchor.constraint(equalTo: candidateScroll.leadingAnchor),
-            candidateStack.trailingAnchor.constraint(greaterThanOrEqualTo: candidateScroll.trailingAnchor),
+            candidateStack.topAnchor.constraint(equalTo: candidateScroll.contentLayoutGuide.topAnchor),
+            candidateStack.bottomAnchor.constraint(equalTo: candidateScroll.contentLayoutGuide.bottomAnchor),
+            candidateStack.leadingAnchor.constraint(equalTo: candidateScroll.contentLayoutGuide.leadingAnchor),
+            candidateStack.trailingAnchor.constraint(equalTo: candidateScroll.contentLayoutGuide.trailingAnchor),
+            candidateStack.heightAnchor.constraint(equalTo: candidateScroll.frameLayoutGuide.heightAnchor),
         ])
     }
 
     private func buildModeBar() {
-        let items: [(String, KBMode?)] = [
-            ("中", .chinese9), ("双拼", .shuangpin), ("EN", .english), ("123", .number),
-            ("#", .symbol), ("剪贴板", .clipboard), ("⚙", nil),
+        let items: [(String, KBMode)] = [
+            ("中", .chinese9), ("EN", .english), ("123", .number),
+            ("#", .symbol), ("剪贴板", .clipboard),
         ]
         for (title, m) in items {
             let b = UIButton(type: .system)
@@ -156,71 +203,116 @@ class KeyboardViewController: UIInputViewController {
             b.setTitleColor(.label, for: .normal)
             b.backgroundColor = .systemFill
             b.layer.cornerRadius = 6
-            b.titleLabel?.font = UIFont.boldSystemFont(ofSize: 13)
-            if let m = m {
-                b.addAction(UIAction { [weak self] _ in self?.switchMode(m) }, for: .touchUpInside)
-            } else {
-                b.addAction(UIAction { [weak self] _ in self?.toggleSettings() }, for: .touchUpInside)
-            }
+            b.titleLabel?.font = UIFont.boldSystemFont(ofSize: 14)
+            b.tag = modeBarTag(m)
+            b.addAction(UIAction { [weak self] _ in self?.switchMode(m) }, for: .touchUpInside)
             modeBar.addArrangedSubview(b)
+        }
+        updateModeBarTitles()
+    }
+
+    private func modeBarTag(_ m: KBMode) -> Int {
+        switch m {
+        case .chinese9: return 1
+        case .chinese26: return 1
+        case .english: return 2
+        case .number: return 3
+        case .symbol: return 4
+        case .clipboard: return 5
+        }
+    }
+
+    /// 「中」按钮上直接显示当前是 9 键还是 26 键，点一下互切（搜狗式）
+    private func updateModeBarTitles() {
+        for v in modeBar.arrangedSubviews {
+            guard let b = v as? UIButton else { continue }
+            if b.tag == 1 {
+                b.setTitle((mode == .chinese26) ? "中26" : "中9", for: .normal)
+                b.backgroundColor = (mode == .chinese9 || mode == .chinese26) ? .systemGray4 : .systemFill
+            } else {
+                let active: Bool
+                switch mode {
+                case .english: active = b.tag == 2
+                case .number: active = b.tag == 3
+                case .symbol: active = b.tag == 4
+                case .clipboard: active = b.tag == 5
+                default: active = false
+                }
+                b.backgroundColor = active ? .systemGray4 : .systemFill
+            }
         }
     }
 
     // MARK: - 模式切换
     private func switchMode(_ m: KBMode) {
         var target = m
-        if m == .chinese9 && (mode == .chinese9 || mode == .chinese26) {
+        if m == .chinese9 {
             target = (mode == .chinese9) ? .chinese26 : .chinese9
         }
         mode = target
         compose = ""
         lastCommitted = ""
         shiftOn = false
+        updateModeBarTitles()
         updateKeyArea()
         refresh()
     }
 
-    private var isComposeMode: Bool { mode == .chinese9 || mode == .chinese26 || mode == .shuangpin }
-
-    private func spScheme() -> String {
-        return UserDefaults.standard.string(forKey: "kb_sp_scheme") ?? "小鹤"
-    }
+    private var isComposeMode: Bool { mode == .chinese9 || mode == .chinese26 }
 
     // MARK: - 候选刷新
     private func refresh() {
         displayCandidates = []
         candidateStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+
         if isComposeMode {
             if !compose.isEmpty {
-                if mode == .shuangpin {
-                    displayCandidates = engine.candidatesForShuangpin(compose, scheme: spScheme())
-                } else {
-                    displayCandidates = engine.candidates(for: compose, is9Key: mode == .chinese9)
-                }
+                displayCandidates = engine.candidates(for: compose, is9Key: mode == .chinese9)
             } else if !lastCommitted.isEmpty {
                 displayCandidates = engine.associations(for: lastCommitted)
             }
         }
-        for c in displayCandidates {
+
+        // 【兜底 1】只要缓冲非空，候选栏永远至少有一个可点项。
+        // 即使词库加载失败 / 引擎返回空，用户也能点它把输入原串上屏 —— 绝不「打不了字」。
+        if isComposeMode && !compose.isEmpty && displayCandidates.isEmpty {
+            displayCandidates = [compose]
+        }
+
+        // 拼音串提示（放最左，证明按键已响应）
+        if isComposeMode && !compose.isEmpty {
+            bufferLabel.text = "  \(compose)  "
+            candidateStack.addArrangedSubview(bufferLabel)
+        }
+
+        // 词库没加载到时直接说明，不再一片空白让人猜
+        if isComposeMode && !engine.isLoaded {
+            let warn = UILabel()
+            warn.text = "⚠ 词库未加载，请重装"
+            warn.textColor = .systemRed
+            warn.font = UIFont.systemFont(ofSize: 13)
+            warn.setContentHuggingPriority(.required, for: .horizontal)
+            candidateStack.addArrangedSubview(warn)
+        }
+
+        for c in displayCandidates.prefix(40) {
             let b = UIButton(type: .system)
             b.setTitle(c, for: .normal)
             b.setTitleColor(.label, for: .normal)
-            b.contentHorizontalAlignment = .left
-            b.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
-            b.titleLabel?.font = UIFont.systemFont(ofSize: 17)
-            b.backgroundColor = .secondarySystemBackground
+            b.titleLabel?.font = UIFont.systemFont(ofSize: 18)
+            b.titleLabel?.adjustsFontSizeToFitWidth = true
+            b.backgroundColor = .tertiarySystemFill
             b.layer.cornerRadius = 8
+            b.contentEdgeInsets = UIEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
+            b.translatesAutoresizingMaskIntoConstraints = false
+            // 固定可点尺寸，避免被 stack 压成 0
+            b.heightAnchor.constraint(equalToConstant: 34).isActive = true
+            b.widthAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
             b.addAction(UIAction { [weak self] _ in self?.commit(c) }, for: .touchUpInside)
             candidateStack.addArrangedSubview(b)
         }
-        if isComposeMode && !compose.isEmpty {
-            bufferLabel.isHidden = false
-            bufferLabel.text = "  ⟨\(compose)⟩  "
-        } else {
-            bufferLabel.isHidden = true
-        }
-        if !bufferLabel.isHidden { candidateStack.insertArrangedSubview(bufferLabel, at: 0) }
         candidateScroll.layoutIfNeeded()
+        candidateScroll.contentOffset = .zero
     }
 
     private func commit(_ text: String) {
@@ -242,6 +334,7 @@ class KeyboardViewController: UIInputViewController {
         }
     }
 
+    /// 空格 / 确认：有候选上屏首选；没有就把拼音串原样上屏（保证一定出字）
     private func confirm() {
         if let first = displayCandidates.first {
             commit(first)
@@ -263,7 +356,6 @@ class KeyboardViewController: UIInputViewController {
         switch mode {
         case .chinese9:  rows = nineKeys()
         case .chinese26: rows = qwerty(insertDirectly: false)
-        case .shuangpin: rows = qwerty(insertDirectly: false)
         case .english:   rows = qwerty(insertDirectly: true)
         case .number:    rows = numberKeys()
         case .symbol:    rows = symbolKeys()
@@ -293,10 +385,11 @@ class KeyboardViewController: UIInputViewController {
         b.titleLabel?.textAlignment = .center
         b.contentVerticalAlignment = .center
         b.contentHorizontalAlignment = .center
-        b.heightAnchor.constraint(equalToConstant: 48).isActive = true   // 保底高度，防止键盘塌成空白
+        b.heightAnchor.constraint(equalToConstant: 48).isActive = true
         b.addAction(UIAction { [weak self] _ in
-            self?.feedback()
+            // 先执行输入，再给声音/震动反馈：音频初始化万一卡住也不影响打字
             action()
+            self?.feedback()
         }, for: .touchUpInside)
         return b
     }
@@ -319,7 +412,8 @@ class KeyboardViewController: UIInputViewController {
             let t = l.isEmpty ? n : "\(n)\n\(l)"
             return key(t) { [weak self] in
                 guard let self = self else { return }
-                if !n.isEmpty { self.compose += n; self.refresh() }
+                self.compose += n
+                self.refresh()
             }
         }
         let r1 = row([k(0), k(1), k(2)])
@@ -465,7 +559,7 @@ class KeyboardViewController: UIInputViewController {
         return pb.string
     }
 
-    // MARK: - 反馈（震动 + 按键音）
+    // MARK: - 反馈（震动 + 按键音），开关来自主 App 设置
     private func feedback() {
         if hapticOn() { impact.impactOccurred() }
         if soundOn() {
@@ -480,18 +574,18 @@ class KeyboardViewController: UIInputViewController {
 
     private func ensureAudio() {
         guard audioEngine == nil else { return }
-        let engine = AVAudioEngine()
+        let av = AVAudioEngine()
         let player = AVAudioPlayerNode()
-        engine.attach(player)
-        let fmt = engine.outputNode.inputFormat(forBus: 0)
-        engine.connect(player, to: engine.mainMixerNode, format: fmt)
+        av.attach(player)
+        let fmt = av.outputNode.inputFormat(forBus: 0)
+        av.connect(player, to: av.mainMixerNode, format: fmt)
         do {
             try AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
             try AVAudioSession.sharedInstance().setActive(true, options: [])
         } catch { }
-        engine.prepare()
-        do { try engine.start() } catch { }
-        audioEngine = engine
+        av.prepare()
+        do { try av.start() } catch { }
+        audioEngine = av
         clickPlayer = player
         clickBuffer = makeClickBuffer(format: fmt)
     }
@@ -500,9 +594,10 @@ class KeyboardViewController: UIInputViewController {
         let sr = format.sampleRate
         let dur = 0.03
         let n = Int(sr * dur)
-        guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)) else { return nil }
+        guard n > 0,
+              let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)),
+              let ch = buf.floatChannelData else { return nil }
         buf.frameLength = AVAudioFrameCount(n)
-        guard let ch = buf.floatChannelData else { return nil }
         let data = ch[0]
         for i in 0..<n {
             let t = Double(i) / sr
@@ -510,103 +605,5 @@ class KeyboardViewController: UIInputViewController {
             data[i] = Float(sin(2.0 * .pi * 1500.0 * t) * env * 0.5)
         }
         return buf
-    }
-
-    // MARK: - 设置页
-    private func buildSettingsOverlay() {
-        settingsOverlay.translatesAutoresizingMaskIntoConstraints = false
-        settingsOverlay.backgroundColor = UIColor.black.withAlphaComponent(0.45)
-        settingsOverlay.isHidden = true
-        view.addSubview(settingsOverlay)
-
-        let card = UIView()
-        card.translatesAutoresizingMaskIntoConstraints = false
-        card.backgroundColor = .secondarySystemBackground
-        card.layer.cornerRadius = 14
-        card.layer.shadowColor = UIColor.black.cgColor
-        card.layer.shadowOpacity = 0.25
-        card.layer.shadowRadius = 10
-        settingsOverlay.addSubview(card)
-
-        let title = UILabel()
-        title.text = "键盘设置"
-        title.font = UIFont.boldSystemFont(ofSize: 18)
-        title.textColor = .label
-
-        let l1 = UILabel(); l1.text = "按键音"; l1.textColor = .label; l1.font = .systemFont(ofSize: 16)
-        let l2 = UILabel(); l2.text = "音量"; l2.textColor = .label; l2.font = .systemFont(ofSize: 16)
-        let l3 = UILabel(); l3.text = "震动反馈"; l3.textColor = .label; l3.font = .systemFont(ofSize: 16)
-        let l4 = UILabel(); l4.text = "双拼方案"; l4.textColor = .label; l4.font = .systemFont(ofSize: 16)
-
-        soundSwitch.isOn = soundOn()
-        hapticSwitch.isOn = hapticOn()
-        volumeSlider.value = soundVol()
-        volumeSlider.minimumValue = 0; volumeSlider.maximumValue = 1
-        soundSwitch.addTarget(self, action: #selector(onSound(_:)), for: .valueChanged)
-        hapticSwitch.addTarget(self, action: #selector(onHaptic(_:)), for: .valueChanged)
-        volumeSlider.addTarget(self, action: #selector(onVol(_:)), for: .valueChanged)
-
-        // 双拼方案选择
-        let schemes = engine.availableShuangpinSchemes()
-        let spSeg = UISegmentedControl(items: schemes)
-        spSeg.selectedSegmentIndex = max(0, schemes.firstIndex(of: spScheme()) ?? 0)
-        spSeg.addTarget(self, action: #selector(onScheme(_:)), for: .valueChanged)
-        let spBox = UIStackView(arrangedSubviews: [l4, spSeg])
-        spBox.axis = .vertical; spBox.spacing = 8; spBox.alignment = .fill
-
-        let close = UIButton(type: .system)
-        close.setTitle("完成", for: .normal)
-        close.titleLabel?.font = .boldSystemFont(ofSize: 17)
-        close.backgroundColor = .systemFill
-        close.layer.cornerRadius = 8
-        close.addAction(UIAction { [weak self] _ in self?.toggleSettings() }, for: .touchUpInside)
-
-        let vstack = UIStackView(arrangedSubviews: [title, rowSettings(l1, soundSwitch), rowSettings(l2, volumeSlider), rowSettings(l3, hapticSwitch), spBox, close])
-        vstack.axis = .vertical
-        vstack.spacing = 16
-        vstack.translatesAutoresizingMaskIntoConstraints = false
-        vstack.layoutMargins = UIEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
-        vstack.isLayoutMarginsRelativeArrangement = true
-        card.addSubview(vstack)
-
-        let guide = view.safeAreaLayoutGuide
-        NSLayoutConstraint.activate([
-            settingsOverlay.topAnchor.constraint(equalTo: guide.topAnchor),
-            settingsOverlay.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
-            settingsOverlay.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
-            settingsOverlay.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
-
-            card.centerXAnchor.constraint(equalTo: settingsOverlay.centerXAnchor),
-            card.centerYAnchor.constraint(equalTo: settingsOverlay.centerYAnchor),
-            card.leadingAnchor.constraint(equalTo: settingsOverlay.leadingAnchor, constant: 24),
-            card.trailingAnchor.constraint(equalTo: settingsOverlay.trailingAnchor, constant: -24),
-
-            vstack.topAnchor.constraint(equalTo: card.topAnchor),
-            vstack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
-            vstack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
-            vstack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-        ])
-    }
-
-    private func rowSettings(_ left: UIView, _ right: UIView) -> UIStackView {
-        let s = UIStackView(arrangedSubviews: [left, right])
-        s.axis = .horizontal; s.spacing = 12; s.alignment = .center
-        left.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        right.setContentHuggingPriority(.required, for: .horizontal)
-        return s
-    }
-
-    private func toggleSettings() {
-        settingsOverlay.isHidden.toggle()
-    }
-
-    @objc private func onSound(_ s: UISwitch) { UserDefaults.standard.set(s.isOn, forKey: "kb_sound_on") }
-    @objc private func onHaptic(_ s: UISwitch) { UserDefaults.standard.set(s.isOn, forKey: "kb_haptic_on") }
-    @objc private func onVol(_ s: UISlider) { UserDefaults.standard.set(Double(s.value), forKey: "kb_sound_vol") }
-    @objc private func onScheme(_ s: UISegmentedControl) {
-        let schemes = engine.availableShuangpinSchemes()
-        guard s.selectedSegmentIndex >= 0, s.selectedSegmentIndex < schemes.count else { return }
-        UserDefaults.standard.set(schemes[s.selectedSegmentIndex], forKey: "kb_sp_scheme")
-        if mode == .shuangpin { refresh() }
     }
 }
