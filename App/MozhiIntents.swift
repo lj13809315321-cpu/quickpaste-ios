@@ -48,16 +48,16 @@ final class StopContinuousCopyIntent: AppIntent {
 }
 
 /// 切换连续复制：在开 / 关之间翻转。
-/// ★ 关键点：iOS 18 SDK 要求 `openAppWhenRun` 必须是【静态编译期常量】，
-///   不能是「按当前是否在跑动态计算」的属性——否则编译直接报错
-///   （The property 'openAppWhenRun' must have a compile-time static value）。
-///   因此这里统一设 true（拉起 App 到前台），由 perform() 内部按实时状态分流：
-///     · 当前在跑 → 关闭：App 已在前台、与运行中的 PiPManager 同一实例，
-///       直接 stop() 立刻停掉画中画，并清掉「下次进 App 自动开」，
-///       不会被 startIfWanted 再拉起；随后跳回来源 App。
-///     · 当前没跑 → 开启：start() 拉起画中画（必须前台窗口），随后跳回来源 App。
-///   两个分支都走已验证的「跳回来源 App」逻辑，用户在哪点快捷指令就回哪。
-///   （若要「关闭且不切前台」，请用独立的「关闭连续复制」动作，那是静默通道。）
+/// ★ iOS 18 SDK 要求 `openAppWhenRun` 必须是【静态编译期常量】，不能按当前状态
+///   动态计算（否则编译报 "must have a compile-time static value"），所以统一 true。
+/// ★ v1.8.42 修「切换的关闭不好使」的两处根因：
+///   1) 判活原来只看 livePipState()（给键盘扩展用的剪贴板心跳）。用户刚复制过
+///      东西时自定义类型会被系统整份覆盖、心跳也可能过期 → 误判「没在跑」→
+///      想关却走了开启分支。现在以【本进程真实 running/starting】为准。
+///   2) 关闭原来调 stop()：它只是异步发 stopPictureInPicture()，收尾靠 didStop
+///      回调里的 finish()；而关闭后立刻跳回来源 App，App 进后台回调常不派发，
+///      状态还停在「在跑」，下次又被 startIfWanted 拉起。现在改走
+///      forceStopFromShortcut() 同步全量收尾。
 final class ToggleContinuousCopyIntent: AppIntent {
     static var title: LocalizedStringResource = "切换连续复制"
     static var description: LocalizedStringResource =
@@ -65,22 +65,21 @@ final class ToggleContinuousCopyIntent: AppIntent {
     static var openAppWhenRun: Bool = true
 
     func perform() async throws -> some IntentResult {
-        if QPSharedHistory.livePipState() {
-            // 当前在跑 → 关闭：App 已拉到前台，与运行中的 PiPManager 同一实例，
-            // 直接停掉画中画（stop 内含「清下次自动开」），不会再被 startIfWanted 拉起。
-            await MainActor.run {
-                PiPManager.shared.stop()
-                // 关闭后同样跳回来源 App（与开启一致的体验），拿不到来源就不跳。
+        await MainActor.run {
+            let mgr = PiPManager.shared
+            // 本进程真实状态优先；剪贴板心跳只作冷启动残留状态的兜底。
+            let isRunning = mgr.isActive || QPSharedHistory.livePipState()
+            if isRunning {
+                // 关闭：同步清干净所有「还想开」的标记，随后跳回来源 App。
+                mgr.forceStopFromShortcut()
                 let host = QPSharedHistory.cachedHostBundleId()
                     ?? QPSharedHistory.defaultReturnBundleId()
                 if let target = host, !target.isEmpty, target != "none" {
                     AppRootView.openHostApp(target)
                 }
-            }
-        } else {
-            // 当前没跑 → 开启：需前台窗口，启动后自动跳回来源 App。
-            await MainActor.run {
-                PiPManager.shared.start()
+            } else {
+                // 开启：画中画必须要前台窗口，启动后自动跳回来源 App。
+                mgr.start()
                 AppRootView.returnToSourceAfterPipStart()
             }
         }

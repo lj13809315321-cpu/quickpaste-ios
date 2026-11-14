@@ -316,6 +316,27 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         }
     }
 
+    /// v1.8.42：给快捷指令判活用的只读状态（running/starting 都是 private(set)/private，
+    /// 不能直接从 MozhiIntents.swift 跨文件摸 starting，统一走这里）。
+    var isActive: Bool { running || starting }
+
+    /// v1.8.42：快捷指令「切换」的关闭分支专用，同步把状态彻底收干净。
+    /// ★ 不能用 stop()：stopPictureInPicture() 只是【异步请求】，真正把 running /
+    ///   pip / want / qp.autoPiP 全清掉靠 didStop 回调里的 finish()。而快捷指令
+    ///   关闭后会立刻 openHostApp 跳回来源 App，App 一进后台 didStop 常常不派发
+    ///   → finish() 不执行 → 状态仍是「在跑」，下次进 App 又被 startIfWanted
+    ///   拉起来，表现在外面就是「切换的关闭没生效」（单独关闭走静默指令带
+    ///   0.6s 强制补刀，所以一直是好使的）。
+    ///   这里直接同步 finish()，并清掉前台可能排队的两条旧指令，避免刚关又被打开。
+    func forceStopFromShortcut() {
+        if let c = pipController, c.isPictureInPictureActive {
+            c.stopPictureInPicture()
+        }
+        QPSharedHistory.clearPipStopCommand()
+        _ = QPSharedHistory.consumePipCommand()   // 清掉旧的键盘切换指令，别把刚关的又打开
+        finish()
+    }
+
     /// 页面定时调用，把后台新收录的条数刷到界面上。
     /// v1.8.15：只刷新「被系统拦」状态与小窗显示，不再用历史总条数覆盖
     /// capturedCount（否则会话计数会被冲回历史数）。capturedCount 只在
@@ -755,6 +776,43 @@ struct PiPControlView: View {
         ["全部", "文本", "链接"][filterKind]
     }
 
+    // MARK: v1.8.42「哪条是刚复制的」——文字徽标 + 颜色 + 相对时间，三样一起给
+    /// 包一层 Identifiable，避免 SwiftUI 里对元组用 keypath（Swift 不支持）。
+    private struct RankedItem: Identifiable {
+        let id: String
+        let text: String
+        let ts: Double
+        let rank: Int
+    }
+
+    /// 列表本来就是「新 → 旧」，rank 0 就是本次（最近一次）复制。
+    private var ranked: [RankedItem] {
+        filtered.enumerated().map {
+            RankedItem(id: $0.element.text, text: $0.element.text,
+                       ts: $0.element.ts, rank: $0.offset)
+        }
+    }
+
+    private func rankLabel(_ i: Int) -> String {
+        switch i {
+        case 0: return "本次"
+        case 1: return "上次"
+        case 2: return "上上次"
+        default: return "第\(i + 1)条"
+        }
+    }
+
+    private func timeLabel(_ ts: Double) -> String {
+        guard ts > 0 else { return "" }
+        let d = Date().timeIntervalSince1970 - ts
+        if d < 60 { return "刚刚" }
+        if d < 3600 { return "\(Int(d / 60)) 分钟前" }
+        if d < 86400 { return "\(Int(d / 3600)) 小时前" }
+        let f = DateFormatter()
+        f.dateFormat = "M/d HH:mm"
+        return f.string(from: Date(timeIntervalSince1970: ts))
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -943,7 +1001,7 @@ struct PiPControlView: View {
                             .font(.footnote)
                             .foregroundColor(.secondary)
                     } else {
-                        ForEach(filtered, id: \.text) { e in
+                        ForEach(ranked) { e in
                             Button {
                                 if editMode {
                                     if selection.contains(e.text) {
@@ -966,23 +1024,48 @@ struct PiPControlView: View {
                                     }
                                 }
                             } label: {
-                                HStack(alignment: .top, spacing: 10) {
+                                HStack(alignment: .top, spacing: 8) {
                                     if editMode {
                                         Image(systemName: selection.contains(e.text)
                                               ? "checkmark.circle.fill" : "circle")
                                             .foregroundColor(.accentColor)
                                     }
-                                    Text(e.text)
-                                        .lineLimit(2)
-                                        .font(.subheadline)
-                                        .foregroundColor(.primary)
+                                    // v1.8.42：文字徽标 + 颜色一起标先后 ——
+                                    // 本次=蓝底白字、上次=浅蓝、上上次及更早=灰。
+                                    Text(rankLabel(e.rank))
+                                        .font(.caption2)
+                                        .fontWeight(.semibold)
+                                        .foregroundColor(e.rank == 0 ? .white : (e.rank == 1 ? .blue : .secondary))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 3)
+                                        .background(Capsule().fill(
+                                            e.rank == 0 ? Color.blue
+                                                : (e.rank == 1 ? Color.blue.opacity(0.15)
+                                                   : Color(UIColor.systemGray5))
+                                        ))
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(e.text)
+                                            .lineLimit(2)
+                                            .font(.subheadline)
+                                            .foregroundColor(.primary)
+                                        if !timeLabel(e.ts).isEmpty {
+                                            Text(timeLabel(e.ts))
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
                                     Spacer()
                                     Text("\(e.text.count) 字")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
+                                .padding(.vertical, 2)
                             }
                             .buttonStyle(.plain)
+                            .listRowBackground(
+                                e.rank == 0 ? Color.blue.opacity(0.08)
+                                            : Color(UIColor.secondarySystemGroupedBackground)
+                            )
                         }
                     }
                 }
