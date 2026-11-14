@@ -189,6 +189,8 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
             DispatchQueue.main.async { self?.netWiFiOK = ok }
         }
         netMonitor.start(queue: DispatchQueue(label: "mozhi.app.netmonitor"))
+        // v1.8.44：App 一启动就把历史通道补回来（旧版可能被指令写入冲掉）
+        Self.repairSharedChannel()
     }
 
     // MARK: - 开启
@@ -219,6 +221,9 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
 
     private func setupAndStart(window: UIWindow) {
         guard !running, !starting else { return }
+
+        // v1.8.44：开启前先把本地历史重新发布到共享通道，键盘马上能同步到
+        Self.repairSharedChannel()
 
         // v1.8.38/1.8.39：「开启前清空」开关（清空 App 端）；「清空输入法前端」
         // 开关（额外让键盘清空自己的前端栏）。两者任一打开都先把 App 端清掉，
@@ -415,6 +420,16 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         guard pipSessionStarts().isEmpty else { return }
         let oldest = mergedItems().map { $0.ts }.min() ?? Date().timeIntervalSince1970
         UserDefaults.standard.set([oldest - 1], forKey: sessionStartsKey)
+    }
+
+    /// v1.8.44：把「本地历史 ∪ 共享通道」重新发布到剪贴板共享通道（自愈）。
+    /// 旧版 setData 会把历史通道 pbType 冲掉，键盘 read() 读不到主 App 收录的
+    /// 内容 —— 表现就是「主 App 连续复制有、输入法前端同步不过去」。
+    /// 打开一次主 App / 每次开启连续复制都补回来，不用等下一次复制。
+    static func repairSharedChannel() {
+        let merged = mergedItems()
+        QPSharedHistory.republishHistory(merged.map { $0.text },
+                                         times: merged.map { $0.ts })
     }
 
     /// 指纹：**用完整内容**。墓碑按指纹过滤，之前只取前 140 字，

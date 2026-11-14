@@ -150,6 +150,59 @@ enum QPSharedHistory {
     /// 关闭后完全不动用户剪贴板（画中画抓到的东西键盘读不到，但绝不污染剪贴板）。
     static var pasteboardFallbackEnabled = true
 
+    // MARK: v1.8.44 独立指令通道统一写入口
+    /// ⚠️ 不能用 `UIPasteboard.setData(_:forPasteboardType:)`：Apple 文档明确
+    ///   「Calling this method replaces any items currently in the pasteboard」，
+    ///   它会把剪贴板里**全部**内容替换成只含这一个类型的单 item —— 用户正文、
+    ///   以及连续复制的历史通道 `pbType` 会被一起冲掉。旧版 9 处指令写入全用它，
+    ///   结果就是「主 App 收得到、键盘前端同步不过去」：主 App 有本地历史与内存
+    ///   兜底照常显示，键盘 `read()` 拿不到 `pbType` 只能返回空列表。
+    ///   这里与 `publishBarSettings` 同款：保留现有那一个 item 的全部 key + 正文，
+    ///   只覆盖自己这一种类型；单 item 是硬约束（多 item 会让 `pb.string` 失效）。
+    static func setSideChannelData(_ data: Data, type: String) {
+        guard pasteboardFallbackEnabled else { return }
+        let pb = UIPasteboard.general
+        let body = pb.string
+        var item: [String: Any] = [:]
+        if let first = pb.items.first {
+            for (k, v) in first where k != "public.utf8-plain-text" && k != "public.text" {
+                item[k] = v
+            }
+            // 后台 / 权限受限时 pb.string 可能读不到：把原有正文键原样留着，
+            // 绝不因为写一条指令就把用户刚复制的内容弄丢。
+            if body == nil || body?.isEmpty == true {
+                if let v = first["public.utf8-plain-text"] { item["public.utf8-plain-text"] = v }
+                if let v = first["public.text"] { item["public.text"] = v }
+            }
+        } else {
+            // pb.items 返回空时：至少把我们自己的几条通道读回来，
+            // 尤其是历史通道 pbType，别让键盘读不到主 App 收录的内容。
+            for t in [pbType, pipStatePBType, pipCmdPBType, pipStopPBType,
+                      kbClearPBType, lastHostPBType, defaultReturnPBType] where t != type {
+                if let d = pb.data(forPasteboardType: t) { item[t] = d }
+            }
+        }
+        if let body = body, !body.isEmpty {
+            item["public.utf8-plain-text"] = body
+            item["public.text"] = body
+        }
+        item[type] = data
+        pb.items = [item]
+    }
+
+    /// v1.8.44：用主 App 手里的历史重建剪贴板共享通道（自愈入口）。
+    /// 装上新版前，旧版 setData 可能已经把 pbType 冲掉了；打开一次主 App 就补回来，
+    /// 键盘不用等下一次复制也能立刻同步到已收录的内容。
+    static func republishHistory(_ items: [String], times: [Double]) {
+        guard pasteboardFallbackEnabled, !items.isEmpty else { return }
+        var p = read()
+        p.items = items
+        p.times = times
+        memory = p
+        guard let data = try? JSONEncoder().encode(p) else { return }
+        setSideChannelData(data, type: pbType)
+    }
+
     // MARK: - 读（主 App 与键盘扩展都会调）
 
     /// 本进程内的最后一份已知状态。
@@ -226,6 +279,13 @@ enum QPSharedHistory {
         if let body = pb.string, !body.isEmpty {
             item["public.utf8-plain-text"] = body
             item["public.text"] = body
+        }
+        // v1.8.44：旧版 setData 可能已经把历史通道 pbType 冲掉。心跳每 5 秒跑一次，
+        // 发现缺了就用主 App 内存里的那份补回去 —— 通道被冲掉也能自动恢复，
+        // 键盘 read() 始终能读到主 App 收录的内容（只主 App 有 memory 兜底，键盘不会误写空）。
+        if item[pbType] == nil, memoryFallback, let m = memory, !m.items.isEmpty,
+           let d = try? JSONEncoder().encode(m) {
+            item[pbType] = d
         }
         item[pipStatePBType] = data
         pb.items = [item]
@@ -593,8 +653,9 @@ enum QPSharedHistory {
     }
 
     /// 键盘轻点工具条「连续复制」图标时调用。
-    /// 走独立文件 / 独立剪贴板类型，绝不碰 Payload，也不会碰用户剪贴板正文：
-    /// setData 只替换第一个 item 里的这个自定义类型，不新增 item、不动正文。
+    /// 走独立文件 / 独立剪贴板类型，绝不碰 Payload。
+    /// v1.8.44：写剪贴板统一走 setSideChannelData（保留正文与所有其它 key），
+    /// 不再用会清空整个剪贴板的 setData。
     static func markPipCommand(host: String?) {
         let cmd = PipCommand(at: Date().timeIntervalSince1970, host: host)
         guard let data = try? JSONEncoder().encode(cmd) else { return }
@@ -603,7 +664,7 @@ enum QPSharedHistory {
             try? data.write(to: url.appendingPathComponent(pipCmdFile), options: .atomic)
         }
         if pasteboardFallbackEnabled {
-            UIPasteboard.general.setData(data, forPasteboardType: pipCmdPBType)
+            setSideChannelData(data, type: pipCmdPBType)
         }
     }
 
@@ -633,7 +694,7 @@ enum QPSharedHistory {
         let expired = (try? JSONEncoder().encode(PipCommand(at: 0, host: nil))) ?? Data()
         if let f = cmdFile { try? expired.write(to: f, options: .atomic) }
         if pasteboardFallbackEnabled {
-            UIPasteboard.general.setData(expired, forPasteboardType: pipCmdPBType)
+            setSideChannelData(expired, type: pipCmdPBType)
         }
         return cmd
     }
@@ -645,7 +706,7 @@ enum QPSharedHistory {
     }
 
     /// 键盘轻点图标且「确实在抓」时调用。双写双读，绝不碰 Payload，
-    /// setData 只替换自定义类型、不新增 item、不动用户剪贴板正文。
+    /// v1.8.44：走 setSideChannelData 保留正文与历史通道，不再冲掉整个剪贴板。
     static func markPipStopCommand() {
         let cmd = PipStopCommand(at: Date().timeIntervalSince1970)
         guard let data = try? JSONEncoder().encode(cmd) else { return }
@@ -653,7 +714,7 @@ enum QPSharedHistory {
             try? data.write(to: url.appendingPathComponent(pipStopFile), options: .atomic)
         }
         if pasteboardFallbackEnabled {
-            UIPasteboard.general.setData(data, forPasteboardType: pipStopPBType)
+            setSideChannelData(data, type: pipStopPBType)
         }
     }
 
@@ -677,14 +738,14 @@ enum QPSharedHistory {
             guard let cmd = valid(try? Data(contentsOf: f)) else { return nil }
             try? expiredData.write(to: f, options: .atomic)
             if pasteboardFallbackEnabled {
-                UIPasteboard.general.setData(expiredData, forPasteboardType: pipStopPBType)
+                setSideChannelData(expiredData, type: pipStopPBType)
             }
             return cmd
         }
         guard pasteboardFallbackEnabled,
               let cmd = valid(UIPasteboard.general.data(forPasteboardType: pipStopPBType))
         else { return nil }
-        UIPasteboard.general.setData(expiredData, forPasteboardType: pipStopPBType)
+        setSideChannelData(expiredData, type: pipStopPBType)
         return cmd
     }
 
@@ -696,7 +757,7 @@ enum QPSharedHistory {
             try? expired.write(to: url.appendingPathComponent(pipStopFile), options: .atomic)
         }
         if pasteboardFallbackEnabled {
-            UIPasteboard.general.setData(expired, forPasteboardType: pipStopPBType)
+            setSideChannelData(expired, type: pipStopPBType)
         }
     }
 
@@ -717,7 +778,7 @@ enum QPSharedHistory {
             try? data.write(to: url.appendingPathComponent(kbClearFile), options: [.atomic])
         }
         if pasteboardFallbackEnabled {
-            UIPasteboard.general.setData(data, forPasteboardType: kbClearPBType)
+            setSideChannelData(data, type: kbClearPBType)
         }
     }
 
@@ -746,7 +807,7 @@ enum QPSharedHistory {
             try? data.write(to: url.appendingPathComponent(lastHostFile), options: .atomic)
         }
         if pasteboardFallbackEnabled {
-            UIPasteboard.general.setData(data, forPasteboardType: lastHostPBType)
+            setSideChannelData(data, type: lastHostPBType)
         }
     }
 
@@ -790,7 +851,7 @@ enum QPSharedHistory {
             try? data.write(to: url.appendingPathComponent(defaultReturnFile), options: .atomic)
         }
         if pasteboardFallbackEnabled {
-            UIPasteboard.general.setData(data, forPasteboardType: defaultReturnPBType)
+            setSideChannelData(data, type: defaultReturnPBType)
         }
     }
 
