@@ -25,6 +25,8 @@ struct PiPControlView: View {
     /// v1.8.43：快捷指令「切换」关掉连续复制后，要不要自动跳回来源 App。
     /// 默认【关】= 停在粘鼠主 App；打开 = 关完立刻回抖音等来源 App。
     @AppStorage("ns.pipToggleReturnOnClose") private var toggleReturnOnClose = false
+    /// 收录过滤：0 全部 / 1 仅文字 / 2 仅图片
+    @AppStorage("ns.captureFilter") private var captureFilter = 0
 
     /// 链接条目判断
     private static func isLink(_ s: String) -> Bool {
@@ -89,7 +91,7 @@ struct PiPControlView: View {
                                   ? Color(red: 0.20, green: 0.78, blue: 0.35)
                                   : Color(red: 0.76, green: 0.76, blue: 0.78))
                             .frame(width: 12, height: 12)
-                        Text(pip.running ? "连续复制中" : "未开启连续复制")
+                        Text(pip.running ? (pip.paused ? "已暂停收录" : "连续复制中") : "未开启连续复制")
                             .font(.title3.weight(.semibold))
                         Spacer()
                         Text("本次已收录 \(pip.capturedCount) 条")
@@ -97,13 +99,28 @@ struct PiPControlView: View {
                             .monospacedDigit()
                     }
                     Text(pip.running
-                         ? "小窗在屏幕上就一直在抓：切到微信、Safari 复制，回来这里能看到每一条。"
+                         ? (pip.paused
+                            ? "小窗仍在、后台保活没断，只是暂时不收新复制的内容。点下面「继续收录」恢复。"
+                            : "小窗在屏幕上就一直在抓：切到微信、Safari 复制，回来这里能看到每一条。")
                          : "开启后屏幕角落出现小窗，就代表正在后台监听剪贴板。")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                     // ★ 用户点名要的「小开关」：一个按钮，开/关连续复制，颜色跟随真实状态。
                     SmallSwitchButton()
                         .padding(.top, 2)
+                    // ★ 暂停 / 继续：不关小窗，只停/开「读剪贴板」。
+                    if pip.running {
+                        Button {
+                            pip.togglePause()
+                        } label: {
+                            Label(pip.paused ? "继续收录" : "暂停收录（小窗保持）",
+                                  systemImage: pip.paused ? "play.circle.fill" : "pause.circle.fill")
+                                .font(.subheadline.weight(.semibold))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(pip.paused ? .green : .orange)
+                    }
                 }
 
                 // 无键盘后：用户设一个默认返回 App + 一个随时可按的「立即返回」按钮。
@@ -186,6 +203,21 @@ struct PiPControlView: View {
                     Toggle("开启前清空之前的连续复制", isOn: $clearBeforeStart)
                         .font(.body)
                     Text("打开后，每次点「开启连续复制」会先把之前攒下的连续复制内容清空，再从头开始收集；关闭则接着之前的继续叠加（默认关闭，沿用现在的行为）。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+
+                // ── 更多玩法：收录控制 ──
+                Section("更多玩法 · 收录控制") {
+                    Picker("只收什么", selection: $captureFilter) {
+                        Text("文字 + 图片 + 文件（全部）").tag(0)
+                        Text("仅文字").tag(1)
+                        Text("仅图片").tag(2)
+                    }
+                    Text("选「仅文字」时图片和剪贴板文件都不收；选「仅图片」时文字不收。改完立刻生效，不用重启画中画。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                    Text("暂停 / 继续也能在「快捷指令」里搜到（新增「暂停连续复制」「继续连续复制」两个动作），可放进自动化或用 Siri 唤起，不用切回本 App；暂停状态会一直保留到下次点「继续」。")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }

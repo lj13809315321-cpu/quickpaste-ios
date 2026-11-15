@@ -26,6 +26,7 @@ final class QPPiPViewController: AVPictureInPictureVideoCallViewController {
     private var scaledSize: CGFloat = 0
     private var count: Int = 0
     private var blocked = false
+    private var paused = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -106,23 +107,40 @@ final class QPPiPViewController: AVPictureInPictureVideoCallViewController {
     /// 正常状态：大字「已收录 N 条」
     func update(count: Int) {
         self.count = count
-        guard !blocked else { return }
-        countLabel.textColor = .white
-        countLabel.text = "已收录 \(count) 条"
-        subLabel.text = "Continuous copying…"
+        render()
     }
 
     /// 系统拦住了后台读剪贴板：小窗直接把解决办法喊出来。
     func update(blocked: Bool, count: Int) {
         self.blocked = blocked
         self.count = count
-        countLabel.textColor = blocked
-            ? UIColor(red: 1.0, green: 0.72, blue: 0.25, alpha: 1)
-            : .white
-        countLabel.text = blocked ? "需要允许粘贴" : "已收录 \(count) 条"
-        subLabel.text = blocked
-            ? "系统设置 → 粘鼠 → 从其他 App 粘贴 → 允许"
-            : "Continuous copying…"
+        render()
+    }
+
+    /// 暂停 / 继续：小窗不消失、后台保活不中断，只把大字换成「已暂停」。
+    func update(paused: Bool, count: Int) {
+        self.paused = paused
+        self.count = count
+        render()
+    }
+
+    private func render() {
+        if paused {
+            titleLabel.text = "连续复制已暂停"
+            countLabel.textColor = UIColor(red: 1.0, green: 0.78, blue: 0.35, alpha: 1)
+            countLabel.text = "已暂停"
+            subLabel.text = "小窗仍在 · 点「继续」或用快捷指令恢复"
+        } else if blocked {
+            titleLabel.text = "连续复制中…"
+            countLabel.textColor = UIColor(red: 1.0, green: 0.72, blue: 0.25, alpha: 1)
+            countLabel.text = "需要允许粘贴"
+            subLabel.text = "系统设置 → 粘鼠 → 从其他 App 粘贴 → 允许"
+        } else {
+            titleLabel.text = "连续复制中…"
+            countLabel.textColor = .white
+            countLabel.text = "已收录 \(count) 条"
+            subLabel.text = "Continuous copying…"
+        }
         if scaledSize > 0 { applyFonts(scaledSize) }
     }
 }
@@ -154,6 +172,8 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     @Published private(set) var capturedCount = 0
     @Published private(set) var message = ""
     @Published private(set) var blocked = false
+    /// 暂停收录：小窗与后台保活都还在，只是不再读剪贴板。
+    @Published private(set) var paused = false
     @Published private(set) var supported = AVPictureInPictureController.isPictureInPictureSupported()
 
     private var pipController: AVPictureInPictureController?
@@ -201,7 +221,9 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         if clearApp { Self.clearContinuousHistory() }
 
         starting = true
-        message = "正在开启画中画…"
+        // 暂停状态可由快捷指令 / 自动化在后台写入，开启时读回来。
+        paused = UserDefaults.standard.bool(forKey: "ns.paused")
+        message = paused ? "画中画启动中（当前为暂停收录状态）" : "正在开启画中画…"
 
         // 先把监听跑起来：App 在前台时读取剪贴板是**不需要**额外授权的，
         // 所以用户此刻复制的东西能立刻进列表，也能顺便把「是否被系统拦」测出来。
@@ -237,6 +259,7 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         vc.preferredContentSize = CGSize(width: 640, height: 360)
         capturedCount = 0
         vc.update(count: capturedCount)
+        vc.update(paused: paused, count: capturedCount)
         contentVC = vc
 
         let source = AVPictureInPictureController.ContentSource(
@@ -274,6 +297,25 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         guard LocalStore.isWanted || UserDefaults.standard.bool(forKey: "ns.autoPiP") else { return }
         start()
     }
+
+    // MARK: - 暂停 / 继续（画中画小窗保持，只停 / 开「读剪贴板」）
+    //
+    // iOS 的视频通话画中画窗口由系统渲染，自定义视图（QPPiPViewController）不接收
+    // 触摸事件，系统只提供 ✕ / 缩到边缘 / 返回 App。所以「小窗里放一个可点按钮」
+    // 做不到；能做到的等价控制是：小窗上直接显示「已暂停」状态 + 点小窗回 App
+    // 一键继续 + 快捷指令 / Siri / 自动化在后台直接切换（不用切回 App）。
+
+    /// 状态写入 UserDefaults，快捷指令在后台改也生效，App 重启后仍保留。
+    func setPaused(_ value: Bool) {
+        paused = value
+        UserDefaults.standard.set(value, forKey: "ns.paused")
+        contentVC?.update(paused: value, count: capturedCount)
+        message = value ? "已暂停收录：小窗仍在，点「继续」恢复" : "已继续收录"
+    }
+
+    func pause() { setPaused(true) }
+    func resume() { setPaused(false) }
+    func togglePause() { setPaused(!paused) }
 
     func stop() {
         if let c = pipController, c.isPictureInPictureActive {
@@ -458,29 +500,35 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         let change = pb.changeCount
         if change != lastChange {
             lastChange = change
+            // 暂停期间只推进「水位」不收录：恢复时不会把暂停期间复制的东西一次性灌进列表。
+            guard !paused else { return }
             readNow(pb: pb)
         }
     }
 
     private func readNow(pb: UIPasteboard) {
+        // 暂停是全局的：轮询、前台回来、画中画刚起时的探测都不许收录。
+        guard !paused else { return }
+        // 收录过滤：0 = 全部（文字 + 图片 + 剪贴板文件）/ 1 = 仅文字 / 2 = 仅图片。
+        let filter = UserDefaults.standard.integer(forKey: "ns.captureFilter")
         let hasText = pb.hasStrings
         let hasImage = pb.hasImages
         var newItems = 0
         // —— 文字：和原来一样收录（内容没变就跳过，防止轮询回环）——
-        if hasText, let raw = pb.string {
+        if hasText, filter != 2, let raw = pb.string {
             let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if !s.isEmpty, s.count < 20000 {
                 if LocalStore.append(s) { newItems += 1 }
             }
         }
         // —— 图片：剪贴板里是图也一并收录（缩放/压缩/哈希去重都在 LocalStore 里做）——
-        if hasImage, let img = pb.image {
+        if hasImage, filter != 1, let img = pb.image {
             if LocalStore.appendImage(img) { newItems += 1 }
         }
         // —— 文件：源 App 把 PDF / HTML / RTF / 音视频 / 办公文档字节放进剪贴板时自动收
         //    （只认白名单 UTI、≤20MB、按内容哈希去重；只给 file-url 的格式抓不到，
-        //     用户可在「文件」页用系统文件导入器导入）。
-        newItems += FileStore.capture(from: pb)
+        //     用户可在「文件」页用系统文件导入器导入）。「仅文字 / 仅图片」时不收文件。
+        if filter == 0 { newItems += FileStore.capture(from: pb) }
 
         if newItems > 0 {
             // 读到内容 = 没被拦，立刻把红字撤掉
