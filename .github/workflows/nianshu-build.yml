@@ -69,13 +69,19 @@ jobs:
             GENERATE_INFOPLIST_FILE=NO \
             clean build 2>&1 | tee build.log
 
-      - name: 修正 Info.plist（BundleID / ATS / 后台模式 / URL scheme）
+      - name: 修正 Info.plist（BundleID / ATS / 后台模式 / URL scheme / 递增版本号）
+        env:
+          NS_BUILD_NUMBER: ${{ github.run_number }}
+          NS_BUILD_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
+          # 版本号每次构建递增：覆盖安装时 iOS 才会重新索引 AppIntents 动作元数据，
+          # 否则快捷指令里一直显示旧动作列表（换了新包也看不到新动作）。
+          export NS_BUILD_TIME="$(date -u '+%Y-%m-%d %H:%M UTC')"
           python3 scripts/fix_info_plists.py
           APP="$PWD/build/Build/Products/Release-iphoneos/Nianshu.app"
           echo "=== 主 app ==="
-          plutil -p "$APP/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundlePackageType|NSAppTransportSecurity|NSLocalNetwork' || true
+          plutil -p "$APP/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundlePackageType|NSAppTransportSecurity|NSLocalNetwork|CFBundleVersion|NianshuBuild' || true
 
       - name: 中间步骤：生成代码签名槽位（预签名包不交付）
         run: |
@@ -112,6 +118,8 @@ jobs:
                      for s in (t.get('CFBundleURLSchemes') or [])]
           assert 'nianshu' in schemes, '主 App 缺 nianshu URL scheme'
           assert z.read(app_bin)[:4] == b'\xcf\xfa\xed\xfe', '主程序不是 arm64 Mach-O'
+          assert str(a.get('CFBundleVersion', '')).isdigit() and a['CFBundleVersion'] != '1', 'CFBundleVersion 未递增'
+          assert len(str(a.get('NianshuBuildCommit') or '')) >= 7, '缺构建 commit 标识'
           print('[OK] 主 App 在 IPA 内，bundle id / 后台模式 / URL scheme 齐全')
           PY
 
@@ -185,6 +193,8 @@ jobs:
               echo "交付：未签名 IPA（手机端签名工具直接导入）"
               echo "构建时间 (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
               echo "commit: ${GITHUB_SHA}"
+              echo "Build: ${GITHUB_RUN_NUMBER}"
+              echo "ShortCommit: $(echo ${GITHUB_SHA} | cut -c1-7)"
               echo "IPA(未签名): $(stat -c%s "$UIPA") bytes"
             } > out/nianshu/BUILD_INFO.txt
             git add -A out/nianshu/

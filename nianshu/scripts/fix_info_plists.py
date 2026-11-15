@@ -12,8 +12,10 @@ CFBundleURLTypes(nianshu) / LSApplicationQueriesSchemes 白名单。
 必须在 codesign 之前执行，否则 _CodeSignature/CodeResources 的哈希会对不上。
 """
 
+import os
 import plistlib
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 APP_ID = "app.mulberry6323.nianshu"
@@ -66,6 +68,28 @@ MAIN_APP_PLIST = {
 }
 
 
+def runtime_plist():
+    """每次构建都让 CFBundleVersion 递增，并把构建身份写进 App。
+
+    为什么必须变：iOS 在覆盖安装时若发现 CFBundleVersion 没变，可能不重新
+    索引 AppIntents 元数据，快捷指令里就一直显示旧动作列表（明明换了新包，
+    却看不到新动作）。run_number 单调递增，可保证每版都被当成更新。
+    自定义键供 App 设置页显示，用来一眼确认手机上装的是哪一版。
+    """
+    d = dict(MAIN_APP_PLIST)
+    number = os.environ.get("NS_BUILD_NUMBER", "").strip() or "1"
+    commit = os.environ.get("NS_BUILD_COMMIT", "").strip()
+    built = os.environ.get("NS_BUILD_TIME", "").strip() or datetime.now(
+        timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    d["CFBundleVersion"] = number
+    d["NianshuBuildNumber"] = number
+    d["NianshuBuildCommit"] = commit
+    d["NianshuBuildTime"] = built
+    print("[版本] CFBundleVersion=%s commit=%s time=%s"
+          % (number, (commit or "无")[:7], built))
+    return d
+
+
 def patch(prod_path, required):
     generated = plistlib.loads(Path(prod_path).read_bytes())
     print("[诊断] %s 原有顶层键: %s" % (prod_path, sorted(generated.keys())))
@@ -85,6 +109,8 @@ def verify(name, data, want_id, want_type):
     print("[%s] CFBundleExecutable = %s" % (name, data.get("CFBundleExecutable")))
     print("[%s] CFBundlePackageType= %s" % (name, got_type))
     print("[%s] MinimumOSVersion   = %s" % (name, data.get("MinimumOSVersion")))
+    print("[%s] CFBundleVersion    = %s" % (name, data.get("CFBundleVersion")))
+    print("[%s] NianshuBuildCommit = %s" % (name, str(data.get("NianshuBuildCommit"))[:7]))
     print("[%s] UIBackgroundModes = %s" % (name, data.get("UIBackgroundModes")))
     print("[%s] CFBundleURLTypes  = %s" % (name, data.get("CFBundleURLTypes")))
     ok = got_id == want_id and got_type == want_type and bool(data.get("CFBundleExecutable"))
@@ -109,7 +135,7 @@ def main():
     if not app_plist.exists():
         sys.exit("[FATAL] 找不到 %s" % app_plist)
 
-    main_app = patch(app_plist, MAIN_APP_PLIST)
+    main_app = patch(app_plist, runtime_plist())
     (app / "PkgInfo").write_bytes(b"APPL????")
 
     ok = verify("主 app", main_app, APP_ID, "APPL")

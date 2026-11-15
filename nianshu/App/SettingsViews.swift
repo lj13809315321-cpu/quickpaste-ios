@@ -352,6 +352,25 @@ struct HistoryView: View {
     }
 }
 
+// MARK: - 构建身份：从 Info.plist 读，云端构建时由 fix_info_plists.py 写入
+//
+// 每次构建 CFBundleVersion 都递增，覆盖安装时 iOS 才会重新索引 AppIntents
+// 动作元数据；App 里显示出来，是为了一眼确认手机上装的到底是哪一版。
+
+enum NianshuBuildInfo {
+    private static func s(_ key: String, _ fallback: String) -> String {
+        let v = Bundle.main.infoDictionary?[key] as? String
+        return (v?.isEmpty == false) ? v! : fallback
+    }
+    static var version: String { s("CFBundleShortVersionString", "?") }
+    static var build: String { s("CFBundleVersion", "?") }
+    static var commit: String { String(s("NianshuBuildCommit", "未写入").prefix(7)) }
+    static var time: String { s("NianshuBuildTime", "未写入") }
+    static var fullLine: String {
+        "粘鼠 \(version) (Build \(build)) · \(commit) · \(time)"
+    }
+}
+
 // MARK: - 设置首页（独立 App 版）
 
 struct SettingsView: View {
@@ -361,11 +380,25 @@ struct SettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("粘鼠 v1.0.0 · 连续复制独立版", systemImage: "doc.on.doc.fill")
+                        Label("粘鼠 v\(NianshuBuildInfo.version) · 连续复制独立版", systemImage: "doc.on.doc.fill")
                             .font(.subheadline.weight(.semibold))
                         Text("把任意 App 里复制的文字自动收进列表，随时回看、导出、批量复制。不需要键盘扩展，靠系统画中画在后台常驻监听剪贴板。")
                             .font(.footnote).foregroundColor(.secondary)
                     }
+                }
+
+                Section("★ 本包版本 · 先确认装的是哪一版") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(NianshuBuildInfo.fullLine)
+                            .font(.system(.footnote, design: .monospaced))
+                            .textSelection(.enabled)
+                        Text("每次云端构建 Build 号都会变。把它和交付说明里的 Build / commit 对一下，一致才说明手机上装的是新包；长按上面这行可以复制。")
+                            .font(.footnote).foregroundColor(.secondary)
+                    }
+                    Text("快捷指令里「粘鼠」那个列表只放【能用 Siri 念的语音快捷指令】，本版共 10 个，iOS 最多只给 10 个。另外 17 个动作（取内容 / 推给输入法 / 逐条队列）在【新建快捷指令 → 搜索操作 → 搜「粘鼠」或动作名】里，不会出现在语音快捷指令列表。")
+                        .font(.footnote).foregroundColor(.secondary)
+                    Text("如果这里 Build 还是旧数字，或语音快捷指令只有 7 个：先删掉手机上的粘鼠，再装新 IPA，装完重启一次手机让系统重新索引动作。不要直接覆盖安装。")
+                        .font(.footnote).foregroundColor(.secondary)
                 }
 
                 Section("剪贴板行为") {
