@@ -135,7 +135,7 @@ enum LocalStore {
         guard let data = hasAlpha ? img.pngData() : img.jpegData(compressionQuality: 0.85) else {
             return false
         }
-        let hash = (data as NSData).sha256String()
+        let hash = data.sha256String()
         let key = "nsimg:" + hash
         let arr0 = loadItems()
         if arr0.first?.t == key { return false }

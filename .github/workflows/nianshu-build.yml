@@ -148,6 +148,12 @@ jobs:
         with:
           ref: main
 
+      # ★ checkout 会把仓库里【上一版回传的 IPA】一起带出来。若本次编译失败、
+      #   下载不到新产物，那个旧 IPA 仍在 → 会被误判成本次成功并写出新的
+      #   BUILD_INFO（假成功）。先清掉，保证 [ -f "$UIPA" ] 只在本次真有产物时成立。
+      - name: 清理旧产物（防止失败时把上一版 IPA 误报为成功）
+        run: rm -f out/nianshu/Nianshu-Sync-iOS-unsigned.ipa out/nianshu/BUILD_INFO.txt out/nianshu/FAILURE.log
+
       - name: 下载产物（成功时存在）
         uses: actions/download-artifact@v4
         continue-on-error: true
@@ -171,7 +177,8 @@ jobs:
           git config user.email "nianshu-bot@users.noreply.github.com"
           mkdir -p out/nianshu
           UIPA=out/nianshu/Nianshu-Sync-iOS-unsigned.ipa
-          if [ -f "$UIPA" ]; then
+          RESULT="${{ needs.ipa.result }}"
+          if [ "$RESULT" = "success" ] && [ -f "$UIPA" ]; then
             {
               echo "粘鼠 连续复制 独立版 手机安装包"
               echo "形态：单 target 主 App（无键盘扩展 / 无 App Group），靠系统画中画后台常驻监听剪贴板"
@@ -180,18 +187,20 @@ jobs:
               echo "commit: ${GITHUB_SHA}"
               echo "IPA(未签名): $(stat -c%s "$UIPA") bytes"
             } > out/nianshu/BUILD_INFO.txt
-            git add -f out/nianshu/Nianshu-Sync-iOS-unsigned.ipa out/nianshu/BUILD_INFO.txt
+            git add -A out/nianshu/
             git commit -m "chore: 自动回传粘鼠未签名 IPA [skip ci]" || echo "无变更，跳过提交"
           else
             {
               echo "粘鼠云端构建失败"
-              echo "ipa job result: ${{ needs.ipa.result }}"
+              echo "ipa job result: $RESULT"
               echo "commit: ${GITHUB_SHA}"
               echo "时间(UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+              echo "---- build.log 错误行 ----"
+              { grep -iE "error:|fatal:|BUILD FAILED|No such|undeclared|cannot" buildlog/build.log 2>/dev/null || true; } | tail -n 60
               echo "---- build.log 尾部 ----"
-              tail -n 120 buildlog/build.log 2>/dev/null || echo "(无 build.log 可取)"
+              tail -n 60 buildlog/build.log 2>/dev/null || true
             } > out/nianshu/FAILURE.log
-            git add -f out/nianshu/FAILURE.log
+            git add -A out/nianshu/
             git commit -m "chore: 粘鼠构建失败标记 [skip ci]" || echo "无变更，跳过提交"
           fi
           git pull --rebase origin main || true
