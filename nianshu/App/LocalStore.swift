@@ -281,10 +281,46 @@ enum LocalStore {
         return mergedText(recentTexts(count), separatorMode: mode)
     }
 
-    /// 自动实时推送开关：默认关。打开后停手 1.5 秒才把合并结果写回剪贴板，
-    /// 防「边复制边写回」打架的完整逻辑见 AutoPushMerge.swift。
+    // MARK: - 两种「推回剪贴板」的方式（手动推 / 自动实时推）
+    //
+    // 方式 A 手动推（开关关）：什么时候推由人决定——点页面按钮，或跑
+    //   「复制本次合并」「复制最近合并」快捷指令。剪贴板平时一直是最后复制的单条。
+    // 方式 B 自动实时推（开关开）：停手约 1.5 秒后自动把本次合并整条写回。
+    // 这个开关既能被 App 页面拨动，也能被快捷指令 / Siri / 自动化改，
+    // 所以统一从下面这一个入口写，别各处直接 set，免得状态不同步。
+    // 防「边复制边写回」打架的完整逻辑见 AutoPushMerge.swift。
+
+    static let autoPushKey = "ns.autoPushMerge"
+    static let autoPushModeChanged = Notification.Name("ns.autoPushMode.changed")
+
+    /// 当前是不是「自动实时推」（true）/「手动推」（false）。
     static func autoPushMergeEnabled() -> Bool {
-        UserDefaults.standard.bool(forKey: "ns.autoPushMerge")
+        UserDefaults.standard.bool(forKey: autoPushKey)
+    }
+
+    /// 切换推送方式。页面开关、快捷指令、Siri、自动化都走这里。
+    /// · 开实时：顺手把「组装成单独一条」也打开（它是实时推的前提，不用记两个开关）。
+    /// · 关实时：立刻作废挂起的延时写入、清掉写前核对的原文，
+    ///          保证关掉之后绝不会再自动写一次；组装开关保留，手动推照样能用。
+    /// · 不主动碰剪贴板：开关只改「以后怎么做」，不改写当前剪贴板内容。
+    static func setAutoPushMerge(_ on: Bool) {
+        let d = UserDefaults.standard
+        d.set(on, forKey: autoPushKey)
+        if on {
+            d.set(true, forKey: "ns.mergeSession")
+        } else {
+            AutoPushMerge.cancel()
+            AutoPushMerge.setExpectedRaw(nil)
+        }
+        NotificationCenter.default.post(name: autoPushModeChanged, object: nil)
+    }
+
+    /// 翻转推送方式，返回翻转后的值（true = 自动实时推）。
+    @discardableResult
+    static func toggleAutoPushMerge() -> Bool {
+        let next = !autoPushMergeEnabled()
+        setAutoPushMerge(next)
+        return next
     }
 
     /// 最近一条文字原文（给「恢复最后一次复制」用）。

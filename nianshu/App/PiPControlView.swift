@@ -235,7 +235,18 @@ struct PiPControlView: View {
                         .foregroundColor(.secondary)
 
                     // ★ 用户点名要的「是否组装成单独一条」开关：默认关，避免列表变乱。
-                    Toggle("把本次内容组装成单独一条", isOn: $mergeSession)
+                    Toggle("把本次内容组装成单独一条", isOn: Binding(
+                        get: { mergeSession },
+                        set: { v in
+                            mergeSession = v
+                            // 关掉组装时，把还没到点的自动写入一并作废，
+                            // 免得「明明关了」过 1.5 秒又被写一坨回剪贴板。
+                            if !v {
+                                AutoPushMerge.cancel()
+                                AutoPushMerge.setExpectedRaw(nil)
+                            }
+                        }
+                    ))
                         .font(.body)
                     if mergeSession {
                         Picker("每条之间", selection: $mergeSeparator) {
@@ -244,7 +255,16 @@ struct PiPControlView: View {
                             Text("空格").tag(2)
                             Text("直接连起来").tag(3)
                         }
-                        Toggle("自动把本次合并推回剪贴板（实时）", isOn: $autoPushMerge)
+                        Toggle("自动把本次合并推回剪贴板（实时）", isOn: Binding(
+                            get: { autoPushMerge },
+                            set: { v in
+                                // 与快捷指令里的「开/关/切换实时推送」走同一个入口：
+                                // 开实时顺手打开组装；关实时取消挂起写入。
+                                LocalStore.setAutoPushMerge(v)
+                                autoPushMerge = v
+                                if v { mergeSession = true }
+                            }
+                        ))
                             .font(.body)
                         Text("默认关。打开后：你连续复制的时候粘鼠绝不碰剪贴板；停手约 1.5 秒，才把「本次合并」整条自动写回系统剪贴板，直接去目标 App 粘贴即可。写回前会再核对一次剪贴板，若你或别的 App 又改过内容就放弃这次写入，不覆盖你新复制的东西；剪贴板里带图片时也不写。写回的内容粘鼠认得是自己写的，不会被后台监听再抓一遍。")
                             .font(.footnote)
@@ -260,7 +280,7 @@ struct PiPControlView: View {
                         .buttonStyle(.bordered)
                         .disabled(LocalStore.lastRawText() == nil)
                     }
-                    Text("打开后，列表上方会单独显示一条「本次合并」：本轮复制的文字按先后逐条拼接，每多复制一条自动追加一条，可一键复制回剪贴板，也可开上面的自动实时推送。默认关闭，原来的列表一条不变。合并只收文字，图片和「文件」页的内容不参与；合并结果不写进历史。快捷指令里有「复制本次合并」「复制最近合并」「恢复最后一次复制」三个动作，不用手动挑条目。")
+                    Text("打开后，列表上方会单独显示一条「本次合并」：本轮复制的文字按先后逐条拼接，每多复制一条自动追加一条，可一键复制回剪贴板，也可开上面的自动实时推送。默认关闭，原来的列表一条不变。合并只收文字，图片和「文件」页的内容不参与；合并结果不写进历史。快捷指令里有「复制本次合并」「复制最近合并」「恢复最后一次复制」三个动作，不用手动挑条目。上面这个「自动实时推」开关在快捷指令里也能拨：「切换实时推送」点一下变自动、再点一下变手动，不用进本页翻设置；另有「开实时推送」「关实时推送」两个单独动作可放进自动化。")
                         .font(.footnote)
                         .foregroundColor(.secondary)
 
@@ -489,6 +509,11 @@ struct PiPControlView: View {
             .onReceive(Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()) { _ in
                 entries = PiPManager.mergedItems()
                 pip.refreshCount()
+                // 快捷指令 / Siri / 自动化可能从后台改过这两个开关，1 秒内把页面拨到一致。
+                let a = LocalStore.autoPushMergeEnabled()
+                let m = LocalStore.mergeSessionEnabled()
+                if autoPushMerge != a { autoPushMerge = a }
+                if mergeSession != m { mergeSession = m }
             }
             .onAppear {
                 pip.startIfWanted()

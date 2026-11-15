@@ -208,6 +208,63 @@ final class RestoreLastRawCopyIntent: AppIntent {
     }
 }
 
+// MARK: ⑪⑫⑬ - 两种推送方式的快捷指令开关（手动推 / 自动实时推）
+//
+// 不用进 App 翻设置：在快捷指令、Siri、自动化里点一下就能换方式。
+// 三个动作沿用「暂停 / 启动 / 切换暂停启动」的习惯：单独开、单独关、一键切换。
+// 都是后台静默执行，不需要切到前台，也不改当前剪贴板内容（只改「以后怎么做」）。
+
+/// ⑪ 开实时推送：切到「停手 1.5 秒自动把本次合并推回剪贴板」。
+final class EnableAutoPushMergeIntent: AppIntent {
+    static var title: LocalizedStringResource = "开实时推送"
+    static var description: LocalizedStringResource =
+        "把推回剪贴板的方式切成「自动实时推」：停手约 1.5 秒后自动把本次合并写回系统剪贴板。会顺手打开「组装成单独一条」，无需切到前台。"
+    static var openAppWhenRun: Bool = false
+
+    func perform() async throws -> some IntentResult {
+        await MainActor.run {
+            LocalStore.setAutoPushMerge(true)
+            PiPManager.shared.note("已切到「自动实时推」：停手 1.5 秒自动写回合并结果")
+        }
+        return .result()
+    }
+}
+
+/// ⑫ 关实时推送：切回「手动推」（点页面按钮 / 跑复制合并动作才推）。
+final class DisableAutoPushMergeIntent: AppIntent {
+    static var title: LocalizedStringResource = "关实时推送"
+    static var description: LocalizedStringResource =
+        "把推回剪贴板的方式切回「手动推」：不再自动写回剪贴板，想推时点页面按钮或跑「复制本次合并」。会立刻作废还没到点的自动写入，无需切到前台。"
+    static var openAppWhenRun: Bool = false
+
+    func perform() async throws -> some IntentResult {
+        await MainActor.run {
+            LocalStore.setAutoPushMerge(false)
+            PiPManager.shared.note("已切回「手动推」：不再自动写回剪贴板")
+        }
+        return .result()
+    }
+}
+
+/// ⑬ 切换实时推送 ★ 主推的那一个开关：点一下变自动、再点一下变手动。
+/// 判状态以 UserDefaults 里的持久值为准，App 被系统重启后也不会翻错。
+final class ToggleAutoPushMergeIntent: AppIntent {
+    static var title: LocalizedStringResource = "切换实时推送"
+    static var description: LocalizedStringResource =
+        "在「手动推」和「自动实时推」之间一键翻转：手动时切成停手 1.5 秒自动写回，自动时切回手动。不用切到前台，也不改写当前剪贴板内容。"
+    static var openAppWhenRun: Bool = false
+
+    func perform() async throws -> some IntentResult {
+        await MainActor.run {
+            let on = LocalStore.toggleAutoPushMerge()
+            PiPManager.shared.note(on
+                ? "已切到「自动实时推」：停手 1.5 秒自动写回合并结果"
+                : "已切回「手动推」：不再自动写回剪贴板")
+        }
+        return .result()
+    }
+}
+
 // MARK: - 快捷指令里的「粘鼠」入口与建议短语
 //
 // 注册后：打开「快捷指令」App → 右上角「+」→ 搜索「粘鼠」即可看到下列动作；
@@ -328,6 +385,40 @@ struct NianshuAppShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "恢复最后一次复制",
             systemImageName: "arrow.uturn.backward.circle"
+        )
+        AppShortcut(
+            intent: EnableAutoPushMergeIntent(),
+            phrases: [
+                "用 \(.applicationName) 开实时推送",
+                "\(.applicationName) 开实时推送",
+                "\(.applicationName) 打开实时推送",
+                "\(.applicationName) 改成自动推送"
+            ],
+            shortTitle: "开实时推送",
+            systemImageName: "bolt.circle"
+        )
+        AppShortcut(
+            intent: DisableAutoPushMergeIntent(),
+            phrases: [
+                "用 \(.applicationName) 关实时推送",
+                "\(.applicationName) 关实时推送",
+                "\(.applicationName) 关闭实时推送",
+                "\(.applicationName) 改回手动推"
+            ],
+            shortTitle: "关实时推送",
+            systemImageName: "hand.circle"
+        )
+        AppShortcut(
+            intent: ToggleAutoPushMergeIntent(),
+            phrases: [
+                "用 \(.applicationName) 切换实时推送",
+                "\(.applicationName) 切换实时推送",
+                "\(.applicationName) 切换推送方式",
+                "\(.applicationName) 推送方式开关",
+                "\(.applicationName) 实时推送开关"
+            ],
+            shortTitle: "切换实时推送",
+            systemImageName: "arrow.triangle.2.circlepath.circle"
         )
     }
 }
