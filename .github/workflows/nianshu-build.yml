@@ -141,38 +141,58 @@ jobs:
 
   publish:
     needs: [ipa]
-    if: ${{ always() && needs.ipa.result == 'success' }}
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
 
-      - name: 下载产物
+      - name: 下载产物（成功时存在）
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: nianshu-ipa
           path: out/nianshu
+          if-no-files-found: ignore
 
-      - name: 校验产物并提交回仓库
+      - name: 下载失败日志（失败时存在）
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: ios-build-log
+          path: buildlog
+          if-no-files-found: ignore
+
+      - name: 提交回仓库（成功回传 IPA / 失败回传标记，外部监控经 git 可见）
         run: |
           set -euo pipefail
-          mkdir -p out/nianshu
-          echo "=== out/nianshu/ 内容 ==="
-          ls -lh out/nianshu/
-          UIPA=out/nianshu/Nianshu-Sync-iOS-unsigned.ipa
-          [ -f "$UIPA" ] || { echo "::error::缺未签名 IPA"; exit 1; }
-          {
-            echo "粘鼠 连续复制 独立版 手机安装包"
-            echo "形态：单 target 主 App（无键盘扩展 / 无 App Group），靠系统画中画后台常驻监听剪贴板"
-            echo "交付：未签名 IPA（手机端签名工具直接导入）"
-            echo "构建时间 (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
-            echo "commit: ${GITHUB_SHA}"
-            echo "IPA(未签名): $(stat -c%s "$UIPA") bytes"
-          } > out/nianshu/BUILD_INFO.txt
           git config user.name "nianshu-bot"
           git config user.email "nianshu-bot@users.noreply.github.com"
-          git add -f out/nianshu/Nianshu-Sync-iOS-unsigned.ipa out/nianshu/BUILD_INFO.txt
-          git commit -m "chore: 自动回传粘鼠未签名 IPA [skip ci]" || echo "无变更，跳过提交"
+          mkdir -p out/nianshu
+          UIPA=out/nianshu/Nianshu-Sync-iOS-unsigned.ipa
+          if [ -f "$UIPA" ]; then
+            {
+              echo "粘鼠 连续复制 独立版 手机安装包"
+              echo "形态：单 target 主 App（无键盘扩展 / 无 App Group），靠系统画中画后台常驻监听剪贴板"
+              echo "交付：未签名 IPA（手机端签名工具直接导入）"
+              echo "构建时间 (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+              echo "commit: ${GITHUB_SHA}"
+              echo "IPA(未签名): $(stat -c%s "$UIPA") bytes"
+            } > out/nianshu/BUILD_INFO.txt
+            git add -f out/nianshu/Nianshu-Sync-iOS-unsigned.ipa out/nianshu/BUILD_INFO.txt
+            git commit -m "chore: 自动回传粘鼠未签名 IPA [skip ci]" || echo "无变更，跳过提交"
+          else
+            {
+              echo "粘鼠云端构建失败"
+              echo "ipa job result: ${{ needs.ipa.result }}"
+              echo "commit: ${GITHUB_SHA}"
+              echo "时间(UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+              echo "---- build.log 尾部 ----"
+              tail -n 120 buildlog/build.log 2>/dev/null || echo "(无 build.log 可取)"
+            } > out/nianshu/FAILURE.log
+            git add -f out/nianshu/FAILURE.log
+            git commit -m "chore: 粘鼠构建失败标记 [skip ci]" || echo "无变更，跳过提交"
+          fi
           git pull --rebase origin main || true
           git push origin HEAD:main
