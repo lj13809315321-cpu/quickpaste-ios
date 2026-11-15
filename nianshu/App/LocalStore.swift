@@ -222,6 +222,74 @@ enum LocalStore {
         UserDefaults.standard.set([oldest - 1], forKey: sessionStartsKey)
     }
 
+    // MARK: - 本次合并（把「本次」这一轮的文字按复制先后拼成一条）
+    //
+    // 需求：本次复制了 4 条，希望它们逐步合并成一条完整的；再来一条链接就
+    // 自动追加进去；这条单独显示，最终目的是推回系统剪贴板。
+    // 设计：合并结果是【虚拟条目】——按需从历史实时拼出来，不写进历史、
+    // 不占条目编号、不会被导出误伤，也不会把自己写回的内容再抓一遍。
+
+    /// 开关：默认关。打开后连续复制页才额外显示那条「本次合并」，原列表完全不变。
+    static func mergeSessionEnabled() -> Bool {
+        UserDefaults.standard.bool(forKey: "ns.mergeSession")
+    }
+
+    /// 每条之间的连接方式：0 换行（默认）/ 1 空一行 / 2 空格 / 3 直接连起来。
+    static func mergeSeparator(mode: Int) -> String {
+        switch mode {
+        case 1: return "\n\n"
+        case 2: return " "
+        case 3: return ""
+        default: return "\n"
+        }
+    }
+
+    /// 本次（当前画中画这一轮）收录的文字，按复制先后正序（旧 → 新）。
+    /// 图片、空文本都不参与；没有轮次记录时退回全部文字。
+    static func currentSessionTexts() -> [String] {
+        let texts = allItems().filter { $0.kind == .text && !$0.text.isEmpty }
+        let start = pipSessionStarts().first
+        let scoped = start.map { s in texts.filter { $0.ts >= s } } ?? texts
+        return scoped.sorted { $0.ts < $1.ts }.map { $0.text }
+    }
+
+    /// 最近 N 条文字，按复制先后正序；N <= 0 时等价于「本次全部」。
+    static func recentTexts(_ count: Int) -> [String] {
+        if count <= 0 { return currentSessionTexts() }
+        let newest = Array(allItems()
+            .filter { $0.kind == .text && !$0.text.isEmpty }
+            .prefix(count))
+        return newest.reversed().map { $0.text }
+    }
+
+    /// 纯函数拼接：给文字数组与连接方式，产出一条完整文本。
+    /// 上限 10 万字，避免极端情况下把系统剪贴板撑爆。
+    static func mergedText(_ texts: [String], separatorMode: Int) -> String {
+        guard !texts.isEmpty else { return "" }
+        let s = texts.joined(separator: mergeSeparator(mode: separatorMode))
+        return s.count > 100_000 ? String(s.prefix(100_000)) : s
+    }
+
+    /// 常用入口：本次合并 / 最近 N 条合并（读当前的分隔方式设置）。
+    static func mergedSessionText() -> String {
+        let mode = UserDefaults.standard.integer(forKey: "ns.mergeSeparator")
+        return mergedText(currentSessionTexts(), separatorMode: mode)
+    }
+
+    static func mergedRecentText(_ count: Int) -> String {
+        let mode = UserDefaults.standard.integer(forKey: "ns.mergeSeparator")
+        return mergedText(recentTexts(count), separatorMode: mode)
+    }
+
+    /// 把合并结果写回系统剪贴板，并登记「这是粘鼠自己写的」：
+    /// PiP 的 0.4s 轮询靠这个标记跳过，否则合并结果会被自己再收一遍，越滚越大。
+    static func writeMergedToPasteboard(_ text: String) {
+        guard !text.isEmpty else { return }
+        UIPasteboard.general.string = text
+        PiPManager.shared.noteSelfWritten(text)
+        NianshuFeedback.copied()
+    }
+
     // MARK: - 状态标志
 
     static var isBlocked: Bool {

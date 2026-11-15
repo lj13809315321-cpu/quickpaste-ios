@@ -27,6 +27,10 @@ struct PiPControlView: View {
     @AppStorage("ns.pipToggleReturnOnClose") private var toggleReturnOnClose = false
     /// 收录过滤：0 全部 / 1 仅文字 / 2 仅图片
     @AppStorage("ns.captureFilter") private var captureFilter = 0
+    /// 「本次合并」开关：默认关，打开后才在列表上方单独显示一条拼好的完整内容。
+    @AppStorage("ns.mergeSession") private var mergeSession = false
+    /// 合并时每条之间的连接方式：0 换行 / 1 空一行 / 2 空格 / 3 直接连起来。
+    @AppStorage("ns.mergeSeparator") private var mergeSeparator = 0
 
     /// 链接条目判断
     private static func isLink(_ s: String) -> Bool {
@@ -45,6 +49,13 @@ struct PiPControlView: View {
 
     private var filterName: String {
         ["全部", "文本", "链接", "图片"][filterKind]
+    }
+
+    /// 本次这一轮的文字（按复制先后正序）。页面已有 1 秒刷新，
+    /// 所以每多复制一条，下面的合并卡片就会自动多拼一条。
+    private var sessionTexts: [String] { LocalStore.currentSessionTexts() }
+    private var mergedText: String {
+        LocalStore.mergedText(sessionTexts, separatorMode: mergeSeparator)
     }
 
     // MARK: v1.8.43「一轮连续复制算一次」——按开启轮次统一标，不再逐条编号
@@ -220,6 +231,22 @@ struct PiPControlView: View {
                     Text("选「仅文字」时图片和剪贴板文件都不收；选「仅图片」时文字不收。改完立刻生效，不用重启画中画。")
                         .font(.footnote)
                         .foregroundColor(.secondary)
+
+                    // ★ 用户点名要的「是否组装成单独一条」开关：默认关，避免列表变乱。
+                    Toggle("把本次内容组装成单独一条", isOn: $mergeSession)
+                        .font(.body)
+                    if mergeSession {
+                        Picker("每条之间", selection: $mergeSeparator) {
+                            Text("换行（默认）").tag(0)
+                            Text("空一行").tag(1)
+                            Text("空格").tag(2)
+                            Text("直接连起来").tag(3)
+                        }
+                    }
+                    Text("打开后，列表上方会单独显示一条「本次合并」：本轮复制的文字按先后逐条拼接，每多复制一条自动追加一条，可一键复制回剪贴板。默认关闭，原来的列表一条不变。合并只收文字，图片和「文件」页的内容不参与；合并结果不写进历史。快捷指令里有「复制本次合并」「复制最近合并」两个动作，不用手动挑条目。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+
                     Text("快捷指令里现在有三个独立动作：「暂停收录」（单独暂停）、「启动收录」（单独启动/继续）、「切换暂停启动」（一键在两者之间翻转）。三个都不用切回本 App，可放进自动化或用 Siri 唤起；暂停状态会一直保留到下次「启动」。注意：这三个只控制「收不收」，如果画中画小窗已经彻底关掉了，请改用「开启连续复制」。")
                         .font(.footnote)
                         .foregroundColor(.secondary)
@@ -288,6 +315,51 @@ struct PiPControlView: View {
                     }
                 } footer: {
                     Text("「选择」后点条目勾选，可批量删除；导出范围 = 有选择时导出所选，否则导出当前筛选下的全部。导出文件走系统分享面板（可转发微信、保存到「文件」等）。")
+                }
+
+                // ── ★ 本次合并：单独显示一条完整的（开关打开才出现） ──
+                // 看全文用 NavigationLink，不挂第二个 .sheet：同一视图叠多个
+                // presentation 会互相顶掉（「文件」页导入按钮打不开就是这个原因）。
+                if mergeSession {
+                    Section {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Label("本次合并 · \(sessionTexts.count) 条",
+                                      systemImage: "doc.on.doc.fill")
+                                    .font(.subheadline.weight(.semibold))
+                                Spacer()
+                                Text("\(mergedText.count) 字")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            Text(mergedText.isEmpty
+                                 ? "本轮还没有文字。开启连续复制后复制一条，这里会自动把它装进来；再复制一条就再追加一条。"
+                                 : mergedText)
+                                .font(.footnote)
+                                .lineLimit(4)
+                                .textSelection(.enabled)
+                            HStack(spacing: 12) {
+                                Button { copyMergedToPasteboard() } label: {
+                                    Label("复制合并结果到剪贴板", systemImage: "doc.on.clipboard")
+                                        .font(.subheadline.weight(.semibold))
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(mergedText.isEmpty)
+                                NavigationLink {
+                                    MergedDetailView(text: mergedText, count: sessionTexts.count)
+                                } label: {
+                                    Text("看完整").font(.subheadline)
+                                }
+                                .disabled(mergedText.isEmpty)
+                            }
+                            Text("按复制先后拼接（旧 → 新）：每新增一条自动追加。这条是实时拼出来的，不存进历史；点复制后粘鼠不会把自己写回的内容再抓一遍。")
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.vertical, 2)
+                    } header: {
+                        Text("本次合并（单独一条完整的）")
+                    }
                 }
 
                 Section("已收录 \(filtered.count) 条 · 本次 \(filtered.filter { session(of: $0) == 0 }.count) 条") {
@@ -428,6 +500,14 @@ struct PiPControlView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { notice = "" }
     }
 
+    /// 把本次合并结果推回系统剪贴板（页面按钮与快捷指令共用同一个写入口）。
+    private func copyMergedToPasteboard() {
+        let text = mergedText
+        guard !text.isEmpty else { flash("本次还没有可合并的文字"); return }
+        LocalStore.writeMergedToPasteboard(text)
+        flash("已把 \(sessionTexts.count) 条合并复制到剪贴板，去目标 App 粘贴即可")
+    }
+
     private func exportTexts() -> [String] {
         let sel = selection.isEmpty
             ? filtered
@@ -560,4 +640,38 @@ struct ActivityView: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
+}
+
+// MARK: - 本次合并 · 全文页
+
+/// 用 NavigationLink 进这一页，不额外挂 .sheet：同一视图叠多个弹窗会互相顶掉。
+struct MergedDetailView: View {
+    let text: String
+    let count: Int
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("本次合并 · \(count) 条 · 共 \(text.count) 字")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                Text(text)
+                    .font(.body)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding()
+        }
+        .navigationTitle("合并结果")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    LocalStore.writeMergedToPasteboard(text)
+                } label: {
+                    Label("复制到剪贴板", systemImage: "doc.on.clipboard")
+                }
+            }
+        }
+    }
 }

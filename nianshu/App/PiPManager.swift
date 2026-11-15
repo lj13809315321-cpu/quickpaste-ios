@@ -184,6 +184,8 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     private var lastChange = -1
     private var starting = false
     private var watchOnly = false
+    /// 自己写回剪贴板的合并文本（持久化，App 被系统回收后重启仍能识别）。
+    private static let selfWrittenKey = "ns.selfWritten"
 
     private override init() {
         super.init()
@@ -299,6 +301,14 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         guard !running, !starting else { return }
         guard LocalStore.isWanted || UserDefaults.standard.bool(forKey: "ns.autoPiP") else { return }
         start()
+    }
+
+    /// 粘鼠自己把合并结果写回剪贴板后调用：同步水位并登记文本，
+    /// 让后台监听跳过这一次，避免「自己写 → 自己收 → 内容越滚越大」的回环。
+    /// 标记写进 UserDefaults：App 被系统回收后由快捷指令冷启动，仍能识别。
+    func noteSelfWritten(_ text: String) {
+        UserDefaults.standard.set(text, forKey: Self.selfWrittenKey)
+        lastChange = UIPasteboard.general.changeCount
     }
 
     // MARK: - 暂停 / 继续（画中画小窗保持，只停 / 开「读剪贴板」）
@@ -521,6 +531,13 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     }
 
     private func readNow(pb: UIPasteboard) {
+        // 消费「粘鼠自己写回剪贴板」的标记：内容一致就整条跳过；
+        // 不一致说明这次变化是用户新复制的内容，标记用完即清，不挡后续收录。
+        if let own = UserDefaults.standard.string(forKey: Self.selfWrittenKey), !own.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Self.selfWrittenKey)
+            lastChange = pb.changeCount
+            if pb.string == own { return }
+        }
         // 暂停是全局的：轮询、前台回来、画中画刚起时的探测都不许收录。
         guard !paused else { return }
         // 收录过滤：0 = 全部（文字 + 图片 + 剪贴板文件）/ 1 = 仅文字 / 2 = 仅图片。

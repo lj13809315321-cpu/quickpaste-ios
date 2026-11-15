@@ -152,6 +152,44 @@ final class TogglePauseContinuousCopyIntent: AppIntent {
     }
 }
 
+/// ⑧ 复制本次合并：把本轮复制的文字按先后拼成一条，直接写回系统剪贴板。
+/// 不用在快捷指令里逐条挑——范围固定为「本次这一轮」的全部文字。
+final class CopyMergedSessionIntent: AppIntent {
+    static var title: LocalizedStringResource = "复制本次合并"
+    static var description: LocalizedStringResource =
+        "把本次连续复制收进来的文字按先后拼成一条完整内容，直接写回系统剪贴板，去目标 App 粘贴即可（无需切到前台、无需手动挑条目）。"
+    static var openAppWhenRun: Bool = false
+
+    func perform() async throws -> some IntentResult {
+        await MainActor.run {
+            LocalStore.writeMergedToPasteboard(LocalStore.mergedSessionText())
+        }
+        return .result()
+    }
+}
+
+/// ⑨ 复制最近合并：条数由快捷指令里的参数决定，默认 0 = 本次全部。
+/// 「怎么选这几条」不用在快捷指令里逐条勾选，填一个数字即可。
+final class CopyRecentMergedIntent: AppIntent {
+    static var title: LocalizedStringResource = "复制最近合并"
+    static var description: LocalizedStringResource =
+        "把最近 N 条文字拼成一条写回系统剪贴板；条数填 0 表示取本次这一轮的全部。"
+    static var openAppWhenRun: Bool = false
+
+    @Parameter(title: "条数")
+    var count: Int = 0
+
+    init() {}
+
+    func perform() async throws -> some IntentResult {
+        let n = count
+        await MainActor.run {
+            LocalStore.writeMergedToPasteboard(LocalStore.mergedRecentText(n))
+        }
+        return .result()
+    }
+}
+
 // MARK: - 快捷指令里的「粘鼠」入口与建议短语
 //
 // 注册后：打开「快捷指令」App → 右上角「+」→ 搜索「粘鼠」即可看到下列动作；
@@ -239,6 +277,28 @@ struct NianshuAppShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "切换暂停启动",
             systemImageName: "repeat.circle"
+        )
+        AppShortcut(
+            intent: CopyMergedSessionIntent(),
+            phrases: [
+                "用 \(.applicationName) 复制本次合并",
+                "\(.applicationName) 复制本次合并",
+                "\(.applicationName) 合并本次复制",
+                "\(.applicationName) 把本次合并到剪贴板"
+            ],
+            shortTitle: "复制本次合并",
+            systemImageName: "doc.on.clipboard"
+        )
+        AppShortcut(
+            intent: CopyRecentMergedIntent(),
+            phrases: [
+                "用 \(.applicationName) 复制最近合并",
+                "\(.applicationName) 复制最近合并",
+                "\(.applicationName) 合并最近几条",
+                "\(.applicationName) 把最近几条合并到剪贴板"
+            ],
+            shortTitle: "复制最近合并",
+            systemImageName: "number.circle"
         )
     }
 }
