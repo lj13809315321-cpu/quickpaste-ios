@@ -105,6 +105,9 @@ struct PiPControlView: View {
                          : "开启后屏幕角落出现小窗，就代表正在后台监听剪贴板。")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
+                    Text("这个列表只放【文字】和【图片】；PDF、视频等文件类内容在底部「文件」页，不会混进这里。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
                     // ★ 用户点名要的「小开关」：一个按钮，开/关连续复制，颜色跟随真实状态。
                     SmallSwitchButton()
                         .padding(.top, 2)

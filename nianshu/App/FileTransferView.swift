@@ -7,14 +7,76 @@ import UniformTypeIdentifiers
 // 两条入口：
 //   ① 自动：别的 App 复制文件时，若它把文件字节放进了剪贴板，
 //      PiPManager → FileStore.capture 会自动收进这里；
-//   ② 手动：点「从「文件」App 导入」，用系统 .fileImporter 选任意文件，
+//   ② 手动：点「从「文件」App 导入」，用系统文件选择器选任意文件，
 //      粘鼠存进自己沙盒。视频 / PSD / PPT / WPS 表格 等基本都走这条。
 // 出去：点文件 → 系统分享面板发到微信 / WPS / 任意 App（最可靠），
 //       或「复制到剪贴板」（仅目标 App 认该格式时有效）。
+//
+// ★ 导入为什么改用 UIKit 直接 present：
+//   本页同时挂了 .sheet（分享）、.confirmationDialog（文件操作）、.alert（清空），
+//   再叠一个 SwiftUI .fileImporter 时，多个 presentation 修饰符挤在同一视图层级，
+//   会把文件选择器挤掉（表现为点按钮没反应 / 弹一下就消失）。另外原来每 1.5 秒
+//   reload() 会不断重算 body，也会干扰系统弹窗。改为：
+//     · UIKit UIDocumentPickerViewController 由最上层控制器直接 present；
+//     · 去掉定时器，只在进页面 / 回前台 / 导入完成通知时刷新；
+//     · asCopy: true 让系统把文件复制一份给本 App，不依赖 iCloud 权限。
+//   asCopy 的 URL 是 App 可读的本地副本，FileStore.importFiles 里的
+//   startAccessingSecurityScopedResource() 返回 false 也不会影响读取。
+
+private let nsFilesChanged = Notification.Name("ns.files.changed")
+
+/// 系统文件选择器（单例持有 delegate，避免被 SwiftUI 视图重建时释放）。
+private final class DocPickerPresenter: NSObject, UIDocumentPickerDelegate {
+    static let shared = DocPickerPresenter()
+    private var onResult: ((String) -> Void)?
+
+    func present(onResult: @escaping (String) -> Void) {
+        self.onResult = onResult
+        // .item = 任意文件的抽象基类；后面几个是常见具类，兜住部分文件提供者的过滤差异。
+        let types: [UTType] = [
+            .item, .content, .data, .pdf, .image, .movie, .audio,
+            .text, .plainText, .html, .json, .xml
+        ]
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
+        picker.allowsMultipleSelection = true
+        picker.delegate = self
+        guard let top = Self.topViewController() else {
+            onResult("找不到当前界面，无法打开文件选择器；请退回主屏再进一次粘鼠")
+            self.onResult = nil
+            return
+        }
+        top.present(picker, animated: true)
+    }
+
+    private static func topViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        var vc = scene?.windows.first(where: { $0.isKeyWindow })?.rootViewController
+        while let presented = vc?.presentedViewController { vc = presented }
+        return vc
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController,
+                        didPickDocumentsAt urls: [URL]) {
+        let cb = onResult
+        onResult = nil
+        let n = FileStore.importFiles(urls)
+        let msg = n > 0 ? "已导入 \(n) 个文件"
+                        : "这些文件已存在，或未能读取（超过 50MB 会被跳过）"
+        controller.dismiss(animated: true) {
+            NotificationCenter.default.post(name: nsFilesChanged, object: msg)
+            cb?(msg)
+        }
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        onResult = nil
+        controller.dismiss(animated: true)
+    }
+}
 
 struct FileTransferView: View {
     @State private var files: [FileMeta] = FileStore.all()
-    @State private var showImporter = false
     @State private var notice = ""
     @State private var sharePayload: [Any]?
     @State private var pending: FileMeta?
@@ -32,7 +94,9 @@ struct FileTransferView: View {
         NavigationStack {
             List {
                 Section {
-                    Button { showImporter = true } label: {
+                    Button {
+                        DocPickerPresenter.shared.present { msg in flash(msg) }
+                    } label: {
                         Label("从「文件」App 导入文件（任意格式）", systemImage: "folder.badge.plus")
                             .font(.body.weight(.semibold))
                     }
@@ -42,7 +106,7 @@ struct FileTransferView: View {
                         Text(notice).font(.footnote).foregroundColor(.blue)
                     }
                 } footer: {
-                    Text("单个文件上限 50MB，仓库最多 100 个；重复文件按内容自动去重。更大的视频请直接用系统「文件」App 分享。")
+                    Text("单个文件上限 50MB，仓库最多 100 个；重复文件按内容自动去重。更大的视频请直接用系统「文件」App 分享。下拉可刷新列表。")
                 }
 
                 Section("能自动收录 vs 必须导入") {
@@ -53,6 +117,8 @@ struct FileTransferView: View {
                           systemImage: "hand.tap.fill")
                         .font(.footnote)
                     Text("这是 iOS 系统规则：剪贴板不是文件传输通道，源 App 复制文件时多数只放一个指向自己沙盒的链接，别的 App 没有权限打开。任何 App 都一样，不是粘鼠的限制。")
+                        .font(.caption).foregroundColor(.secondary)
+                    Text("文字和图片显示在「连续复制」/「历史」列表；文件类内容单独放在本页，不会混进那两个列表。")
                         .font(.caption).foregroundColor(.secondary)
                 }
 
@@ -92,20 +158,12 @@ struct FileTransferView: View {
                 }
             }
             .navigationTitle("文件")
+            .refreshable { reload() }
             .onAppear { reload() }
             .onChange(of: scenePhase) { phase in if phase == .active { reload() } }
-            .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in reload() }
-            .fileImporter(isPresented: $showImporter,
-                          allowedContentTypes: [.item],
-                          allowsMultipleSelection: true) { result in
-                switch result {
-                case .success(let urls):
-                    let n = FileStore.importFiles(urls)
-                    reload()
-                    flash(n > 0 ? "已导入 \(n) 个文件" : "这些文件已存在，或未能读取（超过 50MB 会被跳过）")
-                case .failure(let e):
-                    flash("导入失败：\(e.localizedDescription)")
-                }
+            .onReceive(NotificationCenter.default.publisher(for: nsFilesChanged)) { note in
+                reload()
+                if let s = note.object as? String, !s.isEmpty { flash(s) }
             }
             .sheet(isPresented: Binding(
                 get: { sharePayload != nil },
