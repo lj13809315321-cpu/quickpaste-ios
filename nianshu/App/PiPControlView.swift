@@ -1,13 +1,14 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 // MARK: - 主 App「连续复制」页
 
 struct PiPControlView: View {
     @ObservedObject private var pip = PiPManager.shared
     /// 合并视图（去重、墓碑过滤、按时间倒序）——见 LocalStore.allItems()
-    @State private var entries: [(text: String, ts: Double)] = PiPManager.mergedItems()
-    /// 筛选：0 全部 / 1 文本 / 2 链接
+    @State private var entries: [NSItem] = PiPManager.mergedItems()
+    /// 筛选：0 全部 / 1 文本 / 2 链接 / 3 图片
     @State private var filterKind = 0
     /// 批量编辑：选择模式 + 已选集合（以原文为 id）
     @State private var editMode = false
@@ -31,33 +32,22 @@ struct PiPControlView: View {
         return t.hasPrefix("http://") || t.hasPrefix("https://") || t.hasPrefix("www.")
     }
 
-    private var filtered: [(text: String, ts: Double)] {
+    private var filtered: [NSItem] {
         switch filterKind {
-        case 1: return entries.filter { !Self.isLink($0.text) }
-        case 2: return entries.filter { Self.isLink($0.text) }
+        case 1: return entries.filter { $0.kind == .text && !$0.isLink }
+        case 2: return entries.filter { $0.isLink }
+        case 3: return entries.filter { $0.kind == .image }
         default: return entries
         }
     }
 
     private var filterName: String {
-        ["全部", "文本", "链接"][filterKind]
+        ["全部", "文本", "链接", "图片"][filterKind]
     }
 
     // MARK: v1.8.43「一轮连续复制算一次」——按开启轮次统一标，不再逐条编号
-    private struct RankedItem: Identifiable {
-        let id: String
-        let text: String
-        let ts: Double
-        let session: Int
-    }
-
     /// session：0=本次开启这一轮、1=上一轮、2=上上轮、3=更早（不标）。
-    private var ranked: [RankedItem] {
-        filtered.map {
-            RankedItem(id: $0.text, text: $0.text, ts: $0.ts,
-                       session: Self.sessionRank($0.ts))
-        }
-    }
+    private func session(of item: NSItem) -> Int { Self.sessionRank(item.ts) }
 
     /// 靠「收录时刻落在哪一轮的区间里」判轮次，不用给每条历史加字段。
     private static func sessionRank(_ ts: Double) -> Int {
@@ -217,6 +207,7 @@ struct PiPControlView: View {
                                 Text("全部").tag(0)
                                 Text("文本").tag(1)
                                 Text("链接").tag(2)
+                                Text("图片").tag(3)
                             }
                         } label: {
                             Label(filterName, systemImage: "line.3.horizontal.decrease.circle")
@@ -243,7 +234,7 @@ struct PiPControlView: View {
 
                     if editMode {
                         HStack(spacing: 16) {
-                            Button("全选") { selection = Set(filtered.map(\.text)) }
+                            Button("全选") { selection = Set(filtered.map(\.id)) }
                                 .buttonStyle(.borderless)
                             Button("复制所选") { copySelected() }
                                 .buttonStyle(.borderless)
@@ -264,66 +255,98 @@ struct PiPControlView: View {
                     Text("「选择」后点条目勾选，可批量删除；导出范围 = 有选择时导出所选，否则导出当前筛选下的全部。导出文件走系统分享面板（可转发微信、保存到「文件」等）。")
                 }
 
-                Section("已收录 \(filtered.count) 条 · 本次 \(ranked.filter { $0.session == 0 }.count) 条") {
+                Section("已收录 \(filtered.count) 条 · 本次 \(filtered.filter { session(of: $0) == 0 }.count) 条") {
                     if filtered.isEmpty {
-                        Text("还没有收录。开启连续复制后，在别的 App 里复制的文字会出现在这里。")
+                        Text("还没有收录。开启连续复制后，在别的 App 里复制的文字或图片会出现在这里。")
                             .font(.footnote)
                             .foregroundColor(.secondary)
                     } else {
-                        ForEach(ranked) { e in
+                        ForEach(filtered) { e in
                             Button {
                                 if editMode {
-                                    if selection.contains(e.text) {
-                                        selection.remove(e.text)
+                                    if selection.contains(e.id) {
+                                        selection.remove(e.id)
                                     } else {
-                                        selection.insert(e.text)
+                                        selection.insert(e.id)
                                     }
                                 } else {
-                                    UIPasteboard.general.string = e.text
-                                    NianshuFeedback.copied()
-                                    if LocalStore.moveUsedToTopOn() {
-                                        PiPManager.appendLocal(e.text)
-                                        entries = PiPManager.mergedItems()
-                                        flash("已复制，并移到最前")
+                                    if e.kind == .image, let name = e.imgName,
+                                       let img = LocalStore.loadImage(named: name) {
+                                        UIPasteboard.general.image = img
+                                        NianshuFeedback.copied()
+                                        flash("已复制图片到剪贴板，去能接图的 App 粘贴即可")
                                     } else {
-                                        flash("已复制该条内容，去任何输入框粘贴即可")
+                                        UIPasteboard.general.string = e.text
+                                        NianshuFeedback.copied()
+                                        if LocalStore.moveUsedToTopOn() {
+                                            PiPManager.appendLocal(e.text)
+                                            entries = PiPManager.mergedItems()
+                                            flash("已复制，并移到最前")
+                                        } else {
+                                            flash("已复制该条内容，去任何输入框粘贴即可")
+                                        }
                                     }
                                 }
                             } label: {
                                 HStack(alignment: .top, spacing: 8) {
                                     if editMode {
-                                        Image(systemName: selection.contains(e.text)
+                                        Image(systemName: selection.contains(e.id)
                                               ? "checkmark.circle.fill" : "circle")
                                             .foregroundColor(.accentColor)
                                     }
-                                    if let label = sessionLabel(e.session) {
+                                    if let label = sessionLabel(session(of: e)) {
                                         Text(label)
                                             .font(.caption2)
                                             .fontWeight(.semibold)
-                                            .foregroundColor(e.session == 0 ? .white : (e.session == 1 ? .blue : .secondary))
+                                            .foregroundColor(session(of: e) == 0 ? .white : (session(of: e) == 1 ? .blue : .secondary))
                                             .padding(.horizontal, 6)
                                             .padding(.vertical, 3)
                                             .background(Capsule().fill(
-                                                e.session == 0 ? Color.blue
-                                                    : (e.session == 1 ? Color.blue.opacity(0.15)
+                                                session(of: e) == 0 ? Color.blue
+                                                    : (session(of: e) == 1 ? Color.blue.opacity(0.15)
                                                        : Color(UIColor.systemGray5))
                                             ))
                                     }
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(e.text)
-                                            .lineLimit(2)
-                                            .font(.subheadline)
-                                            .foregroundColor(.primary)
-                                        if !timeLabel(e.ts).isEmpty {
-                                            Text(timeLabel(e.ts))
-                                                .font(.caption2)
-                                                .foregroundColor(.secondary)
+                                    if e.kind == .image {
+                                        let thumb = (e.imgName).flatMap { LocalStore.loadImage(named: $0) }
+                                        if let img = thumb {
+                                            Image(uiImage: img)
+                                                .resizable()
+                                                .scaledToFill()
+                                                .frame(width: 46, height: 46)
+                                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        } else {
+                                            Image(systemName: "photo")
+                                                .frame(width: 46, height: 46)
                                         }
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text("图片")
+                                                .font(.subheadline)
+                                                .foregroundColor(.primary)
+                                            if !timeLabel(e.ts).isEmpty {
+                                                Text(timeLabel(e.ts))
+                                                    .font(.caption2)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                        }
+                                        Spacer()
+                                    } else {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(e.text)
+                                                .lineLimit(2)
+                                                .font(.subheadline)
+                                                .foregroundColor(.primary)
+                                            if !timeLabel(e.ts).isEmpty {
+                                                Text(timeLabel(e.ts))
+                                                    .font(.caption2)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                        }
+                                        Spacer()
+                                        Text("\(e.text.count) 字")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
                                     }
-                                    Spacer()
-                                    Text("\(e.text.count) 字")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
                                 }
                                 .padding(.vertical, 2)
                             }
@@ -371,9 +394,10 @@ struct PiPControlView: View {
     }
 
     private func exportTexts() -> [String] {
-        let texts = selection.isEmpty
-            ? filtered.map(\.text)
-            : filtered.filter { selection.contains($0.text) }.map(\.text)
+        let sel = selection.isEmpty
+            ? filtered
+            : filtered.filter { selection.contains($0.id) }
+        let texts = sel.filter { $0.kind == .text }.map { $0.text }
         return texts.isEmpty ? [""] : texts
     }
 
@@ -388,24 +412,39 @@ struct PiPControlView: View {
     }
 
     private func copySelected() {
-        let texts = selection.isEmpty ? filtered.map(\.text) : filtered.filter { selection.contains($0.text) }.map(\.text)
-        guard !texts.isEmpty else { flash("没有可复制的内容"); return }
-        UIPasteboard.general.string = texts.joined(separator: "\n\n————\n\n")
+        let sel = selection.isEmpty ? filtered : filtered.filter { selection.contains($0.id) }
+        guard !sel.isEmpty else { flash("没有可复制的内容"); return }
+        let texts = sel.filter { $0.kind == .text }.map { $0.text }
+        let images = sel.compactMap { e -> UIImage? in
+            guard e.kind == .image, let n = e.imgName else { return nil }
+            return LocalStore.loadImage(named: n)
+        }
+        guard !texts.isEmpty || !images.isEmpty else { flash("没有可复制的内容"); return }
+        // 文本与图片一起写进剪贴板：文本放一条、每张图各放一条
+        var items: [[String: Any]] = []
+        if !texts.isEmpty {
+            items.append([UTType.utf8PlainText.identifier: texts.joined(separator: "\n\n————\n\n")])
+        }
+        for img in images {
+            if let d = img.pngData() { items.append([UTType.png.identifier: d]) }
+        }
+        guard !items.isEmpty else { flash("没有可复制的内容"); return }
+        UIPasteboard.general.items = items
         NianshuFeedback.copied()
-        flash("已复制 \(texts.count) 条到剪贴板，去任何输入框粘贴即可")
+        flash("已复制 \(texts.count) 条文字、\(images.count) 张图片到剪贴板")
     }
 
     private func deleteSelected() {
-        let texts = Array(selection)
-        guard !texts.isEmpty else { return }
+        let ids = selection.isEmpty ? filtered.map { $0.id } : Array(selection)
+        guard !ids.isEmpty else { return }
         let before = entries.count
-        PiPManager.deleteTexts(texts)
+        PiPManager.deleteItems(ids)
         let after = PiPManager.mergedItems()
         entries = after
         selection.removeAll()
         let removed = before - after.count
-        if removed > texts.count {
-            flash("⚠️ 删除异常：应删 \(texts.count) 条，实际移除 \(removed) 条，请检查")
+        if removed > ids.count {
+            flash("⚠️ 删除异常：应删 \(ids.count) 条，实际移除 \(removed) 条，请检查")
         } else {
             flash("已删除 \(removed) 条")
         }

@@ -316,7 +316,7 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     }
 
     /// 合并视图（去重、墓碑过滤、按时间倒序）。
-    static func mergedItems() -> [(text: String, ts: Double)] {
+    static func mergedItems() -> [NSItem] {
         LocalStore.allItems()
     }
 
@@ -339,8 +339,8 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     @discardableResult
     static func appendLocal(_ text: String) -> Bool { LocalStore.append(text) }
 
-    /// 批量删除：写墓碑 + 从本地历史移除。
-    static func deleteTexts(_ texts: [String]) { LocalStore.delete(texts) }
+    /// 批量删除：写墓碑 + 从本地历史移除（id = 文本原文 或 「nsimg:哈希」）。
+    static func deleteItems(_ ids: [String]) { LocalStore.delete(ids) }
 
     // MARK: - 后台保活（音频 + audio 后台模式）
 
@@ -463,29 +463,38 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     }
 
     private func readNow(pb: UIPasteboard) {
-        guard pb.hasStrings else { return }
-        guard let raw = pb.string else {
-            // 有关键字却读不到正文 = 被系统拦了。
-            markBlocked()
-            return
+        let hasText = pb.hasStrings
+        let hasImage = pb.hasImages
+        guard hasText || hasImage else { return }
+
+        var captured = false
+        // —— 文字：和原来一样收录（内容没变就跳过，防止轮询回环）——
+        if hasText, let raw = pb.string {
+            let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !s.isEmpty, s.count < 20000 {
+                if LocalStore.append(s) { captured = true }
+            }
         }
-        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !s.isEmpty, s.count < 20000 else { return }
-        // 读到正文 = 没被拦，立刻把红字撤掉
-        if blocked || LocalStore.isBlocked {
-            blocked = false
-            LocalStore.isBlocked = false
+        // —— 图片：剪贴板里是图也一并收录（缩放/压缩/哈希去重都在 LocalStore 里做）——
+        if hasImage, let img = pb.image {
+            if LocalStore.appendImage(img) { captured = true }
         }
-        if LocalStore.append(s) {
+
+        if captured {
+            // 读到内容 = 没被拦，立刻把红字撤掉
+            if blocked || LocalStore.isBlocked {
+                blocked = false
+                LocalStore.isBlocked = false
+            }
             DispatchQueue.main.async {
-                // 本次会话新收录一条 → 计数 +1（从 0 开始重新累加）
                 self.capturedCount += 1
                 self.contentVC?.update(blocked: false, count: self.capturedCount)
                 self.message = "本次已收录 \(self.capturedCount) 条"
             }
         } else {
-            DispatchQueue.main.async {
-                self.contentVC?.update(blocked: false, count: self.capturedCount)
+            // 有内容却读不到正文/图 = 被系统拦了（常见于未授权「允许粘贴」）
+            if (hasText && pb.string == nil) || (hasImage && pb.image == nil) {
+                markBlocked()
             }
         }
     }

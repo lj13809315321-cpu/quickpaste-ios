@@ -85,7 +85,7 @@ struct AppRootView: View {
 // MARK: - 剪贴板历史
 
 struct HistoryView: View {
-    @State private var entries: [(text: String, ts: Double)] = PiPManager.mergedItems()
+    @State private var entries: [NSItem] = PiPManager.mergedItems()
     @State private var draft = ""
     @State private var search = ""
     @State private var flashMsg = ""
@@ -101,18 +101,19 @@ struct HistoryView: View {
         return t.hasPrefix("http://") || t.hasPrefix("https://") || t.hasPrefix("www.")
     }
 
-    private var searched: [(text: String, ts: Double)] {
+    private var searched: [NSItem] {
         search.isEmpty ? entries
-                       : entries.filter { $0.text.localizedCaseInsensitiveContains(search) }
+                       : entries.filter { $0.kind == .text && $0.text.localizedCaseInsensitiveContains(search) }
     }
-    private var filtered: [(text: String, ts: Double)] {
+    private var filtered: [NSItem] {
         switch filterKind {
-        case 1: return searched.filter { !Self.isLink($0.text) }
-        case 2: return searched.filter { Self.isLink($0.text) }
+        case 1: return searched.filter { $0.kind == .text && !$0.isLink }
+        case 2: return searched.filter { $0.isLink }
+        case 3: return searched.filter { $0.kind == .image }
         default: return searched
         }
     }
-    private var filterName: String { ["全部", "文本", "链接"][filterKind] }
+    private var filterName: String { ["全部", "文本", "链接", "图片"][filterKind] }
 
     private func reload() { entries = PiPManager.mergedItems() }
     private func notice(_ s: String) {
@@ -151,6 +152,7 @@ struct HistoryView: View {
                                 Text("全部").tag(0)
                                 Text("文本").tag(1)
                                 Text("链接").tag(2)
+                                Text("图片").tag(3)
                             }
                         } label: {
                             Label(filterName, systemImage: "line.3.horizontal.decrease.circle")
@@ -177,7 +179,7 @@ struct HistoryView: View {
 
                     if editMode {
                         HStack(spacing: 16) {
-                            Button("全选") { selection = Set(filtered.map(\.text)) }
+                            Button("全选") { selection = Set(filtered.map(\.id)) }
                                 .buttonStyle(.borderless)
                             Button("复制所选") { copySelected() }
                                 .buttonStyle(.borderless)
@@ -201,7 +203,7 @@ struct HistoryView: View {
                                 .foregroundColor(.secondary)
                             Text(search.isEmpty ? "还没有记录" : "没有匹配的记录")
                             Text(search.isEmpty
-                                 ? "在任意 App 复制文字后切到粘鼠，或开启「连续复制」让 App 在后台收录，记录就会出现在这里。"
+                                 ? "在任意 App 复制文字或图片后切到粘鼠，或开启「连续复制」让 App 在后台收录，记录就会出现在这里。"
                                  : "换个关键词再试试。")
                                 .font(.footnote).foregroundColor(.secondary)
                                 .multilineTextAlignment(.center)
@@ -210,31 +212,54 @@ struct HistoryView: View {
                     }
                 } else {
                     Section("历史记录（\(filtered.count)）") {
-                        ForEach(filtered, id: \.text) { item in
+                        ForEach(filtered) { item in
                             Button {
                                 if editMode {
-                                    if selection.contains(item.text) { selection.remove(item.text) }
-                                    else { selection.insert(item.text) }
+                                    if selection.contains(item.id) { selection.remove(item.id) }
+                                    else { selection.insert(item.id) }
                                 } else {
-                                    UIPasteboard.general.string = item.text
-                                    NianshuFeedback.copied()
-                                    if LocalStore.moveUsedToTopOn() {
-                                        PiPManager.appendLocal(item.text)
-                                        reload()
-                                        notice("已复制到剪贴板，并移到最前")
+                                    if item.kind == .image, let name = item.imgName,
+                                       let img = LocalStore.loadImage(named: name) {
+                                        UIPasteboard.general.image = img
+                                        NianshuFeedback.copied()
+                                        notice("已复制图片到剪贴板，去能接图的 App 粘贴")
                                     } else {
-                                        notice("已复制到剪贴板")
+                                        UIPasteboard.general.string = item.text
+                                        NianshuFeedback.copied()
+                                        if LocalStore.moveUsedToTopOn() {
+                                            PiPManager.appendLocal(item.text)
+                                            reload()
+                                            notice("已复制到剪贴板，并移到最前")
+                                        } else {
+                                            notice("已复制到剪贴板")
+                                        }
                                     }
                                 }
                             } label: {
                                 HStack {
                                     if editMode {
-                                        Image(systemName: selection.contains(item.text)
+                                        Image(systemName: selection.contains(item.id)
                                               ? "checkmark.circle.fill" : "circle")
                                             .foregroundColor(.accentColor)
                                     }
-                                    Image(systemName: "doc.on.clipboard").foregroundColor(.blue)
-                                    Text(item.text).lineLimit(2).foregroundColor(.primary)
+                                    if item.kind == .image {
+                                        let thumb = item.imgName.flatMap { LocalStore.loadImage(named: $0) }
+                                        if let img = thumb {
+                                            Image(uiImage: img)
+                                                .resizable().scaledToFill()
+                                                .frame(width: 40, height: 40)
+                                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        } else {
+                                            Image(systemName: "photo").foregroundColor(.blue)
+                                        }
+                                    } else {
+                                        Image(systemName: "doc.on.clipboard").foregroundColor(.blue)
+                                    }
+                                    if item.kind == .image {
+                                        Text("图片").lineLimit(2).foregroundColor(.primary)
+                                    } else {
+                                        Text(item.text).lineLimit(2).foregroundColor(.primary)
+                                    }
                                     Spacer()
                                     Image(systemName: "square.on.square").foregroundColor(.secondary)
                                 }
@@ -242,10 +267,10 @@ struct HistoryView: View {
                             .buttonStyle(.borderless)
                         }
                         .onDelete { idx in
-                            let texts = idx.map { filtered[$0].text }
-                            PiPManager.deleteTexts(texts)
+                            let ids = idx.map { filtered[$0].id }
+                            PiPManager.deleteItems(ids)
                             reload()
-                            notice("已删除 \(texts.count) 条")
+                            notice("已删除 \(ids.count) 条")
                         }
                     }
                 }
@@ -271,9 +296,10 @@ struct HistoryView: View {
     }
 
     private func exportTexts() -> [String] {
-        let texts = selection.isEmpty
-            ? filtered.map(\.text)
-            : filtered.filter { selection.contains($0.text) }.map(\.text)
+        let sel = selection.isEmpty
+            ? filtered
+            : filtered.filter { selection.contains($0.id) }
+        let texts = sel.filter { $0.kind == .text }.map { $0.text }
         return texts.isEmpty ? [""] : texts
     }
 
@@ -288,25 +314,37 @@ struct HistoryView: View {
     }
 
     private func copySelected() {
-        let texts = selection.isEmpty
-            ? filtered.map(\.text)
-            : filtered.filter { selection.contains($0.text) }.map(\.text)
-        guard !texts.isEmpty else { notice("没有可复制的内容"); return }
-        UIPasteboard.general.string = texts.joined(separator: "\n\n————\n\n")
+        let sel = selection.isEmpty ? filtered : filtered.filter { selection.contains($0.id) }
+        guard !sel.isEmpty else { notice("没有可复制的内容"); return }
+        let texts = sel.filter { $0.kind == .text }.map { $0.text }
+        let images = sel.compactMap { e -> UIImage? in
+            guard e.kind == .image, let n = e.imgName else { return nil }
+            return LocalStore.loadImage(named: n)
+        }
+        guard !texts.isEmpty || !images.isEmpty else { notice("没有可复制的内容"); return }
+        var items: [[String: Any]] = []
+        if !texts.isEmpty {
+            items.append([UTType.utf8PlainText.identifier: texts.joined(separator: "\n\n————\n\n")])
+        }
+        for img in images {
+            if let d = img.pngData() { items.append([UTType.png.identifier: d]) }
+        }
+        guard !items.isEmpty else { notice("没有可复制的内容"); return }
+        UIPasteboard.general.items = items
         NianshuFeedback.copied()
-        notice("已复制 \(texts.count) 条到剪贴板")
+        notice("已复制 \(texts.count) 条文字、\(images.count) 张图片到剪贴板")
     }
 
     private func deleteSelected() {
-        let texts = Array(selection)
-        guard !texts.isEmpty else { return }
+        let ids = Array(selection)
+        guard !ids.isEmpty else { return }
         let before = entries.count
-        PiPManager.deleteTexts(texts)
+        PiPManager.deleteItems(ids)
         reload()
         selection.removeAll()
         let removed = before - entries.count
-        if removed > texts.count {
-            notice("⚠️ 删除异常：应删 \(texts.count) 条，实际移除 \(removed) 条，请检查")
+        if removed > ids.count {
+            notice("⚠️ 删除异常：应删 \(ids.count) 条，实际移除 \(removed) 条，请检查")
         } else {
             notice("已删除 \(removed) 条")
         }

@@ -1,5 +1,7 @@
 import Foundation
 import UIKit
+import CommonCrypto
+import UniformTypeIdentifiers
 
 // MARK: - 粘鼠 · 单进程本地存储
 //
@@ -11,6 +13,37 @@ import UIKit
 // 这里集中实现 PiPManager / SettingsViews / NianshuIntents / PiPControlView
 // 里所有原来对 QPSharedHistory 的调用，签名尽量一一对应，方便平移。
 
+// MARK: - 统一条目模型（文本 / 图片二合一）
+
+/// 列表与回贴都用这一个类型：文本条目带 text，图片条目带 imgName（缓存文件名）。
+/// 用 id（= 存储里的原始键）做唯一标识，批量选择/删除都靠它。
+struct NSItem: Identifiable, Hashable {
+    let id: String
+    let kind: ItemKind
+    let text: String      // 文本内容；图片条目为空
+    let imgName: String?  // 图片缓存文件名（Caches/ns_img 下）
+    let ts: Double
+    enum ItemKind: String, Codable { case text, image }
+
+    /// 链接判定：仅文本条目、且以 http(s)/www 开头才算链接（用于筛选）。
+    var isLink: Bool {
+        guard kind == .text else { return false }
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.hasPrefix("http://") || t.hasPrefix("https://") || t.hasPrefix("www.")
+    }
+}
+
+extension Data {
+    /// 给图片算哈希，用来去重（避免回贴自身又被收录、或重复复制同一张图）。
+    func sha256String() -> String {
+        var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        self.withUnsafeBytes { raw in
+            _ = CC_SHA256(raw.baseAddress, CC_LONG(self.count), &digest)
+        }
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
 enum LocalStore {
 
     // MARK: - 历史（主 App 唯一数据源）
@@ -18,9 +51,12 @@ enum LocalStore {
     /// 单条：文本 + 真实收录时间戳（秒）。时间戳是「本次/上次/上上次」徽标与
     /// 「刚刚 / 3 分钟前」相对时间的基础，绝不能退化成「每次现算 now」，
     /// 否则所有条目都会显示「刚刚」（v1.8.43 的血泪教训）。
+    /// kind/img 为可选，老版本只存了 t/ts 的 JSON 也能正常解码（旧数据一律当文本）。
     private struct StoredItem: Codable {
         var t: String
         var ts: Double
+        var kind: String?   // "image" 或 nil（文本）
+        var img: String?    // 图片缓存文件名
     }
 
     private static let historyKey = "ns.history.v1"
@@ -40,15 +76,17 @@ enum LocalStore {
 
     /// 合并视图：去重（指纹，取时间较新者）、过滤墓碑、按时间倒序。
     /// 单进程下不再有「共享通道」一份，直接返回本地即可。
-    static func allItems() -> [(text: String, ts: Double)] {
+    static func allItems() -> [NSItem] {
         let marks = deletedMarks()
         var seen = Set<String>()
-        var out: [(String, Double)] = []
+        var out: [NSItem] = []
         for it in loadItems().sorted(by: { $0.ts > $1.ts }) {
             let fp = fingerprint(it.t)
             guard !marks.contains(fp), !seen.contains(fp) else { continue }
             seen.insert(fp)
-            out.append((it.t, it.ts))
+            let k: NSItem.ItemKind = (it.kind == "image") ? .image : .text
+            let displayText = (k == .image) ? "" : it.t
+            out.append(NSItem(id: it.t, kind: k, text: displayText, imgName: it.img, ts: it.ts))
         }
         return out
     }
@@ -60,24 +98,82 @@ enum LocalStore {
         var arr = loadItems()
         if arr.first?.t == text { return false }
         arr.removeAll { $0.t == text }
-        arr.insert(StoredItem(t: text, ts: Date().timeIntervalSince1970), at: 0)
+        arr.insert(StoredItem(t: text, ts: Date().timeIntervalSince1970, kind: nil, img: nil), at: 0)
         if arr.count > 200 { arr = Array(arr.prefix(200)) }
         saveItems(arr)
         return true
     }
+
+    // MARK: - 图片收录
+
+    /// 图片缓存目录（App Caches 下，非持久但够用；单张上限见下）。
+    static func imageCacheDir() -> URL {
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ns_img", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// 收录一张刚复制到剪贴板的图片。
+    ///  · 先按最长边 2048 缩放，避免大图撑爆内存；
+    ///  · 有透明度存 PNG、否则存 JPEG(0.85)；
+    ///  · 用图片数据哈希做去重键，既能挡掉「回贴自身又被收录」的回环，
+    ///    也能忽略重复复制同一张图。
+    /// 返回 true 表示这是新图片（计数 +1）。
+    @discardableResult
+    static func appendImage(_ image: UIImage) -> Bool {
+        let maxSide: CGFloat = 2048
+        var img = image
+        if max(image.size.width, image.size.height) > maxSide {
+            let scale = maxSide / max(image.size.width, image.size.height)
+            let newSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+            img = UIGraphicsImageRenderer(size: newSize).image { _ in
+                image.draw(in: CGRect(origin: .zero, size: newSize))
+            }
+        }
+        let hasAlpha = (image.cgImage?.alphaInfo ?? .none) != .none
+        guard let data = hasAlpha ? img.pngData() : img.jpegData(compressionQuality: 0.85) else {
+            return false
+        }
+        let hash = (data as NSData).sha256String()
+        let key = "nsimg:" + hash
+        let arr0 = loadItems()
+        if arr0.first?.t == key { return false }
+        let fname = hash + (hasAlpha ? ".png" : ".jpg")
+        let fpath = imageCacheDir().appendingPathComponent(fname)
+        try? data.write(to: fpath, options: .atomic)
+        var arr = arr0
+        arr.removeAll { $0.t == key }
+        arr.insert(StoredItem(t: key, ts: Date().timeIntervalSince1970, kind: "image", img: fname), at: 0)
+        if arr.count > 200 { arr = Array(arr.prefix(200)) }
+        saveItems(arr)
+        return true
+    }
+
+    /// 由缓存文件名读回 UIImage（列表缩略图 / 回贴用）。
+    static func loadImage(named fname: String) -> UIImage? {
+        let url = imageCacheDir().appendingPathComponent(fname)
+        return UIImage(contentsOfFile: url.path)
+    }
+
 
     /// 清空本地历史（不动系统剪贴板正文）。
     static func clearHistory() {
         saveItems([])
     }
 
-    /// 批量删除：写墓碑 + 从本地历史移除。
-    static func delete(_ texts: [String]) {
+    /// 批量删除：写墓碑 + 从本地历史移除。id 即存储键（文本=原文、图片=「nsimg:哈希」）。
+    static func delete(_ ids: [String]) {
         var marks = deletedMarks()
-        for t in texts { marks.insert(fingerprint(t)) }
+        for id in ids { marks.insert(fingerprint(id)) }
         saveDeletedMarks(marks)
-        let fps = Set(texts.map { fingerprint($0) })
-        saveItems(loadItems().filter { !fps.contains(fingerprint($0.t)) })
+        let set = Set(ids)
+        saveItems(loadItems().filter { !set.contains($0.t) })
+        // 顺手清掉图片缓存文件
+        for id in ids where id.hasPrefix("nsimg:") {
+            let fname = String(id.dropFirst("nsimg:".count))
+            try? FileManager.default.removeItem(at: imageCacheDir().appendingPathComponent(fname))
+        }
     }
 
     // MARK: - 指纹 / 墓碑
