@@ -7,8 +7,6 @@ import UniformTypeIdentifiers
 struct AppRootView: View {
     @State private var tab = 0
     @Environment(\.scenePhase) private var scenePhase
-    /// 首次启动引导页：装完第一次进 App 才弹，之后不再出现。
-    @State private var showOnboarding = (UserDefaults.standard.bool(forKey: "ns.onboarded") == false)
 
     var body: some View {
         TabView(selection: $tab) {
@@ -30,6 +28,12 @@ struct AppRootView: View {
             }
         }
         .onAppear {
+            // 首次进入：在前台静默读一次剪贴板，触发系统「允许粘贴」询问；
+            // 不弹任何引导页，权限由系统在后台自然询问（只做一次）。
+            if !UserDefaults.standard.bool(forKey: "ns.pasteProbed") {
+                _ = UIPasteboard.general.string
+                UserDefaults.standard.set(true, forKey: "ns.pasteProbed")
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                 PiPManager.shared.startIfWanted()
             }
@@ -38,10 +42,6 @@ struct AppRootView: View {
             if phase == .active {
                 PiPManager.shared.startIfWanted()
             }
-        }
-        // 首次启动引导：把「允许粘贴」与「自动跟踪」两个权限一次性讲清并落地。
-        .sheet(isPresented: $showOnboarding, onDismiss: { showOnboarding = false }) {
-            OnboardingView()
         }
     }
 
@@ -316,6 +316,7 @@ struct HistoryView: View {
 // MARK: - 设置首页（独立 App 版）
 
 struct SettingsView: View {
+    @State private var autoTrack = UserDefaults.standard.bool(forKey: "ns.autoPiP")
     var body: some View {
         NavigationStack {
             Form {
@@ -334,13 +335,18 @@ struct SettingsView: View {
                     NavigationLink("返回来源 App") { ReturnAppView() }
                 }
 
-                Section("启用与排查") {
+                Section("后台与权限") {
+                    Toggle("进入 App 自动在后台连续复制（自动跟踪）", isOn: $autoTrack)
+                        .onChange(of: autoTrack) { v in
+                            UserDefaults.standard.set(v, forKey: "ns.autoPiP")
+                            if v { PiPManager.shared.startIfWanted() }
+                        }
                     Button {
                         if let url = URL(string: UIApplication.openSettingsURLString) {
                             UIApplication.shared.open(url)
                         }
-                    } label: { Label("打开本 App 的系统设置", systemImage: "gear") }
-                    Text("要让后台连续复制生效，请在系统设置里把「从其他 App 粘贴」设为允许，并在「通用 → 画中画」打开「自动开启画中画」。")
+                    } label: { Label("打开本 App 的系统设置（允许粘贴 / 画中画）", systemImage: "gear") }
+                    Text("要让后台连续复制生效，请在系统设置里把「从其他 App 粘贴」设为允许，并在「通用 → 画中画」打开「自动开启画中画」。首次进 App 会由系统在后台询问「允许粘贴」。")
                         .font(.footnote).foregroundColor(.secondary)
                 }
 
