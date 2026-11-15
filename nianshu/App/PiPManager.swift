@@ -187,6 +187,9 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
 
     private override init() {
         super.init()
+        // 快捷指令可能在「画中画还没起来」或「App 被系统重启过」时先跑起来，
+        // 内存态此时还没有可信来源，先把持久化状态读回来，切换才不会翻错。
+        paused = UserDefaults.standard.bool(forKey: "ns.paused")
     }
 
     // MARK: - 开启
@@ -315,7 +318,18 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
 
     func pause() { setPaused(true) }
     func resume() { setPaused(false) }
-    func togglePause() { setPaused(!paused) }
+
+    /// 快捷指令里的「切换暂停启动」开关。
+    /// ★ 判当前状态必须取 UserDefaults 的持久值，不能只看内存里的 paused：
+    ///   App 进程被系统回收后由快捷指令冷启动，paused 会回到 init 那一刻的值，
+    ///   若用 !paused 翻转，会出现「明明已暂停，切一下还是暂停」的假失灵。
+    func togglePause() {
+        let current = UserDefaults.standard.bool(forKey: "ns.paused")
+        setPaused(!current)
+    }
+
+    /// 给页面 / 意图只读当前暂停状态。
+    var isPaused: Bool { paused }
 
     func stop() {
         if let c = pipController, c.isPictureInPictureActive {

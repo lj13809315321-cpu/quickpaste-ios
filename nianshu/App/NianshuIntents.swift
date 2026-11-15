@@ -109,10 +109,10 @@ final class SmallSwitchIntent: AppIntent {
     }
 }
 
-/// 暂停收录：画中画小窗与后台保活都不关，只是不再读取剪贴板。
+/// ① 单独「暂停」：画中画小窗与后台保活都不关，只是不再读取剪贴板。
 /// 状态写进 UserDefaults，App 在后台 / 未打开时由快捷指令直接切换也生效。
 final class PauseContinuousCopyIntent: AppIntent {
-    static var title: LocalizedStringResource = "暂停连续复制"
+    static var title: LocalizedStringResource = "暂停收录"
     static var description: LocalizedStringResource =
         "让粘鼠暂时停止收录新复制的内容，画中画小窗保持不消失（无需切到前台）。"
     static var openAppWhenRun: Bool = false
@@ -123,15 +123,31 @@ final class PauseContinuousCopyIntent: AppIntent {
     }
 }
 
-/// 继续收录：恢复被暂停的剪贴板监听，不用重新开启画中画。
+/// ② 单独「启动」：恢复被暂停的剪贴板收录，不用重新开启画中画。
+/// 标题按用户说的「启动」来，等价于上一版的「继续连续复制」，两种叫法都能唤起。
 final class ResumeContinuousCopyIntent: AppIntent {
-    static var title: LocalizedStringResource = "继续连续复制"
+    static var title: LocalizedStringResource = "启动收录"
     static var description: LocalizedStringResource =
-        "恢复粘鼠的剪贴板收录（画中画小窗本来就没关，无需切到前台）。"
+        "启动（继续）粘鼠的剪贴板收录，与「暂停收录」相对；画中画小窗本来就没关，无需切到前台。"
     static var openAppWhenRun: Bool = false
 
     func perform() async throws -> some IntentResult {
         await MainActor.run { PiPManager.shared.resume() }
+        return .result()
+    }
+}
+
+/// ③ 「切换暂停启动」开关：一次动作在 暂停 ↔ 启动 之间翻转。
+/// 判状态以 UserDefaults 里的持久值为准（App 被系统重启、画中画还没起来时也不会翻错），
+/// 全程不需要切到前台，适合放进「自动化」和 Siri。
+final class TogglePauseContinuousCopyIntent: AppIntent {
+    static var title: LocalizedStringResource = "切换暂停启动"
+    static var description: LocalizedStringResource =
+        "在「暂停收录」和「启动收录」之间一键翻转：暂停时会自动恢复，正在收录时会自动暂停。画中画小窗与后台保活都不受影响，无需切到前台。"
+    static var openAppWhenRun: Bool = false
+
+    func perform() async throws -> some IntentResult {
+        await MainActor.run { PiPManager.shared.togglePause() }
         return .result()
     }
 }
@@ -190,24 +206,39 @@ struct NianshuAppShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: PauseContinuousCopyIntent(),
             phrases: [
-                "用 \(.applicationName) 暂停连续复制",
-                "\(.applicationName) 暂停连续复制",
+                "用 \(.applicationName) 暂停收录",
                 "\(.applicationName) 暂停收录",
+                "\(.applicationName) 暂停连续复制",
+                "\(.applicationName) 暂停启动",
                 "\(.applicationName) 先别抓剪贴板"
             ],
-            shortTitle: "暂停连续复制",
+            shortTitle: "暂停收录",
             systemImageName: "pause.circle"
         )
         AppShortcut(
             intent: ResumeContinuousCopyIntent(),
             phrases: [
-                "用 \(.applicationName) 继续连续复制",
+                "用 \(.applicationName) 启动收录",
+                "\(.applicationName) 启动收录",
+                "\(.applicationName) 启动连续复制",
                 "\(.applicationName) 继续连续复制",
                 "\(.applicationName) 恢复收录",
                 "\(.applicationName) 接着抓剪贴板"
             ],
-            shortTitle: "继续连续复制",
+            shortTitle: "启动收录",
             systemImageName: "play.circle"
+        )
+        AppShortcut(
+            intent: TogglePauseContinuousCopyIntent(),
+            phrases: [
+                "用 \(.applicationName) 切换暂停启动",
+                "\(.applicationName) 切换暂停启动",
+                "\(.applicationName) 切换暂停收录",
+                "\(.applicationName) 暂停启动开关",
+                "\(.applicationName) 翻转收录开关"
+            ],
+            shortTitle: "切换暂停启动",
+            systemImageName: "repeat.circle"
         )
     }
 }
