@@ -1,6 +1,8 @@
 粘鼠 连续复制 独立版 手机安装包
 形态：单 target 主 App（无键盘扩展 / 无 App Group），靠系统画中画后台常驻监听剪贴板
 交付：未签名 IPA（手机端签名工具直接导入）
-构建时间 (UTC): 2026-11-15 04:22:17
-commit: eb4a55620d8bb4931fbc9befb36dcc401956195b
-IPA(未签名): 425724 bytes
+构建时间 (UTC): 2026-11-15 05:34:41
+commit: ea030f33dbbc8b98e8a5b005746b8e8b6b433156
+Build: 23
+ShortCommit: ea030f3
+IPA(未签名): 429694 bytes
