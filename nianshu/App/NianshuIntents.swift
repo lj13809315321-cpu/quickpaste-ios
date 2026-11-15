@@ -170,16 +170,20 @@ final class CopyMergedSessionIntent: AppIntent {
 
 /// ⑨ 复制最近合并：条数由快捷指令里的参数决定，默认 0 = 本次全部。
 /// 「怎么选这几条」不用在快捷指令里逐条勾选，填一个数字即可。
-final class CopyRecentMergedIntent: AppIntent {
+struct CopyRecentMergedIntent: AppIntent {
     static var title: LocalizedStringResource = "复制最近合并"
     static var description: LocalizedStringResource =
         "把最近 N 条文字拼成一条写回系统剪贴板；条数填 0 表示取本次这一轮的全部。"
     static var openAppWhenRun: Bool = false
 
+    // ★ @Parameter 的包装器不接受 `= 0` 这种 wrappedValue 默认值
+    //   （Xcode 16.4 报 extra argument 'wrappedValue' in call）。
+    //   标准写法：属性不写默认值，在 init() 里赋，且用 struct 避免
+    //   Sendable class 的可变存储属性告警。
     @Parameter(title: "条数")
-    var count: Int = 0
+    var count: Int
 
-    init() {}
+    init() { self.count = 0 }
 
     func perform() async throws -> some IntentResult {
         let n = count
