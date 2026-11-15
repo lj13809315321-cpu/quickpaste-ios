@@ -465,29 +465,31 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     private func readNow(pb: UIPasteboard) {
         let hasText = pb.hasStrings
         let hasImage = pb.hasImages
-        guard hasText || hasImage else { return }
-
-        var captured = false
+        var newItems = 0
         // —— 文字：和原来一样收录（内容没变就跳过，防止轮询回环）——
         if hasText, let raw = pb.string {
             let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if !s.isEmpty, s.count < 20000 {
-                if LocalStore.append(s) { captured = true }
+                if LocalStore.append(s) { newItems += 1 }
             }
         }
         // —— 图片：剪贴板里是图也一并收录（缩放/压缩/哈希去重都在 LocalStore 里做）——
         if hasImage, let img = pb.image {
-            if LocalStore.appendImage(img) { captured = true }
+            if LocalStore.appendImage(img) { newItems += 1 }
         }
+        // —— 文件：源 App 把 PDF / HTML / RTF / 音视频 / 办公文档字节放进剪贴板时自动收
+        //    （只认白名单 UTI、≤20MB、按内容哈希去重；只给 file-url 的格式抓不到，
+        //     用户可在「文件」页用系统文件导入器导入）。
+        newItems += FileStore.capture(from: pb)
 
-        if captured {
+        if newItems > 0 {
             // 读到内容 = 没被拦，立刻把红字撤掉
             if blocked || LocalStore.isBlocked {
                 blocked = false
                 LocalStore.isBlocked = false
             }
             DispatchQueue.main.async {
-                self.capturedCount += 1
+                self.capturedCount += newItems
                 self.contentVC?.update(blocked: false, count: self.capturedCount)
                 self.message = "本次已收录 \(self.capturedCount) 条"
             }

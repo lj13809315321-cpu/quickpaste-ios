@@ -14,6 +14,7 @@ struct AppRootView: View {
             PiPControlView().tabItem {
                 Label("连续复制", systemImage: "rectangle.on.rectangle")
             }.tag(1)
+            FileTransferView().tabItem { Label("文件", systemImage: "folder") }.tag(3)
             SettingsView().tabItem { Label("设置", systemImage: "gearshape") }.tag(2)
         }
         // 独立 App 没有键盘扩展来发指令，只需处理自己的 nianshu:// 深链
