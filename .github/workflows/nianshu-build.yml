@@ -188,6 +188,10 @@ jobs:
               echo "IPA(未签名): $(stat -c%s "$UIPA") bytes"
             } > out/nianshu/BUILD_INFO.txt
             git add -A out/nianshu/
+            # ★ 仓库 .gitignore 有 `*.ipa`。失败轮清理旧产物会把被跟踪的 IPA
+            #   删掉并取消跟踪，成功轮重建后普通 `git add -A` 会被忽略规则挡住，
+            #   结果只回传 BUILD_INFO、IPA 404（假成功）。必须强制 add。
+            git add -f "$UIPA"
             git commit -m "chore: 自动回传粘鼠未签名 IPA [skip ci]" || echo "无变更，跳过提交"
           else
             {
