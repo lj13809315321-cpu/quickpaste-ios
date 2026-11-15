@@ -12,12 +12,11 @@ name: 构建粘鼠 IPA
 on:
   push:
     branches: [main]
+    # 注意：GitHub 不允许同一事件同时写 paths 与 paths-ignore，二选一。
+    # 用 paths 白名单即可，回传的 out/** 本就不在白名单内，不会自我触发。
     paths:
       - 'nianshu/**'
       - '.github/workflows/nianshu-build.yml'
-    paths-ignore:
-      - 'out/**'
-      - '*.md'
   workflow_dispatch:
 
 permissions:
