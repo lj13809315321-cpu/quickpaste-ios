@@ -269,6 +269,15 @@ final class ToggleAutoPushMergeIntent: AppIntent {
 //
 // 注册后：打开「快捷指令」App → 右上角「+」→ 搜索「粘鼠」即可看到下列动作；
 // 也可在「自动化」里引用，或用 Siri 念出短语唤起。
+//
+// ★ iOS 硬限制：一个 App 的 AppShortcutsProvider 最多【10 个】AppShortcut，
+//   超了 appintentsmetadataprocessor 会直接报
+//   "Found N App Shortcuts, but each app may have at most 10" 让整个构建失败。
+//   所以这里只放 10 个「能用 Siri 语音唤起」的；其余 AppIntent 照样是快捷指令
+//   动作库里的正常动作（快捷指令 → + → 搜索粘鼠 → 动作里都能找到，也能放进
+//   自动化），只是不带语音短语：
+//     复制最近合并 / 开实时推送 / 关实时推送  ← 这三个不占名额。
+//   功能一个没少，区别只是这三个不能用 Siri 念出来，得在快捷指令里点。
 struct NianshuAppShortcuts: AppShortcutsProvider {
     @AppShortcutsBuilder
     static var appShortcuts: [AppShortcut] {
@@ -364,17 +373,8 @@ struct NianshuAppShortcuts: AppShortcutsProvider {
             shortTitle: "复制本次合并",
             systemImageName: "doc.on.clipboard"
         )
-        AppShortcut(
-            intent: CopyRecentMergedIntent(),
-            phrases: [
-                "用 \(.applicationName) 复制最近合并",
-                "\(.applicationName) 复制最近合并",
-                "\(.applicationName) 合并最近几条",
-                "\(.applicationName) 把最近几条合并到剪贴板"
-            ],
-            shortTitle: "复制最近合并",
-            systemImageName: "number.circle"
-        )
+        // 「复制最近合并」不占语音短语名额（见上方 iOS 10 个上限的说明），
+        // 它仍是快捷指令动作库里能搜到、能填「条数」、能放进自动化的正常动作。
         AppShortcut(
             intent: RestoreLastRawCopyIntent(),
             phrases: [
@@ -386,28 +386,9 @@ struct NianshuAppShortcuts: AppShortcutsProvider {
             shortTitle: "恢复最后一次复制",
             systemImageName: "arrow.uturn.backward.circle"
         )
-        AppShortcut(
-            intent: EnableAutoPushMergeIntent(),
-            phrases: [
-                "用 \(.applicationName) 开实时推送",
-                "\(.applicationName) 开实时推送",
-                "\(.applicationName) 打开实时推送",
-                "\(.applicationName) 改成自动推送"
-            ],
-            shortTitle: "开实时推送",
-            systemImageName: "bolt.circle"
-        )
-        AppShortcut(
-            intent: DisableAutoPushMergeIntent(),
-            phrases: [
-                "用 \(.applicationName) 关实时推送",
-                "\(.applicationName) 关实时推送",
-                "\(.applicationName) 关闭实时推送",
-                "\(.applicationName) 改回手动推"
-            ],
-            shortTitle: "关实时推送",
-            systemImageName: "hand.circle"
-        )
+        // 「开实时推送」「关实时推送」同样不占语音短语名额：两个动作仍在
+        // 快捷指令动作库里，适合拖进「到家自动开 / 开会先关」这类自动化。
+        // 语音名额只留给最常用、最符合「一个开关」诉求的「切换实时推送」。
         AppShortcut(
             intent: ToggleAutoPushMergeIntent(),
             phrases: [
