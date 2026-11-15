@@ -531,6 +531,13 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
     }
 
     private func readNow(pb: UIPasteboard) {
+        // ★ 实时推送的防回环：粘鼠自己写回剪贴板的内容按指纹整条跳过。
+        //   指纹集合只判断、不消费，前台/后台多次读到同一份都安全；
+        //   下面旧的单值标记留作兼容，升级上来还没清掉的旧键也能被认出来。
+        if let cur = pb.string, AutoPushMerge.isSelfWritten(cur) {
+            lastChange = pb.changeCount
+            return
+        }
         // 消费「粘鼠自己写回剪贴板」的标记：内容一致就整条跳过；
         // 不一致说明这次变化是用户新复制的内容，标记用完即清，不挡后续收录。
         if let own = UserDefaults.standard.string(forKey: Self.selfWrittenKey), !own.isEmpty {
@@ -545,10 +552,12 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         let hasText = pb.hasStrings
         let hasImage = pb.hasImages
         var newItems = 0
+        var capturedRawText: String?
         // —— 文字：和原来一样收录（内容没变就跳过，防止轮询回环）——
         if hasText, filter != 2, let raw = pb.string {
             let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if !s.isEmpty, s.count < 20000 {
+                capturedRawText = s
                 if LocalStore.append(s) { newItems += 1 }
             }
         }
@@ -560,6 +569,19 @@ final class PiPManager: NSObject, ObservableObject, AVPictureInPictureController
         //    （只认白名单 UTI、≤20MB、按内容哈希去重；只给 file-url 的格式抓不到，
         //     用户可在「文件」页用系统文件导入器导入）。「仅文字 / 仅图片」时不收文件。
         if filter == 0 { newItems += FileStore.capture(from: pb) }
+
+        // 实时推送：记下「用户最后复制的原文」，写回前要二次核对它没被改过。
+        // 只收到图片 / 文件时把期望值清空，自动推送就绝不会覆盖掉它们。
+        if let raw = capturedRawText {
+            AutoPushMerge.setExpectedRaw(raw)
+            if LocalStore.autoPushMergeEnabled(), LocalStore.mergeSessionEnabled() {
+                // 每次新收录都把上一次的延时任务作废：连续复制期间剪贴板
+                // 始终归用户，停手约 1.5 秒后才写一次合并结果。
+                AutoPushMerge.schedule()
+            }
+        } else if newItems > 0 {
+            AutoPushMerge.setExpectedRaw(nil)
+        }
 
         if newItems > 0 {
             // 读到内容 = 没被拦，立刻把红字撤掉

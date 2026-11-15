@@ -194,6 +194,20 @@ struct CopyRecentMergedIntent: AppIntent {
     }
 }
 
+/// ⑩ 恢复最后一次复制：开着「自动把本次合并推回剪贴板」时，
+/// 一键把系统剪贴板从合并整条换回最后复制的那一条原文，方便粘单条。
+final class RestoreLastRawCopyIntent: AppIntent {
+    static var title: LocalizedStringResource = "恢复最后一次复制"
+    static var description: LocalizedStringResource =
+        "把系统剪贴板还原成最后一次复制的单条原文；开着自动实时推送时，用来临时粘单条。"
+    static var openAppWhenRun: Bool = false
+
+    func perform() async throws -> some IntentResult {
+        await MainActor.run { LocalStore.restoreLastRawCopyToPasteboard() }
+        return .result()
+    }
+}
+
 // MARK: - 快捷指令里的「粘鼠」入口与建议短语
 //
 // 注册后：打开「快捷指令」App → 右上角「+」→ 搜索「粘鼠」即可看到下列动作；
@@ -303,6 +317,17 @@ struct NianshuAppShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "复制最近合并",
             systemImageName: "number.circle"
+        )
+        AppShortcut(
+            intent: RestoreLastRawCopyIntent(),
+            phrases: [
+                "用 \(.applicationName) 恢复最后一次复制",
+                "\(.applicationName) 恢复最后一次复制",
+                "\(.applicationName) 还原单条",
+                "\(.applicationName) 粘回最后一条"
+            ],
+            shortTitle: "恢复最后一次复制",
+            systemImageName: "arrow.uturn.backward.circle"
         )
     }
 }

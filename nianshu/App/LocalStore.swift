@@ -281,13 +281,26 @@ enum LocalStore {
         return mergedText(recentTexts(count), separatorMode: mode)
     }
 
-    /// 把合并结果写回系统剪贴板，并登记「这是粘鼠自己写的」：
-    /// PiP 的 0.4s 轮询靠这个标记跳过，否则合并结果会被自己再收一遍，越滚越大。
+    /// 自动实时推送开关：默认关。打开后停手 1.5 秒才把合并结果写回剪贴板，
+    /// 防「边复制边写回」打架的完整逻辑见 AutoPushMerge.swift。
+    static func autoPushMergeEnabled() -> Bool {
+        UserDefaults.standard.bool(forKey: "ns.autoPushMerge")
+    }
+
+    /// 最近一条文字原文（给「恢复最后一次复制」用）。
+    static func lastRawText() -> String? {
+        recentTexts(1).last
+    }
+
+    /// 把合并结果写回系统剪贴板（页面按钮、全文页、快捷指令、自动推送共用）。
+    /// 先登记指纹再写，PiP 的 0.4s 轮询会整条跳过，不会越滚越大。
     static func writeMergedToPasteboard(_ text: String) {
-        guard !text.isEmpty else { return }
-        UIPasteboard.general.string = text
-        PiPManager.shared.noteSelfWritten(text)
-        NianshuFeedback.copied()
+        AutoPushMerge.writeMerged(text)
+    }
+
+    /// 想粘单条时，把剪贴板从合并结果换回最后一次复制的原文。
+    static func restoreLastRawCopyToPasteboard() {
+        AutoPushMerge.restoreLastRaw()
     }
 
     // MARK: - 状态标志

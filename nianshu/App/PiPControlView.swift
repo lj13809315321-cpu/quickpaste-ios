@@ -31,6 +31,8 @@ struct PiPControlView: View {
     @AppStorage("ns.mergeSession") private var mergeSession = false
     /// 合并时每条之间的连接方式：0 换行 / 1 空一行 / 2 空格 / 3 直接连起来。
     @AppStorage("ns.mergeSeparator") private var mergeSeparator = 0
+    /// 自动把本次合并推回系统剪贴板：默认关，开着时系统剪贴板会被合并结果占用。
+    @AppStorage("ns.autoPushMerge") private var autoPushMerge = false
 
     /// 链接条目判断
     private static func isLink(_ s: String) -> Bool {
@@ -242,8 +244,23 @@ struct PiPControlView: View {
                             Text("空格").tag(2)
                             Text("直接连起来").tag(3)
                         }
+                        Toggle("自动把本次合并推回剪贴板（实时）", isOn: $autoPushMerge)
+                            .font(.body)
+                        Text("默认关。打开后：你连续复制的时候粘鼠绝不碰剪贴板；停手约 1.5 秒，才把「本次合并」整条自动写回系统剪贴板，直接去目标 App 粘贴即可。写回前会再核对一次剪贴板，若你或别的 App 又改过内容就放弃这次写入，不覆盖你新复制的东西；剪贴板里带图片时也不写。写回的内容粘鼠认得是自己写的，不会被后台监听再抓一遍。")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                        Button {
+                            LocalStore.restoreLastRawCopyToPasteboard()
+                            flash("已把最后一次复制的原文放回剪贴板")
+                        } label: {
+                            Label("恢复最后一次复制（想粘单条时点）",
+                                  systemImage: "arrow.uturn.backward.circle")
+                                .font(.subheadline)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(LocalStore.lastRawText() == nil)
                     }
-                    Text("打开后，列表上方会单独显示一条「本次合并」：本轮复制的文字按先后逐条拼接，每多复制一条自动追加一条，可一键复制回剪贴板。默认关闭，原来的列表一条不变。合并只收文字，图片和「文件」页的内容不参与；合并结果不写进历史。快捷指令里有「复制本次合并」「复制最近合并」两个动作，不用手动挑条目。")
+                    Text("打开后，列表上方会单独显示一条「本次合并」：本轮复制的文字按先后逐条拼接，每多复制一条自动追加一条，可一键复制回剪贴板，也可开上面的自动实时推送。默认关闭，原来的列表一条不变。合并只收文字，图片和「文件」页的内容不参与；合并结果不写进历史。快捷指令里有「复制本次合并」「复制最近合并」「恢复最后一次复制」三个动作，不用手动挑条目。")
                         .font(.footnote)
                         .foregroundColor(.secondary)
 
