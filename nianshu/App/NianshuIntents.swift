@@ -87,6 +87,28 @@ final class ToggleContinuousCopyIntent: AppIntent {
     }
 }
 
+/// 小开关：一键开 / 关连续复制（与 App 内页面上的「小开关」同义）。
+/// 单独注册成快捷指令动作，方便在「快捷指令」App 里搜到、被 Siri / 自动化唤起。
+final class SmallSwitchIntent: AppIntent {
+    static var title: LocalizedStringResource = "小开关"
+    static var description: LocalizedStringResource =
+        "开启或关闭粘鼠连续复制（和 App 内的「小开关」是同一个开关）。"
+    static var openAppWhenRun: Bool = true
+
+    func perform() async throws -> some IntentResult {
+        await MainActor.run {
+            let mgr = PiPManager.shared
+            if mgr.isActive {
+                mgr.forceStopFromShortcut()
+            } else {
+                mgr.start()
+                AppRootView.returnToSourceAfterPipStart()
+            }
+        }
+        return .result()
+    }
+}
+
 // MARK: - 快捷指令里的「粘鼠」入口与建议短语
 //
 // 注册后：打开「快捷指令」App → 右上角「+」→ 搜索「粘鼠」即可看到下列动作；
@@ -94,6 +116,17 @@ final class ToggleContinuousCopyIntent: AppIntent {
 struct NianshuAppShortcuts: AppShortcutsProvider {
     @AppShortcutsBuilder
     static var appShortcuts: [AppShortcut] {
+        AppShortcut(
+            intent: SmallSwitchIntent(),
+            phrases: [
+                "用 \(.applicationName) 小开关",
+                "\(.applicationName) 小开关",
+                "\(.applicationName) 开关连续复制",
+                "\(.applicationName) 打开或关闭连续复制"
+            ],
+            shortTitle: "小开关",
+            systemImageName: "rectangle.on.rectangle"
+        )
         AppShortcut(
             intent: ToggleContinuousCopyIntent(),
             phrases: [

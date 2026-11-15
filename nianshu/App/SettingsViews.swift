@@ -7,6 +7,8 @@ import UniformTypeIdentifiers
 struct AppRootView: View {
     @State private var tab = 0
     @Environment(\.scenePhase) private var scenePhase
+    /// 首次启动引导页：装完第一次进 App 才弹，之后不再出现。
+    @State private var showOnboarding = (UserDefaults.standard.bool(forKey: "ns.onboarded") == false)
 
     var body: some View {
         TabView(selection: $tab) {
@@ -36,6 +38,10 @@ struct AppRootView: View {
             if phase == .active {
                 PiPManager.shared.startIfWanted()
             }
+        }
+        // 首次启动引导：把「允许粘贴」与「自动跟踪」两个权限一次性讲清并落地。
+        .sheet(isPresented: $showOnboarding, onDismiss: { showOnboarding = false }) {
+            OnboardingView()
         }
     }
 
