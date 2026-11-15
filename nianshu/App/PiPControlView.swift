@@ -284,6 +284,10 @@ struct PiPControlView: View {
                         .font(.footnote)
                         .foregroundColor(.secondary)
 
+                    Text("快捷指令「粘鼠」动作库里还有一批【取内容】动作：取本次合并文本 / 取最近 N 条 / 取本次第 N 条 / 取本次链接 / 取最新验证码 / 取去重文字 / 取智能加工文本。它们不写剪贴板，而是把文本交回快捷指令，后面接「拷贝到剪贴板」「存储文件」「发微信」等动作就能串成任意流程；另有「推干净单条」「推编号列表」「推验证码」三个直接写剪贴板的动作。这些都在动作库里（搜「粘鼠」能找到、能放进自动化），不带 Siri 语音短语。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+
                     Text("快捷指令里现在有三个独立动作：「暂停收录」（单独暂停）、「启动收录」（单独启动/继续）、「切换暂停启动」（一键在两者之间翻转）。三个都不用切回本 App，可放进自动化或用 Siri 唤起；暂停状态会一直保留到下次「启动」。注意：这三个只控制「收不收」，如果画中画小窗已经彻底关掉了，请改用「开启连续复制」。")
                         .font(.footnote)
                         .foregroundColor(.secondary)
@@ -397,6 +401,44 @@ struct PiPControlView: View {
                     } header: {
                         Text("本次合并（单独一条完整的）")
                     }
+                }
+
+                // ── ★ 逐条队列：给输入法用，点一下换一条 ──
+                // 不依赖「组装成单独一条」开关，始终在，省得还要记一层逻辑。
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        let qIndex = NianshuQueue.index()
+                        let qTotal = sessionTexts.count
+                        HStack {
+                            Label(qIndex > 0 && qIndex <= qTotal
+                                  ? "已推到第 \(qIndex)/\(qTotal) 条"
+                                  : "还没开始推（共 \(qTotal) 条）",
+                                  systemImage: "list.number")
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            Text("\(qTotal) 条")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        HStack(spacing: 10) {
+                            Button { pushQueue(-1) } label: { Text("上一条") }
+                                .buttonStyle(.bordered)
+                            Button { pushQueue(0) } label: {
+                                Text("下一条").fontWeight(.semibold)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            Button { pushQueue(-2) } label: { Text("回到第一条") }
+                                .buttonStyle(.bordered)
+                        }
+                        .font(.subheadline)
+                        .disabled(sessionTexts.isEmpty)
+                        Text("每点一次只往系统剪贴板放一条干净纯文本：切到正在打字的 App，从输入法浮条 / 剪贴板候选里粘。到末尾自动绕回第 1 条。快捷指令里另有「推下一条」「推上一条」「推第 N 条」「推第一条」，可放主屏幕或背面轻点，不用回本页。")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 2)
+                } header: {
+                    Text("逐条推送（给输入法用）")
                 }
 
                 Section("已收录 \(filtered.count) 条 · 本次 \(filtered.filter { session(of: $0) == 0 }.count) 条") {
@@ -540,6 +582,14 @@ struct PiPControlView: View {
     private func flash(_ msg: String) {
         notice = msg
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { notice = "" }
+    }
+
+    /// 逐条队列：点一下把某一条干净纯文本推回剪贴板（与快捷指令的三个队列动作同一入口）。
+    private func pushQueue(_ step: Int) {
+        let ok = NianshuQueue.pushAndWrite(step: step)
+        flash(ok ? "已推一条到剪贴板，去输入法浮条粘贴"
+                 : "本次还没有文字，先复制几条再推")
+        entries = PiPManager.mergedItems()
     }
 
     /// 把本次合并结果推回系统剪贴板（页面按钮与快捷指令共用同一个写入口）。
