@@ -98,9 +98,9 @@ struct NianshuAppShortcuts: AppShortcutsProvider {
             intent: ToggleContinuousCopyIntent(),
             phrases: [
                 "用 \(.applicationName) 切换连续复制",
-                "切换连续复制",
-                "翻转粘鼠连续复制",
-                "连续复制 开关"
+                "\(.applicationName) 切换连续复制",
+                "\(.applicationName) 翻转连续复制",
+                "\(.applicationName) 连续复制开关"
             ],
             shortTitle: "切换连续复制",
             systemImageName: "arrow.triangle.2.circlepath"
@@ -109,9 +109,9 @@ struct NianshuAppShortcuts: AppShortcutsProvider {
             intent: StartContinuousCopyIntent(),
             phrases: [
                 "用 \(.applicationName) 开启连续复制",
-                "开启连续复制",
-                "打开粘鼠连续复制",
-                "开始粘鼠连续复制"
+                "\(.applicationName) 开启连续复制",
+                "\(.applicationName) 打开连续复制",
+                "\(.applicationName) 开始连续复制"
             ],
             shortTitle: "开启连续复制",
             systemImageName: "play.circle"
@@ -120,9 +120,9 @@ struct NianshuAppShortcuts: AppShortcutsProvider {
             intent: StopContinuousCopyIntent(),
             phrases: [
                 "用 \(.applicationName) 关闭连续复制",
-                "关闭连续复制",
-                "停止粘鼠连续复制",
-                "结束粘鼠连续复制"
+                "\(.applicationName) 关闭连续复制",
+                "\(.applicationName) 停止连续复制",
+                "\(.applicationName) 结束连续复制"
             ],
             shortTitle: "关闭连续复制",
             systemImageName: "stop.circle"
