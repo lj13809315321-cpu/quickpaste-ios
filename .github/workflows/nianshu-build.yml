@@ -1,5 +1,6 @@
 # 粘鼠 Nianshu 连续复制 · iOS 云端构建（单 target 独立 App，置于 quickpaste-ios 仓库的 nianshu/ 子目录）
 #
+# [重触发 2026-11-15] 自愈监控改为纯 git 轮询，强制重新跑一次确保触发。
 # 与墨指 workflow 互不干扰：
 #   - 本 workflow 只在 nianshu/** 或本文件变动时触发；
 #   - 墨指 build-inputmethod.yml 已加 paths-ignore: ['nianshu/**', '.github/workflows/nianshu-build.yml']，
@@ -28,8 +29,8 @@ concurrency:
 
 jobs:
   ipa:
-    # 改用 macos-latest（arm64 池，iOS 交叉编译产物一致，且比 Intel 池更容易拿到机器）。
-    runs-on: macos-latest
+    # 改回 macos-15-intel：与墨指同池（已验证该账号可分配到 runner），避免 macos-latest 池长期排队。
+    runs-on: macos-15-intel
     defaults:
       run:
         working-directory: nianshu
